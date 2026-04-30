@@ -1,0 +1,13 @@
+{
+  "name": "usdx-remote-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "USDX_BIND=127.0.0.1 USDX_PORT=8080 node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

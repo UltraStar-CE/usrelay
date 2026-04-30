@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>USDX Remote</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section id="joinScreen" class="screen">
+        <div class="brand">USDX Remote</div>
+        <form id="joinForm" class="join-form">
+          <label>
+            Room code
+            <input id="codeInput" name="code" inputmode="latin" autocomplete="one-time-code" maxlength="4" placeholder="K7PM" required>
+          </label>
+          <label>
+            Name
+            <input id="nameInput" name="name" autocomplete="name" maxlength="24" placeholder="Anna" required>
+          </label>
+          <label>
+            Controller password
+            <input id="controllerPasswordInput" name="controllerPassword" autocomplete="off" maxlength="64" placeholder="Optional">
+          </label>
+          <button type="submit">Join</button>
+        </form>
+        <section id="recentRoomsSection" class="recent-rooms hidden">
+          <div class="section-head">
+            <strong>Rooms</strong>
+            <span class="muted">saved on this phone</span>
+          </div>
+          <div id="recentRooms" class="recent-room-list"></div>
+        </section>
+        <div id="joinError" class="error" role="alert"></div>
+      </section>
+
+      <section id="appScreen" class="screen hidden">
+        <div class="tabs">
+          <button type="button" class="tab active" data-tab="mic">Microphone</button>
+          <button type="button" class="tab" data-tab="songs">Songs</button>
+          <button type="button" class="tab" data-tab="control">Control</button>
+          <button type="button" class="tab" data-tab="settings">Settings</button>
+        </div>
+
+        <section id="micPanel" class="panel tab-panel">
+          <div class="section-head">
+            <strong>Mic Rooms</strong>
+            <span id="micRoomCountLabel" class="muted">--</span>
+          </div>
+          <div id="micRoomList" class="mic-room-list"></div>
+          <ul id="playerList" class="player-list compact-list hidden" aria-label="Players"></ul>
+          <button type="button" id="micButton">Start Mic</button>
+          <div class="meter"><span id="volumeFill"></span></div>
+          <dl class="metrics">
+            <div><dt>Pitch</dt><dd id="pitchValue">--</dd></div>
+            <div><dt>Confidence</dt><dd id="confidenceValue">--</dd></div>
+            <div><dt>Voiced</dt><dd id="voicedValue">--</dd></div>
+            <div><dt>Position</dt><dd id="songPositionValue">--</dd></div>
+            <div><dt>Score</dt><dd id="playerScoreValue">--</dd></div>
+          </dl>
+          <p id="micStatus" class="fine">Microphone permission is requested only after you start the mic.</p>
+        </section>
+
+        <section id="songsPanel" class="panel tab-panel hidden">
+          <form id="searchForm" class="song-search-form">
+            <input id="searchInput" name="search" autocomplete="off" maxlength="80" placeholder="Search: Artist or title">
+          </form>
+          <p id="songLibraryLabel" class="fine song-library-summary">No song data from USDX yet.</p>
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Songs</strong>
+              <span id="songCountLabel" class="muted">--</span>
+            </div>
+            <div class="song-command-row">
+              <button type="button" id="showAllSongsButton" class="secondary hidden">All Songs</button>
+              <button type="button" id="addResultsButton">Add Results</button>
+            </div>
+            <div id="songPager" class="song-pager hidden" aria-label="Song result pages"></div>
+            <ul id="songResultList" class="song-result-list"></ul>
+          </section>
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Playlists</strong>
+              <span id="playlistCountLabel" class="muted">--</span>
+            </div>
+            <form id="playlistCreateForm" class="song-search-form compact">
+              <input id="playlistNameInput" name="playlistName" autocomplete="off" maxlength="48" placeholder="New playlist">
+              <button type="submit">Create</button>
+            </form>
+            <ul id="playlistList" class="playlist-list"></ul>
+            <div class="section-head">
+              <strong>Current Playlist</strong>
+              <span id="playlistItemCountLabel" class="muted">--</span>
+            </div>
+            <ul id="playlistItemList" class="playlist-item-list"></ul>
+          </section>
+        </section>
+
+        <section id="controlPanel" class="panel tab-panel hidden">
+          <div class="control-topline">
+            <button type="button" data-command="menu.back" class="danger-soft">Esc</button>
+            <strong id="controllerStatusLabel">role: -</strong>
+            <button type="button" id="releaseControllerButton" class="danger">Release Control</button>
+          </div>
+          <form id="controllerRoleForm" class="song-search-form">
+            <input id="controllerRolePasswordInput" autocomplete="off" maxlength="64" placeholder="Controller password">
+            <button type="submit">Acquire</button>
+          </form>
+          <form id="controlTextForm" class="song-search-form">
+            <input id="controlTextInput" autocomplete="off" maxlength="80" placeholder="Search text">
+            <button type="submit">Search</button>
+          </form>
+          <div class="game-card">
+            <div>
+              <span class="muted">Game</span>
+              <strong id="gameStateLabel">waiting</strong>
+            </div>
+            <div>
+              <span class="muted">Song</span>
+              <strong id="songSeqLabel">0</strong>
+            </div>
+          </div>
+          <div class="dpad">
+            <button type="button" class="ghost"></button>
+            <button type="button" data-command="menu.up" class="arrow">↑</button>
+            <button type="button" class="ghost"></button>
+            <button type="button" data-command="menu.left" class="arrow">←</button>
+            <button type="button" data-command="menu.select" class="select">Select</button>
+            <button type="button" data-command="menu.right" class="arrow">→</button>
+            <button type="button" data-command="menu.back">Back</button>
+            <button type="button" data-command="menu.down" class="arrow">↓</button>
+            <button type="button" data-command="game.pause">Pause</button>
+          </div>
+          <div class="actions">
+            <button type="button" data-command="game.resume">Resume</button>
+            <button type="button" data-command="song.skipIntro">Skip Intro</button>
+            <button type="button" data-command="song.restart">Restart</button>
+          </div>
+          <div class="song-actions">
+            <button type="button" data-command="song.menu">Song Menu</button>
+            <button type="button" data-command="song.playlistMenu">Playlist</button>
+            <button type="button" data-command="song.jumpTo">Jump To</button>
+            <button type="button" data-command="song.random">Random</button>
+          </div>
+          <section class="remote-list playlist-mode-card">
+            <div class="section-head">
+              <strong>Playlist Mode</strong>
+              <span id="playlistAutomationStatus" class="muted">Idle</span>
+            </div>
+            <dl class="metrics">
+              <div><dt>Countdown</dt><dd id="playlistCountdownLabel">15 s</dd></div>
+              <div><dt>State</dt><dd id="playlistCountdownState">Idle</dd></div>
+            </dl>
+            <label class="input-row">
+              Seconds
+              <input id="playlistCountdownInput" type="number" min="1" max="120" step="1" value="15">
+            </label>
+            <div class="song-command-row">
+              <button type="button" id="playlistAutomationToggleButton">Enable</button>
+              <button type="button" id="playlistCountdownStartButton">Countdown</button>
+              <button type="button" id="playlistNextButton">Next</button>
+            </div>
+          </section>
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Players</strong>
+              <span class="muted">controller tools</span>
+            </div>
+            <div id="controlPlayerList" class="control-player-list"></div>
+          </section>
+          <p id="controlStatus" class="fine"></p>
+        </section>
+
+        <section id="settingsPanel" class="panel tab-panel hidden">
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Audio</strong>
+              <span class="muted">stored on this phone</span>
+            </div>
+            <label class="check-row">
+              <input id="noiseSuppressionInput" type="checkbox">
+              Noise suppression
+            </label>
+            <label class="check-row">
+              <input id="echoCancellationInput" type="checkbox">
+              Echo cancellation
+            </label>
+            <label class="check-row">
+              <input id="autoGainInput" type="checkbox">
+              Auto gain control
+            </label>
+          </section>
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Delay</strong>
+              <span id="delayValueLabel" class="muted">0 ms</span>
+            </div>
+            <div class="delay-row">
+              <button type="button" id="delayMinusButton">-</button>
+              <input id="delayInput" type="number" min="-500" max="500" step="10" value="0">
+              <button type="button" id="delayPlusButton">+</button>
+            </div>
+          </section>
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Phone</strong>
+              <span class="muted">local behavior</span>
+            </div>
+            <form id="nameChangeForm" class="song-search-form compact">
+              <input id="nameChangeInput" autocomplete="name" maxlength="24" placeholder="Player name">
+              <button type="submit">Change</button>
+            </form>
+            <div class="room-settings-row">
+              <span id="roomSettingsLabel" class="muted">Room ----</span>
+              <button type="button" id="changeRoomButton" class="secondary">Change Room</button>
+            </div>
+            <label class="check-row">
+              <input id="wakeLockInput" type="checkbox">
+              Keep screen awake
+            </label>
+            <label class="check-row">
+              <input id="lockMicBarInput" type="checkbox">
+              Show mic level on lock screen
+            </label>
+            <label class="check-row">
+              <input id="controlOnlyInput" type="checkbox">
+              Control only
+            </label>
+            <label class="check-row">
+              <input id="playMusicOnDeviceInput" type="checkbox">
+              Play music on device as well
+            </label>
+            <p id="deviceMusicStatus" class="fine">Device music is off.</p>
+            <dl class="metrics device-music-diagnostics">
+              <div><dt>Music state</dt><dd id="deviceMusicStateValue">off</dd></div>
+              <div><dt>Phone remaining</dt><dd id="deviceMusicPhonePositionValue">--</dd></div>
+              <div><dt>Game remaining</dt><dd id="deviceMusicTargetPositionValue">--</dd></div>
+              <div><dt>Music drift</dt><dd id="deviceMusicDriftValue">--</dd></div>
+              <div><dt>Buffer</dt><dd id="deviceMusicReadyValue">--</dd></div>
+            </dl>
+          </section>
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Mic Rooms</strong>
+              <span id="capacityValueLabel" class="muted">6 slots</span>
+            </div>
+            <input id="capacityInput" type="range" min="1" max="12" step="1" value="6">
+            <p id="capacityStatus" class="fine">Controllers can change the number of available remote mic rooms.</p>
+          </section>
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Diagnostics</strong>
+              <span id="connectionState" class="muted">disconnected</span>
+            </div>
+            <dl class="metrics">
+              <div><dt>RTT</dt><dd id="rttValue">--</dd></div>
+              <div><dt>Clock offset</dt><dd id="offsetValue">--</dd></div>
+              <div><dt>Sample rate</dt><dd id="sampleRateValue">--</dd></div>
+              <div><dt>Channels</dt><dd id="channelValue">--</dd></div>
+              <div><dt>Processing</dt><dd id="processingValue">--</dd></div>
+            </dl>
+            <button type="button" id="toggleDebugButton" class="secondary">Toggle Debug Output</button>
+            <pre id="eventLog" class="hidden"></pre>
+          </section>
+        </section>
+      </section>
+    </main>
+    <section id="playlistOverlay" class="modal-backdrop hidden" aria-hidden="true">
+      <div class="modal">
+        <div class="section-head">
+          <div>
+            <strong id="playlistOverlayTitle">Add song</strong>
+            <span id="playlistOverlaySubtitle" class="muted">Select a playlist</span>
+          </div>
+          <button type="button" id="playlistOverlayCloseButton" class="secondary">Close</button>
+        </div>
+        <div id="playlistOverlayList" class="playlist-choice-list"></div>
+        <div class="song-search-form compact">
+          <input id="playlistOverlayCreateInput" autocomplete="off" maxlength="48" placeholder="New playlist">
+          <button type="button" id="playlistOverlayCreateButton">Create</button>
+        </div>
+      </div>
+    </section>
+    <button type="button" id="lockBar" class="lock-bar">Lock Screen</button>
+    <div id="lockOverlay" class="lock-overlay hidden" aria-hidden="true">
+      <div class="lock-panel">
+        <div class="lock-title">Screen locked</div>
+        <div id="lockRoomLabel" class="lock-meta">Room ---- - Mic -</div>
+        <div id="lockSongLabel" class="lock-meta">Song --:-- - Score --</div>
+        <div id="lockLevel" class="lock-level"><span></span></div>
+        <div id="lockPitchLabel" class="lock-meta">Mic idle</div>
+        <div id="unlockTrack" class="unlock-track">
+          <div id="unlockFill" class="unlock-fill"></div>
+          <div id="unlockHandle" class="unlock-handle"></div>
+          <span>Slide to unlock</span>
+        </div>
+      </div>
+    </div>
+    <div id="appVersion" class="app-version">v260430225000</div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
