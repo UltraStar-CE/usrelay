@@ -26,12 +26,11 @@ const slotSwitchCooldownMs = 200;
 const avatarCanvasMaxDimension = 512;
 const avatarUploadTargetBytes = 320 * 1024;
 const deviceMusicOutputLeadSec = 0;
-const deviceMusicInitialLeadSec = 0.5;
-const deviceMusicNominalPlaybackRate = 1.0001;
-const deviceMusicHardSeekThresholdSec = 0.75;
+const deviceMusicNominalPlaybackRate = 1;
+const deviceMusicHardSeekThresholdSec = 0.25;
 const deviceMusicSoftSyncThresholdSec = 0.010;
-const deviceMusicRateCurveScaleSec = 1.25;
-const deviceMusicMaxPlaybackRateDeviation = 0.50;
+const deviceMusicRateCurveScaleSec = 0.75;
+const deviceMusicMaxPlaybackRateDeviation = 0.06;
 const deviceMusicAnchorSnapThresholdSec = 0.30;
 const deviceMusicDecoderTimeoutMs = 3500;
 const deviceMusicDecoderMaxRetries = 3;
@@ -3587,10 +3586,7 @@ function updateSongClockFromMessage(message = {}, source = '') {
 function desiredDeviceMusicPositionSec(clientUs = clientNowUs()) {
   const position = currentGameAudioPositionSec(clientUs);
   if (position == null) return 0;
-  const initialLead = performance.now() < Number(state.deviceMusicInitialLeadUntilMs || 0)
-    ? deviceMusicInitialLeadSec
-    : 0;
-  return Math.max(0, position + deviceMusicOutputLeadSec + state.settings.targetDriftMs / 1000 + initialLead);
+  return Math.max(0, position + deviceMusicOutputLeadSec + state.settings.targetDriftMs / 1000);
 }
 
 function deviceMusicGameTargetEnded(clientUs = clientNowUs()) {
@@ -3770,14 +3766,15 @@ function deviceMusicPlaybackRateForDrift(drift) {
   if (absDrift <= deviceMusicSoftSyncThresholdSec) return deviceMusicNominalPlaybackRate;
 
   const effectiveDrift = absDrift - deviceMusicSoftSyncThresholdSec;
-  const strength = 1 - Math.exp(-effectiveDrift / deviceMusicRateCurveScaleSec);
-  const correction = Math.sign(drift) * deviceMusicMaxPlaybackRateDeviation * strength;
+  const correction = Math.sign(drift) * Math.min(deviceMusicMaxPlaybackRateDeviation,
+    effectiveDrift / deviceMusicRateCurveScaleSec);
   return deviceMusicNominalPlaybackRate + correction;
 }
 
 function syncDeviceMusicAudio(audio, force = false) {
   if (state.deviceMusicAudio !== audio) return null;
   if (audio.readyState < HTMLMediaElement.HAVE_METADATA) return null;
+  if (audio.seeking) return null;
   if (stopDeviceMusicAtGameEnd(audio)) return null;
   const sampleClientUs = clientNowUs();
   const desiredMedia = desiredDeviceMusicPositionSec(sampleClientUs);
@@ -3786,13 +3783,16 @@ function syncDeviceMusicAudio(audio, force = false) {
   if (phone == null) return null;
   const drift = desired - phone;
   const canInitialSeek = state.deviceMusicInitialSeekPending && (force || Math.abs(drift) > deviceMusicHardSeekThresholdSec);
-  if (canInitialSeek) {
+  const canRecoverSeek = Math.abs(drift) > deviceMusicHardSeekThresholdSec &&
+    performance.now() - (state.deviceMusicLastSeekMs ?? -Infinity) >= 2000;
+  if (canInitialSeek || canRecoverSeek) {
     if (canSeekDeviceMusic(audio, desired)) {
       try {
         audio.currentTime = desired;
         audio.playbackRate = deviceMusicNominalPlaybackRate;
         resetDeviceMusicPositionAnchor(audio, sampleClientUs, desired);
         state.deviceMusicInitialSeekPending = false;
+        state.deviceMusicLastSeekMs = performance.now();
       } catch {
         return null;
       }
@@ -3808,23 +3808,9 @@ function syncDeviceMusicAudio(audio, force = false) {
 }
 
 function forceDeviceMusicSeekToGame(audio) {
-  if (state.deviceMusicAudio !== audio) return null;
-  if (audio.readyState < HTMLMediaElement.HAVE_METADATA) return null;
-  if (stopDeviceMusicAtGameEnd(audio)) return null;
-  if (!state.deviceMusicInitialSeekPending) return syncDeviceMusicAudio(audio, false);
-  const sampleClientUs = clientNowUs();
-  const desired = clampDeviceMusicPosition(audio, desiredDeviceMusicPositionSec(sampleClientUs));
-  if (!canSeekDeviceMusic(audio, desired)) return syncDeviceMusicAudio(audio, false);
-  try {
-    audio.currentTime = desired;
-    audio.playbackRate = deviceMusicNominalPlaybackRate;
-    resetDeviceMusicPositionAnchor(audio, sampleClientUs, desired);
-    state.deviceMusicInitialSeekPending = false;
-    return desired;
-  } catch {
-    return null;
-  }
+  return syncDeviceMusicAudio(audio, true);
 }
+
 
 function startDeviceMusicSync(audio) {
   if (state.deviceMusicSyncTimer) clearInterval(state.deviceMusicSyncTimer);
@@ -3835,7 +3821,7 @@ function startDeviceMusicSync(audio) {
     if (drift != null) {
       setDeviceMusicStatus(`Device music playing. Target drift ${Math.round(drift * 1000)} ms.`, 'state-playing');
     }
-  }, 750);
+  }, 250);
 }
 
 function playDeviceMusicAudio(reason = '') {
