@@ -33,3 +33,15 @@ test('app native song loader reports failed queries and clears loading state',as
  assert.equal(h.state.songCatalogInFlight,false);assert.equal(h.rendered(),1);
  assert.match(h.state.songLibraryProgress.message,/disconnected/);
 });
+
+test('old room query cannot clear a newer room loading flag',async()=>{
+ const replies=[];const h=harness(()=>new Promise(resolve=>replies.push(resolve)));
+ const old=h.context.requestNativeSongs();
+ h.state.roomId='b';h.state.songCatalogInFlight=false;
+ const current=h.context.requestNativeSongs();
+ replies[0]({accepted:false,reason:'disconnected'});
+ await old;assert.equal(h.state.songCatalogInFlight,true);
+ replies[1]({accepted:true,data:{snapshotId:'new',offset:0,total:0,songs:[]}});
+ assert.equal(await current,true);assert.equal(h.state.songCatalogInFlight,false);
+ assert.equal(h.finished(),1);
+});

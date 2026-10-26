@@ -2933,108 +2933,29 @@ async function requestNativeSongs() {
   if (state.songCatalogInFlight) return false;
   state.songCatalogInFlight = true;
   const roomId = state.roomId;
+  const loadId = {};
+  state.nativeSongLoadId = loadId;
   try {
     const result = await loadSongs(apiRequests.request);
-    if (state.roomId !== roomId) return false;
+    if (state.roomId !== roomId || state.nativeSongLoadId !== loadId) return false;
     state.songLibraryTransfer = {libraryHash:result.snapshotId, chunks:result.songs};
     await finishSongLibraryTransfer({libraryHash:result.snapshotId, total:result.songs.length,
       state: {...state.songSelect}});
     return true;
   } catch (error) {
-    if (state.roomId === roomId) {
+    if (state.roomId === roomId && state.nativeSongLoadId === loadId) {
       state.songLibraryProgress = {status:'error',message:`Song loading failed: ${error.message}`};
       renderSongSelectState();
     }
     return false;
-  } finally { state.songCatalogInFlight = false; }
+  } finally { if (state.nativeSongLoadId === loadId) state.songCatalogInFlight = false; }
 }
 async function requestCatalog(options = {}) {
-  if (state.songSelect?.apiCapabilities?.includes('song.list')) return requestNativeSongs();
-  if (state.songLibraryTransfer && !options.forceFull) return false;
-  const now = performance.now();
-  if (state.songCatalogInFlight && !options.forceFull) return false;
-  if (state.songCatalogInFlight && now - Number(state.songFullListLastRequestMs || 0) < 1500) return false;
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !state.playerId) {
-    if (songLibraryLabel) songLibraryLabel.textContent = 'Connect to a room before loading the song catalog.';
+    if (songLibraryLabel) songLibraryLabel.textContent = 'Connect to a room before loading songs.';
     return false;
   }
-
-  const forceFull = Boolean(options.forceFull);
-  const requestedCatalogId = String(options.catalogId || state.songLibraryHash || cachedSongLibraryHash() || '');
-  let knownCatalogId = '';
-  if (!forceFull && requestedCatalogId) {
-    const cached = await loadCachedSongLibrary(requestedCatalogId);
-    if (cached) knownCatalogId = requestedCatalogId;
-  }
-
-  const expectedTotal = Number(state.songCatalogManifest?.totalSongs || state.songLibraryProgress?.indexedSongs || state.songSelect?.totalSongs || state.songSelect?.visibleSongs || 0);
-  const requestReason = String(options.reason || (forceFull ? 'catalog-transfer' : 'catalog-request'));
-  const requestCount = Number(state.songFullListRequestCount || 0) + 1;
-  const forceTransfer = forceFull || !knownCatalogId;
-  const requestId = String(options.requestId || shortRequestId('catalog'));
-  const ok = sendRelay({
-    type: 'catalog.request',
-    requestId,
-    knownCatalogId,
-    catalogId: requestedCatalogId,
-    forceTransfer
-  });
-  if (!ok) {
-    state.songCatalogInFlight = false;
-    if (songLibraryLabel) songLibraryLabel.textContent = 'Could not send catalog request; reconnect to load songs.';
-    logLine('catalog request send failed');
-    return false;
-  }
-
-  state.songCatalogInFlight = true;
-  state.songFullListLastRequestMs = now;
-  state.songFullListRequestCount = requestCount;
-  state.songFullListRequestReason = requestReason;
-  state.songCatalogRequestId = requestId;
-  state.songLibraryProgress = {
-    ...(state.songLibraryProgress || {}),
-    type: 'song.library.progress',
-    status: forceTransfer ? 'requesting_full' : 'requesting',
-    indexedSongs: expectedTotal,
-    transferReceived: 0,
-    transferTotal: expectedTotal,
-    message: knownCatalogId
-      ? 'Checking cached song catalog'
-      : `Requesting song catalog (${state.songFullListRequestReason})`
-  };
-  renderSongSelectState();
-  clientLog('catalog.request', {
-    reason: state.songFullListRequestReason,
-    requestCount: state.songFullListRequestCount,
-    requestId,
-    knownCatalogId: knownCatalogId ? knownCatalogId.slice(0, 12) : '',
-    requestedCatalogId: requestedCatalogId ? requestedCatalogId.slice(0, 12) : '',
-    forceFull
-  });
-  logLine(`catalog request sent ${requestId} ${forceTransfer ? 'transfer' : 'manifest'} ${requestedCatalogId ? requestedCatalogId.slice(0, 8) : 'new'}`);
-
-  if (forceTransfer) {
-    if (state.songCatalogRequestTimer) window.clearTimeout(state.songCatalogRequestTimer);
-    state.songCatalogRequestTimer = window.setTimeout(() => {
-      state.songCatalogRequestTimer = null;
-      const hasLibrary = Array.isArray(state.songSelect?.library) && state.songSelect.library.length;
-      if (hasLibrary || state.songLibraryTransfer) return;
-      state.songCatalogInFlight = false;
-      state.songLibraryProgress = {
-        ...(state.songLibraryProgress || {}),
-        status: 'catalog_timeout',
-        message: 'Catalog request reached the server, but no catalog transfer started. Restart the bridge and check server logs for catalog.request.forwarded and catalog.request.received.'
-      };
-      clientLog('catalog.timeout', {
-        reason: state.songFullListRequestReason,
-        requestId,
-        requestedCatalogId: requestedCatalogId ? requestedCatalogId.slice(0, 12) : '',
-        knownCatalogId: knownCatalogId ? knownCatalogId.slice(0, 12) : ''
-      });
-      renderSongSelectState();
-    }, 10000);
-  }
-  return true;
+  return requestNativeSongs();
 }
 
 function scheduleFullSongListRequest(reason = '', delayMs = 1200) {
@@ -5290,9 +5211,7 @@ async function handleMessage(message) {
     if (nativeSongsBecameAvailable) {
       if (state.songCatalogRequestTimer) window.clearTimeout(state.songCatalogRequestTimer);
       state.songCatalogRequestTimer = null;
-      state.songCatalogInFlight = false;
-      state.songLibraryTransfer = null;
-      requestNativeSongs();
+      if (!state.songCatalogInFlight) requestNativeSongs();
     }
     // Catalog snapshots are also delivered while singing or viewing results.
     if (message.screenActive === false) {
