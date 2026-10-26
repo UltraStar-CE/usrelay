@@ -18,7 +18,7 @@ const lastMicSlotKey = 'usdx.remote.lastMicSlot.v1';
 const settingsKey = 'usdx.remote.settings.v1';
 const settingsVersion = 3;
 const tabKey = 'usdx.remote.tab.v1';
-const appVersion = 'v20261026-native-pcm-integrated';
+const appVersion = 'v20261026-native-pcm-picker';
 const songPageSize = 80;
 const searchDebounceMinMs = 40;
 const searchDebounceMaxMs = 350;
@@ -4623,7 +4623,6 @@ function renderSlotButtons() {
   lobbyButton.className = 'slot-button mic-lobby';
   if (Number(state.slot) <= 0) lobbyButton.classList.add('active-slot');
   lobbyButton.addEventListener('click', () => {
-    if (!micRoomsUnlocked()) return;
     sendSlotProfile(0, lobbyButton);
   });
   slotButtons.append(lobbyButton);
@@ -4636,7 +4635,6 @@ function renderSlotButtons() {
     if (Number(state.slot) === slot) button.classList.add('active-slot');
     button.disabled = Boolean(occupant && occupant.playerId !== state.playerId);
     button.addEventListener('click', () => {
-      if (!micRoomsUnlocked()) return;
       sendSlotProfile(slot, button);
     });
     slotButtons.append(button);
@@ -5875,7 +5873,6 @@ for (const button of document.querySelectorAll('.tab')) {
 
 micButton.addEventListener('click', startMic);
 micRoomList?.addEventListener('click', (event) => {
-  if (!micRoomsUnlocked()) return;
   const button = event.target.closest?.('.mic-room[data-slot]');
   if (!button || !micRoomList.contains(button) || button.disabled) return;
   event.preventDefault();

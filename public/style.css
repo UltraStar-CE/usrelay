@@ -426,8 +426,6 @@ button.state-paused {
   position: relative;
 }
 
-#micPanel.mic-entry-locked .section-head,
-#micPanel.mic-entry-locked .mic-room-list,
 #micPanel.mic-entry-locked .meter,
 #micPanel.mic-entry-locked .metrics {
   opacity: 0.42;
@@ -435,13 +433,11 @@ button.state-paused {
 }
 
 #micPanel.mic-entry-locked #micButton {
-  position: absolute;
+  position: static;
   z-index: 6;
-  top: 88px;
-  left: 50%;
-  width: min(82%, 360px);
+  width: 100%;
   min-height: 68px;
-  transform: translateX(-50%);
+  transform: none;
   background: rgba(28, 113, 216, 0.76);
   color: #ffffff;
   border: 1px solid rgba(255, 255, 255, 0.45);
@@ -450,7 +446,7 @@ button.state-paused {
 }
 
 #micPanel.mic-entry-locked #micButton:active:not(:disabled) {
-  transform: translateX(-50%) scale(0.97);
+  transform: scale(0.97);
 }
 
 .mic-room-list button {
