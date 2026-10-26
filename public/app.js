@@ -2615,6 +2615,13 @@ function renderPlaylistOverlay() {
 }
 
 function stopPhonePreview() {
+  state.previewAbort?.abort();
+  state.previewAbort = null;
+  if (state.previewPendingButton) {
+    state.previewPendingButton.disabled = false;
+    state.previewPendingButton.textContent = 'Preview';
+    state.previewPendingButton = null;
+  }
   if (state.previewAudio) {
     state.previewAudio.pause();
     state.previewAudio.src = '';
@@ -3361,12 +3368,17 @@ async function startPhonePreview(song, button, slider) {
   stopPhonePreview();
   button.disabled = true;
   button.textContent = 'Loading';
+  const controller = new AbortController();
+  state.previewAbort = controller;
+  state.previewPendingButton = button;
+  const timeout = setTimeout(() => controller.abort(), 15000);
   try {
     const response = await fetch(`/api/song-preview?roomId=${encodeURIComponent(state.roomId)}&songId=${songId}`, {
-      cache: 'no-store'
+      signal: controller.signal, cache: 'no-store'
     });
     if (!response.ok) throw new Error(await response.text() || 'preview unavailable');
     const blob = await response.blob();
+    if (state.previewAbort !== controller) return;
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     state.previewAudio = audio;
@@ -3394,9 +3406,15 @@ async function startPhonePreview(song, button, slider) {
     await audio.play();
   } catch (error) {
     button.textContent = 'Preview';
-    controlStatus.textContent = `Preview failed: ${error.message || 'unavailable'}`;
-    stopPhonePreview();
+    if (state.previewAbort === controller) {
+      controlStatus.textContent = error.name === 'AbortError'
+        ? 'Preview timed out. Try again.'
+        : `Preview failed: ${error.message || 'unavailable'}`;
+      stopPhonePreview();
+    }
   } finally {
+    clearTimeout(timeout);
+    if (state.previewPendingButton === button) state.previewPendingButton = null;
     button.disabled = false;
   }
 }
