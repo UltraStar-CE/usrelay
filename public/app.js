@@ -1,5 +1,5 @@
 import { NativePcmSender } from './native-pcm.js?v=1';
-import { createAudioInput, startSyntheticPcm } from './audio-input.js?v=2';
+import { createAudioInput, startSyntheticPcm } from './audio-input.js?v=3';
 const protocol = 1;
 const sessionKey = 'usdx.remote.session.v1';
 const nameKey = 'usdx.remote.name.v1';
@@ -155,6 +155,7 @@ const state = {
   selectPreviewAnchorClientUs: null,
   selectPreviewAnchorExpiresMs: 0,
   hostSongStartUs: null,
+  hostScoringStartUs: null,
   mediaStartUs: 0,
   songDurationSec: null,
   songMediaAnchorSec: null,
@@ -1003,7 +1004,9 @@ function renderMicEntryFlow() {
   micRoomList?.classList.remove('hidden');
   slotButtons?.classList.remove('hidden');
   micMeter?.classList.remove('hidden');
-  micMetrics?.classList.toggle('hidden', !['singing', 'paused', 'results'].includes(state.gameState));
+  const hasScore = state.playerScore != null && Number.isFinite(Number(state.playerScore));
+  const hasPosition = Boolean(state.hostSongStartUs) && ['singing','paused'].includes(state.gameState);
+  micMetrics?.classList.toggle('hidden', Number(displaySlot()) <= 0 || (!hasScore && !hasPosition));
   if (micButton) {
     micButton.classList.toggle('hidden', unlocked);
     micButton.disabled = starting || Boolean(state.settings.controlOnly);
@@ -1189,6 +1192,7 @@ function leaveClosedRoom(reason = 'Room closed') {
   clearSongFullListRequestTimer();
   stopDeviceMusic('Device music stopped: game disconnected.');
   state.hostSongStartUs = null;
+  state.hostScoringStartUs = null;
   state.mediaStartUs = 0;
   state.songDurationSec = null;
   resetSongMediaClock();
@@ -1841,6 +1845,8 @@ function updateSongProgressView() {
   songPositionValue.textContent = position == null ? (state.hostSongStartUs ? 'syncing' : '--') : formatSongPosition(position);
   const score = state.playerScore == null ? NaN : Number(state.playerScore);
   playerScoreValue.textContent = Number.isFinite(score) ? String(score) : '--';
+  songPositionValue.parentElement?.classList.toggle('hidden', !state.hostSongStartUs);
+  playerScoreValue.parentElement?.classList.toggle('hidden', !Number.isFinite(score));
   renderLockIdentity();
   if (lockScoreLabel) {
     lockScoreLabel.textContent = Number.isFinite(score) ? String(score) : '--';
@@ -2462,7 +2468,7 @@ function renderMicRooms() {
     meta.textContent = occupant && occupant.connected !== false ? (occupant.name || 'Singer') : 'available';
     const detail = document.createElement('small');
     detail.textContent = occupant && occupant.connected !== false
-      ? `${difficultyLabel(occupant.difficulty)} - ${occupant.connected === false ? 'offline' : occupant.role || 'singer'}`
+      ? difficultyLabel(occupant.difficulty)
       : '';
     metaWrap.append(meta, detail);
     button.append(createRoomAvatar(occupant && occupant.connected !== false ? occupant : null, slot), title, metaWrap);
@@ -3723,6 +3729,9 @@ function updateSongMediaAnchor(message = {}, source = '') {
 }
 
 function updateSongClockFromMessage(message = {}, source = '') {
+  if (Number.isFinite(Number(message.scoringSongTimeUs)) && Number.isFinite(Number(message.hostStateUs))) {
+    state.hostScoringStartUs = Number(message.hostStateUs) - Number(message.scoringSongTimeUs);
+  }
   noteSongDurationFromMessage(message);
   const songSeq = Number(message.songSeq || state.songSeq || 0);
   if (Number.isFinite(songSeq) && songSeq > 0) {
@@ -5201,6 +5210,7 @@ async function handleMessage(message) {
     }
     if (['singing', 'paused'].includes(previousGameState) && !['singing', 'paused'].includes(state.gameState)) {
       state.hostSongStartUs = null;
+      state.hostScoringStartUs = null;
       state.mediaStartUs = 0;
       state.songDurationSec = null;
       resetSongMediaClock();
@@ -5231,6 +5241,7 @@ async function handleMessage(message) {
     }
     if (['singing', 'paused'].includes(previousGameState)) {
       state.hostSongStartUs = null;
+      state.hostScoringStartUs = null;
       state.mediaStartUs = 0;
       state.songDurationSec = null;
       resetSongMediaClock();
@@ -5441,6 +5452,7 @@ async function handleMessage(message) {
   if (message.type === 'song.ended') {
     if (Number(message.songSeq || state.songSeq) !== Number(state.songSeq)) return;
     state.hostSongStartUs = null;
+    state.hostScoringStartUs = null;
     state.mediaStartUs = 0;
     state.songDurationSec = null;
     resetSongMediaClock();
@@ -5606,10 +5618,19 @@ async function startMic() {
     state.pcmSender = new NativePcmSender({active: nativeAudioActive,
       channel: () => state.p2p.dc,
       relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message)});
-    state.audioInput = startSyntheticPcm({frequency, submit: packet => {
+    state.audioInput = startSyntheticPcm({frequency,
+      songTimeUs: clientMs => state.gameState === 'singing' && state.clock.synced && state.hostScoringStartUs
+        ? hostClockEstimateUs(Math.round(clientMs * 1000)) - state.hostScoringStartUs : null,
+      transition: event => clientLog('audio.transition', {...event, songSeq:state.songSeq,
+        generatedHostUs:hostClockEstimateUs(Math.round(event.generatedClientMs * 1000)),
+        clockRttUs:state.clock.rttUs}),
+      submit: packet => {
       state.pcmSender?.submit(packet);
-      if (performance.now() - state.pitchLastUiMs >= pitchUiUpdateMs)
-        handlePitchFrame({rmsDb: -17});
+      if (performance.now() - state.pitchLastUiMs >= pitchUiUpdateMs) {
+        let energy = 0;
+        for (const sample of new Int16Array(packet, 20)) energy += sample * sample;
+        handlePitchFrame({rmsDb:energy ? 10 * Math.log10(energy / (480 * 32768 ** 2)) : -120});
+      }
     }});
     $('testAudioStatus').textContent = state.audioInput.label;
     $('testAudioStatus').hidden = false;
@@ -5657,7 +5678,7 @@ async function startMic() {
     // Calling resume in this gesture still unlocks browsers which require it here.
     resumeMicAudio(audioContext);
 
-    micStatus.textContent = 'Requesting microphone access…';
+    micStatus.textContent = 'Requesting microphone accessâ€¦';
     const input = await createAudioInput(audioContext, {
       frequency: Number($('testAudioInput').value),
       mediaDevices: navigator.mediaDevices,
@@ -5704,7 +5725,7 @@ async function startMic() {
       source.connect(worklet).connect(silentSink);
     }
     if (state.rawPcmV1 || audioContext.sampleRate === 48000) {
-      micStatus.textContent = 'Preparing microphone audio…';
+      micStatus.textContent = 'Preparing microphone audioâ€¦';
       state.pcmSender = new NativePcmSender({ active: nativeAudioActive,
         channel: () => state.p2p.dc,
         relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message) });

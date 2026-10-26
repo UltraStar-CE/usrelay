@@ -42,3 +42,22 @@ test('real microphone keeps its constraints and releases capture on stop', async
   input.stop();
   assert.equal(stopped, 1);
 });
+
+test('alignment source switches C2/F2 at exact song sample boundaries and silences when paused', () => {
+  let time = 0, next, paused = false;
+  const packets = [], transitions = [];
+  const input = startSyntheticPcm({frequency:-1, submit:p=>packets.push(p), now:()=>time,
+    songTimeUs:ms=>paused ? null : ms*1000, transition:event=>transitions.push(event),
+    schedule(fn){next=fn;return 1;},cancel(){}});
+  for(time=10;time<=4000;time+=10) next();
+  assert.deepEqual(transitions.map(x=>[x.sourceSample,x.note]),[[96000,0],[144000,5],[192000,0]]);
+  for(const packet of packets.slice(0,200)) {
+    const samples = new Int16Array(packet,20);
+    assert.ok(samples.every(x=>x===0),'pre-roll must be silent');
+  }
+  assert.ok(new Int16Array(packets[201],20).some(x=>Math.abs(x)>6000));
+  paused=true; time=4010; next();
+  assert.equal(transitions.at(-1).note,null);
+  assert.ok(new Int16Array(packets.at(-1),20).every(x=>x===0));
+  input.stop();
+});
