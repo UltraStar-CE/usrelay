@@ -2158,7 +2158,8 @@ function renderPartyState() {
   if (partyFindMatchButton) partyFindMatchButton.disabled = !partyReady || !party.enabled;
   if (partyStopButton) partyStopButton.disabled = !partyReady || !party.enabled;
   if (partySaveButton) partySaveButton.disabled = !partyReady;
-  if (partySkipButton) partySkipButton.disabled = !partyReady;
+  if (partySkipButton) partySkipButton.disabled = !partyReady || !party.enabled ||
+    !['singing', 'paused', 'calling_players', 'scoring', 'highscores'].includes(party.phase);
   if (partyResetLeaderboardButton) partyResetLeaderboardButton.disabled = !partyReady;
   const likedSongsTotal = Number.isFinite(Number(party.likedSongsTotal)) ? Number(party.likedSongsTotal) : likedSongs.length;
   const matchesTotal = Number.isFinite(Number(party.matchesTotal)) ? Number(party.matchesTotal) : matches.length;
@@ -6473,7 +6474,7 @@ setInterval(() => {
   }
 }, 1000);
 
-for (const [button, icon] of [[likeVisibleSongsButton,'heart'],[$('unlikeVisibleSongsButton'),'thumbs-down'],[partyStartButton,'play'],[partyFindMatchButton,'magnifying-glass'],[$('controlTextForm')?.querySelector('button[type="submit"]'),'magnifying-glass']]) {
+for (const [button, icon] of [[likeVisibleSongsButton,'heart'],[$('unlikeVisibleSongsButton'),'thumbs-down'],[partyStartButton,'play'],[partySkipButton,'forward-step'],[partyStopButton,'stop'],[partyFindMatchButton,'magnifying-glass'],[$('controlTextForm')?.querySelector('button[type="submit"]'),'magnifying-glass']]) {
   if (button) setActionLabel(button, button.textContent.trim(), icon);
 }
 loadPersistentLikedSongs();
