@@ -1442,6 +1442,7 @@ function handleHostMessage(conn, msg) {
     }
     room.gameState = {
       ...msg,
+      seq: Math.max(Number(room.gameState?.seq) || 0, Number(msg.seq) || 0) + 1,
       protocol: protocolVersion,
       players: mergeHostPlayersWithRoomSlots(room, msg.players),
       controllerPlayerId: msg.controllerPlayerId !== undefined && msg.controllerPlayerId !== null

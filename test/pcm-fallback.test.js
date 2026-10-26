@@ -68,6 +68,11 @@ test('PCM fallback authenticates slot identity, validates frames, and requires t
       host.send(JSON.stringify({type:'input.state',protocol:1,playerCount:0,inputs:[]}));
       do { inputState=await phoneRead('game.state'); } while(inputState.gamePlayerCount!==0);
       assert.equal(inputState.inputs.length,0);
+      const rosterSeq = inputState.seq;
+      host.send(JSON.stringify({type:'game.state',protocol:1,seq:1,state:'results',songSeq:1,players:[]}));
+      let resultsState;
+      do { resultsState=await phoneRead('game.state'); } while(resultsState.state!=='results');
+      assert.ok(resultsState.seq>rosterSeq,'fresh results must not look older than server-generated roster updates');
       packet.writeUInt32LE(44100, 8);
       phone.send(JSON.stringify({ type: 'audio.pcm', protocol: 1, pcm: packet.toString('base64') }));
     }
