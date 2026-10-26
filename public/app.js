@@ -1,3 +1,4 @@
+import {audioTimingView} from './audio-timing.js';
 import {loadSongs} from './song-query.js';
 import {createApiRequests} from './api-requests.js';
 import { NativePcmSender } from './native-pcm.js?v=1';
@@ -1311,7 +1312,22 @@ function clientLog(event, data = {}) {
   }).catch(() => {});
 }
 
+function renderAudioTiming() {
+  const sender = state.pcmSender;
+  const timing = audioTimingView(sender?.timings(), Boolean(sender?.confirmed()));
+  const status = $('audioLatencyStatus');
+  if (status) {
+    status.hidden = !timing;
+    status.textContent = timing?.label || '';
+    status.title = timing?.detail || '';
+  }
+  const audio = $('audioRoundTripValue'), network = $('audioNetworkRoundTripValue');
+  if (audio) audio.textContent = timing?.audio || 'Not measured';
+  if (network) network.textContent = timing?.network || 'Not measured';
+}
+
 function renderConnectionState() {
+  renderAudioTiming();
   micDelayInput?.closest('section')?.classList.toggle('hidden', Boolean(state.rawPcmV1));
   const direct = state.rawPcmV1 ? nativeAudioActive() && state.pcmSender &&
     !state.pcmSender.usingServer() : state.p2p.connected;

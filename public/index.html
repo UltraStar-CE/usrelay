@@ -51,6 +51,7 @@
           </dl>
           <div id="micLyricsPanel" class="remote-lyrics hidden" aria-live="polite"></div>
           <p id="micStatus" class="fine">Choose a mic to start. Your browser will ask for microphone access.</p>
+          <p id="audioLatencyStatus" class="fine" hidden></p>
           <div class="section-head">
             <strong>Mic Rooms</strong>
             <span id="micRoomCountLabel" class="muted">--</span>
@@ -419,7 +420,10 @@
               <span id="connectionState" class="muted">disconnected</span>
             </div>
             <dl class="metrics">
-              <div><dt>RTT</dt><dd id="rttValue">--</dd></div>
+              <div><dt>Signaling RTT</dt><dd id="rttValue">--</dd></div>
+              <div><dt>Audio round trip</dt><dd id="audioRoundTripValue">Not measured</dd></div>
+              <div><dt>Audio network RTT</dt><dd id="audioNetworkRoundTripValue">Not measured</dd></div>
+              <div><dt>Measurement scope</dt><dd>Round trips include the return path. Microphone capture and hardware are excluded; these are not compensation values.</dd></div>
               <div><dt>Clock offset</dt><dd id="offsetValue">--</dd></div>
               <div><dt>Sample rate</dt><dd id="sampleRateValue">--</dd></div>
               <div><dt>Channels</dt><dd id="channelValue">--</dd></div>
