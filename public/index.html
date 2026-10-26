@@ -19,10 +19,6 @@
             Name
             <input id="nameInput" name="name" autocomplete="name" maxlength="24" placeholder="Anna" required>
           </label>
-          <label>
-            Controller password
-            <input id="controllerPasswordInput" name="controllerPassword" autocomplete="off" maxlength="64" placeholder="Optional">
-          </label>
           <button type="submit">Join</button>
         </form>
         <section id="recentRoomsSection" class="recent-rooms hidden">
@@ -39,6 +35,7 @@
         <div class="tabs">
           <button type="button" class="tab active" data-tab="mic">Microphone</button>
           <button type="button" class="tab" data-tab="songs">Songs</button>
+          <button type="button" class="tab" data-tab="party">Party</button>
           <button type="button" class="tab" data-tab="control">Control</button>
           <button type="button" class="tab" data-tab="settings">Settings</button>
         </div>
@@ -55,18 +52,35 @@
           <dl class="metrics">
             <div><dt>Pitch</dt><dd id="pitchValue">--</dd></div>
             <div><dt>Confidence</dt><dd id="confidenceValue">--</dd></div>
-            <div><dt>Voiced</dt><dd id="voicedValue">--</dd></div>
+            <div><dt>Decision</dt><dd id="voicedValue">--</dd></div>
             <div><dt>Position</dt><dd id="songPositionValue">--</dd></div>
             <div><dt>Score</dt><dd id="playerScoreValue">--</dd></div>
           </dl>
+          <div id="micLyricsPanel" class="remote-lyrics hidden" aria-live="polite"></div>
           <p id="micStatus" class="fine">Microphone permission is requested only after you start the mic.</p>
         </section>
 
         <section id="songsPanel" class="panel tab-panel hidden">
           <form id="searchForm" class="song-search-form">
+            <select id="searchFieldInput" name="searchField" aria-label="Search field">
+              <option value="all">All</option>
+              <option value="title">Title</option>
+              <option value="artist">Artist</option>
+              <option value="language">Language</option>
+              <option value="edition">Edition</option>
+              <option value="genre">Genre</option>
+              <option value="year">Year</option>
+              <option value="creator">Creator</option>
+              <option value="tags">Tags</option>
+            </select>
             <input id="searchInput" name="search" autocomplete="off" maxlength="80" placeholder="Search: Artist or title">
+            <button type="button" id="clearSearchButton" class="clear-search-button" aria-label="Clear song search" title="Clear song search">X</button>
           </form>
           <p id="songLibraryLabel" class="fine song-library-summary">No song data from USDX yet.</p>
+          <div id="songLibraryProgressWrap" class="song-library-progress hidden" aria-hidden="true">
+            <span id="songLibraryProgressFill"></span>
+            <strong id="songLibraryProgressText">0%</strong>
+          </div>
           <section class="remote-list">
             <div class="section-head">
               <strong>Songs</strong>
@@ -75,6 +89,9 @@
             <div class="song-command-row">
               <button type="button" id="showAllSongsButton" class="secondary hidden">All Songs</button>
               <button type="button" id="addResultsButton">Add Results</button>
+              <button type="button" id="likeVisibleSongsButton" class="secondary">♥ All</button>
+              <button type="button" id="showLikedSongsButton" class="secondary">♥ Liked</button>
+              <button type="button" id="downloadSongsCsvButton" class="secondary">Export CSV</button>
             </div>
             <div id="songPager" class="song-pager hidden" aria-label="Song result pages"></div>
             <ul id="songResultList" class="song-result-list"></ul>
@@ -97,15 +114,81 @@
           </section>
         </section>
 
+        <section id="partyPanel" class="panel tab-panel hidden">
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Party Mode</strong>
+              <span id="partyStatusLabel" class="muted">Idle</span>
+            </div>
+            <div class="party-actions">
+              <button type="button" id="partyStartButton">Start</button>
+              <button type="button" id="partyFindMatchButton" class="secondary">Find Match</button>
+              <button type="button" id="partySkipButton" class="danger-soft">Skip</button>
+              <button type="button" id="partyStopButton" class="secondary">Stop</button>
+            </div>
+            <label class="input-row">
+              Match players
+              <input id="partyMinPlayersInput" type="number" min="2" max="12" step="1" value="2">
+            </label>
+            <label class="check-row">
+              <input id="partyEndlessInput" type="checkbox">
+              Endless random songs
+            </label>
+            <label class="input-row">
+              Next song countdown
+              <input id="partyCountdownInput" type="number" min="1" max="120" step="1" value="15">
+            </label>
+            <label class="input-row">
+              Random source
+              <select id="partySourceInput">
+                <option value="all">All Songs</option>
+                <option value="playlist">Current Playlist</option>
+              </select>
+            </label>
+            <div class="song-command-row">
+              <button type="button" id="partySaveButton">Save Settings</button>
+              <button type="button" id="partyResetLeaderboardButton" class="secondary">Reset Scores</button>
+            </div>
+          </section>
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Now / Next</strong>
+              <span id="partyPhaseLabel" class="muted">--</span>
+            </div>
+            <ul id="partyQueueList" class="playlist-item-list"></ul>
+          </section>
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Upvotes</strong>
+              <span id="partyUpvoteCountLabel" class="muted">--</span>
+            </div>
+            <ul id="partyUpvoteList" class="playlist-item-list"></ul>
+          </section>
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Matches</strong>
+              <span id="partyMatchCountLabel" class="muted">--</span>
+            </div>
+            <ul id="partyMatchList" class="playlist-item-list"></ul>
+          </section>
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Leaderboard</strong>
+              <span class="muted">winner gets 1 point</span>
+            </div>
+            <ul id="partyLeaderboardList" class="playlist-item-list"></ul>
+          </section>
+          <p id="partyNotice" class="fine"></p>
+        </section>
+
         <section id="controlPanel" class="panel tab-panel hidden">
           <div class="control-topline">
             <button type="button" data-command="menu.back" class="danger-soft">Esc</button>
             <strong id="controllerStatusLabel">role: -</strong>
-            <button type="button" id="releaseControllerButton" class="danger">Release Control</button>
+            <button type="button" id="releaseControllerButton" class="danger hidden">Release Control</button>
           </div>
-          <form id="controllerRoleForm" class="song-search-form">
-            <input id="controllerRolePasswordInput" autocomplete="off" maxlength="64" placeholder="Controller password">
-            <button type="submit">Acquire</button>
+          <form id="controllerRoleForm" class="song-search-form hidden">
+            <button type="submit">Acquire Control</button>
           </form>
           <form id="controlTextForm" class="song-search-form">
             <input id="controlTextInput" autocomplete="off" maxlength="80" placeholder="Search text">
@@ -128,22 +211,21 @@
             <button type="button" data-command="menu.left" class="arrow">←</button>
             <button type="button" data-command="menu.select" class="select">Select</button>
             <button type="button" data-command="menu.right" class="arrow">→</button>
-            <button type="button" data-command="menu.back">Back</button>
+            <button type="button" class="ghost"></button>
             <button type="button" data-command="menu.down" class="arrow">↓</button>
-            <button type="button" data-command="game.pause">Pause</button>
+            <button type="button" class="ghost"></button>
           </div>
           <div class="actions">
-            <button type="button" data-command="game.resume">Resume</button>
+            <button type="button" data-command="menu.back">Back</button>
             <button type="button" data-command="song.skipIntro">Skip Intro</button>
-            <button type="button" data-command="song.restart">Restart</button>
+            <button type="button" id="pauseRestartButton">Pause</button>
           </div>
           <div class="song-actions">
             <button type="button" data-command="song.menu">Song Menu</button>
             <button type="button" data-command="song.playlistMenu">Playlist</button>
-            <button type="button" data-command="song.jumpTo">Jump To</button>
             <button type="button" data-command="song.random">Random</button>
           </div>
-          <section class="remote-list playlist-mode-card">
+          <section class="remote-list playlist-mode-card hidden">
             <div class="section-head">
               <strong>Playlist Mode</strong>
               <span id="playlistAutomationStatus" class="muted">Idle</span>
@@ -193,13 +275,24 @@
           </section>
           <section class="remote-list">
             <div class="section-head">
-              <strong>Delay</strong>
-              <span id="delayValueLabel" class="muted">0 ms</span>
+              <strong>Target Drift</strong>
+              <span id="targetDriftValueLabel" class="muted">0 ms</span>
             </div>
             <div class="delay-row">
-              <button type="button" id="delayMinusButton">-</button>
-              <input id="delayInput" type="number" min="-500" max="500" step="10" value="0">
-              <button type="button" id="delayPlusButton">+</button>
+              <button type="button" id="targetDriftMinusButton">-</button>
+              <input id="targetDriftInput" type="number" min="-500" max="500" step="10" value="0">
+              <button type="button" id="targetDriftPlusButton">+</button>
+            </div>
+          </section>
+          <section class="remote-list">
+            <div class="section-head">
+              <strong>Mic Delay</strong>
+              <span id="micDelayValueLabel" class="muted">0 ms</span>
+            </div>
+            <div class="delay-row">
+              <button type="button" id="micDelayMinusButton">-</button>
+              <input id="micDelayInput" type="number" min="-500" max="500" step="10" value="0">
+              <button type="button" id="micDelayPlusButton">+</button>
             </div>
           </section>
           <section class="remote-list">
@@ -211,6 +304,39 @@
               <input id="nameChangeInput" autocomplete="name" maxlength="24" placeholder="Player name">
               <button type="submit">Change</button>
             </form>
+            <div class="profile-grid">
+              <label>
+                Difficulty mode
+                <select id="difficultyModeInput">
+                  <option value="free">Free</option>
+                  <option value="easy">Easy</option>
+                  <option value="medium">Medium</option>
+                  <option value="hard">Hard</option>
+                </select>
+              </label>
+              <label id="difficultyValueRow">
+                Your difficulty
+                <select id="difficultyInput">
+                  <option value="0">Easy</option>
+                  <option value="1">Medium</option>
+                  <option value="2">Hard</option>
+                </select>
+              </label>
+            </div>
+            <div class="avatar-row">
+              <img id="avatarPreview" class="avatar-preview hidden" alt="">
+              <div class="avatar-actions">
+                <label class="file-button">
+                  Upload Avatar
+                  <input id="avatarFileInput" type="file" accept="image/png,image/jpeg">
+                </label>
+                <label class="file-button">
+                  Take Photo
+                  <input id="avatarCameraInput" type="file" accept="image/*" capture="user">
+                </label>
+                <button type="button" id="avatarResetButton" class="secondary">Default Avatar</button>
+              </div>
+            </div>
             <div class="room-settings-row">
               <span id="roomSettingsLabel" class="muted">Room ----</span>
               <button type="button" id="changeRoomButton" class="secondary">Change Room</button>
@@ -236,7 +362,10 @@
               <div><dt>Music state</dt><dd id="deviceMusicStateValue">off</dd></div>
               <div><dt>Phone remaining</dt><dd id="deviceMusicPhonePositionValue">--</dd></div>
               <div><dt>Game remaining</dt><dd id="deviceMusicTargetPositionValue">--</dd></div>
-              <div><dt>Music drift</dt><dd id="deviceMusicDriftValue">--</dd></div>
+              <div><dt>Target drift</dt><dd id="deviceMusicDriftValue">--</dd></div>
+              <div><dt>Phone play rate</dt><dd id="deviceMusicRateValue">--</dd></div>
+              <div><dt>Music file</dt><dd id="deviceMusicFileValue">--</dd></div>
+              <div><dt>Download</dt><dd id="deviceMusicDownloadValue">--</dd></div>
               <div><dt>Buffer</dt><dd id="deviceMusicReadyValue">--</dd></div>
             </dl>
           </section>
@@ -282,12 +411,23 @@
         </div>
       </div>
     </section>
-    <button type="button" id="lockBar" class="lock-bar">Lock Screen</button>
+    <div id="partyTurnOverlay" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+      <div class="modal party-turn-card">
+        <strong id="partyTurnTitle">Your turn</strong>
+        <p id="partyTurnText"></p>
+        <button type="button" id="partyTurnAckButton">OK</button>
+      </div>
+    </div>
+    <button type="button" id="lockBar" class="lock-bar hidden">Lock Screen</button>
     <div id="lockOverlay" class="lock-overlay hidden" aria-hidden="true">
-      <div class="lock-panel">
+      <div id="lockPanel" class="lock-panel">
         <div class="lock-title">Screen locked</div>
         <div id="lockRoomLabel" class="lock-meta">Room ---- - Mic -</div>
-        <div id="lockSongLabel" class="lock-meta">Song --:-- - Score --</div>
+        <div id="lockScoreLabel" class="lock-score">--</div>
+        <div id="lockSongLabel" class="lock-meta">Remaining --:--</div>
+        <div class="lock-progress" aria-hidden="true"><span id="lockProgressFill"></span></div>
+        <div id="lockProgressLabel" class="lock-meta">0%</div>
+        <div id="lockLyricsLabel" class="lock-lyrics hidden"></div>
         <div id="lockLevel" class="lock-level"><span></span></div>
         <div id="lockPitchLabel" class="lock-meta">Mic idle</div>
         <div id="unlockTrack" class="unlock-track">
@@ -297,7 +437,7 @@
         </div>
       </div>
     </div>
-    <div id="appVersion" class="app-version">v260430225000</div>
+    <div id="appVersion" class="app-version">v260505034500-browser-liked-songs</div>
     <script src="/app.js" type="module"></script>
   </body>
 </html>

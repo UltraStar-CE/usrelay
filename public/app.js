@@ -1,17 +1,45 @@
 const protocol = 1;
 const sessionKey = 'usdx.remote.session.v1';
 const nameKey = 'usdx.remote.name.v1';
+const difficultyModeKey = 'usdx.remote.difficultyMode.v1';
+const difficultyKey = 'usdx.remote.difficulty.v1';
+const avatarIdKey = 'usdx.remote.avatarId.v1';
+const avatarFileKey = 'usdx.remote.avatarFile.v1';
+const avatarDataUrlKey = 'usdx.remote.avatarDataUrl.v1';
+const likedSongsKey = 'usdx.remote.likedSongs.v1';
+const songLibraryCacheKey = 'usdx.remote.songLibrary.v1';
+const songLibraryDbName = 'usdx.remote.songLibrary';
+const songLibraryDbStore = 'libraries';
+const songLibraryDbRecord = 'current';
 const codeKey = 'usdx.remote.code.v1';
 const roomsKey = 'usdx.remote.rooms.v1';
+const lastMicSlotKey = 'usdx.remote.lastMicSlot.v1';
 const settingsKey = 'usdx.remote.settings.v1';
-const settingsVersion = 2;
+const settingsVersion = 3;
 const tabKey = 'usdx.remote.tab.v1';
-const appVersion = 'v260430225000';
+const appVersion = 'v260505034500-browser-liked-songs';
 const songPageSize = 80;
+const searchDebounceMinMs = 40;
+const searchDebounceMaxMs = 350;
+const slotSwitchCooldownMs = 200;
+const avatarCanvasMaxDimension = 512;
+const avatarUploadTargetBytes = 320 * 1024;
 const deviceMusicOutputLeadSec = 0;
-const deviceMusicHardSeekThresholdSec = 0.10;
-const deviceMusicSoftSyncThresholdSec = 0.025;
+const deviceMusicInitialLeadSec = 0.5;
+const deviceMusicNominalPlaybackRate = 1.0001;
+const deviceMusicHardSeekThresholdSec = 0.75;
+const deviceMusicSoftSyncThresholdSec = 0.010;
+const deviceMusicRateCurveScaleSec = 1.25;
+const deviceMusicMaxPlaybackRateDeviation = 0.50;
 const deviceMusicAnchorSnapThresholdSec = 0.30;
+const deviceMusicDecoderTimeoutMs = 3500;
+const deviceMusicDecoderMaxRetries = 3;
+const clockSampleWindowSize = 9;
+const maxPitchQueueAgeSec = 4.0;
+const songMediaDiscontinuityThresholdSec = 0.25;
+const pitchWorkletTimestampMaxFutureUs = 50_000;
+const pitchWorkletTimestampMaxStaleUs = 500_000;
+const pitchReportedInputLatencyMaxUs = 250_000;
 const state = {
   ws: null,
   roomId: null,
@@ -21,19 +49,58 @@ const state = {
   slot: null,
   role: null,
   name: null,
+  difficultyMode: 'free',
+  difficulty: 1,
+  avatarId: '',
+  avatarFile: '',
+  avatarUrl: null,
+  avatarDataUrl: '',
   songSeq: 0,
   gameState: 'waiting',
   currentSongMessage: null,
+  currentLyricsMessage: null,
+  lastGameStateSeq: 0,
   players: [],
   scoreSnapshot: null,
   playerScore: null,
   maxPlayers: 6,
   songSelect: null,
   songLibraryProgress: null,
+  songLibraryHash: '',
+  songLibraryCacheUsable: false,
+  songLibraryTransfer: null,
+  songCatalogRequestId: '',
+  songCatalogRequestedForRoom: '',
+  songCatalogInFlight: false,
+  songFullListRequestTimer: null,
+  songFullListLastRequestMs: 0,
+  songFullListRequestCount: 0,
+  songFullListRequestReason: '',
+  songCatalogManifest: null,
+  songCatalogRequestTimer: null,
+  songSelectStateUntilMs: 0,
   songFilterText: '',
+  songSearchField: 'all',
   songPage: 0,
   songPlaylistIndex: null,
+  songPlaylistKey: '',
+  showLikedSongsOnly: false,
+  localLikedSongIds: new Set(),
+  persistentLikedSongs: new Map(),
+  persistentLikedSongsVersion: 0,
+  persistentLikedSongIdsCache: { library: null, version: -1, ids: new Set() },
+  recentlyUnlikedSongKeys: new Map(),
+  lastPersistentLikeSyncKey: '',
+  partyLikePendingUntilMs: 0,
+  partyLikePendingTimer: null,
   songStateRequested: false,
+  renderSignatures: {},
+  lastSlotProfileSentMs: 0,
+  pendingSlot: null,
+  pendingPreviousSlot: null,
+  pendingSlotUntilMs: 0,
+  authoritativeSlot: null,
+  authoritativeSlotUntilMs: 0,
   playlistAutomation: {
     enabled: false,
     countdownSeconds: 15,
@@ -42,6 +109,19 @@ const state = {
     automationPhase: 'idle',
     statusText: 'Idle'
   },
+  party: {
+    enabled: false,
+    mode: 'matchmaking',
+    minPlayers: 2,
+    endless: false,
+    statusText: 'Idle',
+    likedSongs: [],
+    matches: [],
+    leaderboard: [],
+    likes: []
+  },
+  partySettingsDirty: false,
+  partySettingsPendingUntilMs: 0,
   playlistOverlayTarget: null,
   previewAudio: null,
   previewObjectUrl: null,
@@ -49,25 +129,63 @@ const state = {
   previewSlider: null,
   deviceMusicAudio: null,
   deviceMusicObjectUrl: null,
+  deviceMusicAbortController: null,
   deviceMusicTimer: null,
   deviceMusicRetryTimer: null,
+  deviceMusicRecoveryTimer: null,
   deviceMusicSyncTimer: null,
   deviceMusicSongSeq: null,
+  deviceMusicSongId: null,
+  deviceMusicInitialLeadUntilMs: 0,
+  deviceMusicInitialSeekPending: false,
+  deviceMusicFileLabel: null,
+  deviceMusicDownloadLoadedBytes: 0,
+  deviceMusicDownloadTotalBytes: null,
+  deviceMusicMediaInfo: null,
+  deviceMusicExtensionFallbacks: null,
+  deviceMusicStickyErrorText: null,
   deviceMusicBlocked: false,
   deviceMusicLastStateRequestMs: 0,
-  deviceMusicStreamOffsetSec: 0,
   deviceMusicPositionAnchorSec: null,
   deviceMusicPositionAnchorClientUs: null,
+  deviceMusicKey: null,
+  selectPreviewSongId: null,
+  selectPreviewAnchorSec: null,
+  selectPreviewAnchorClientUs: null,
+  selectPreviewAnchorExpiresMs: 0,
   hostSongStartUs: null,
   mediaStartUs: 0,
+  songDurationSec: null,
+  songMediaAnchorSec: null,
+  songMediaAnchorClientUs: null,
+  songMediaRate: 1,
+  lyricSyncPoints: [],
   commandId: 1,
   pendingCommands: new Map(),
   clientHeartbeatTimer: null,
   audioContext: null,
   audioContextPerfBaseUs: null,
+  micInputLatencyUs: 0,
   micStream: null,
   worklet: null,
+  audioSink: null,
   pitchBatch: [],
+  pitchQueue: [],
+  pitchVoteBucket: null,
+  pitchLastVotedTone: null,
+  pitchSeq: 0,
+  pitchLastDropped: 0,
+  pitchFramesCaptured: 0,
+  pitchFramesSent: 0,
+  pitchFramesDroppedStale: 0,
+  pitchLastFlushMs: 0,
+  pitchLastSentMs: 0,
+  pitchLastRelayFlushMs: 0,
+  pitchLastStatusMs: 0,
+  pitchLastUiMs: 0,
+  searchRenderTimer: null,
+  lastSearchRenderCostMs: 0,
+  pitchTimestampLagUs: null,
   settings: {
     noiseSuppression: false,
     echoCancellation: false,
@@ -76,51 +194,87 @@ const state = {
     lockMicBar: true,
     controlOnly: false,
     playMusicOnDevice: true,
-    playerDelayMs: 0,
+    targetDriftMs: 0,
+    micDelayMs: 0,
     settingsVersion
   },
   wakeLockHandle: null,
+  pageUnloading: false,
   clock: {
     offsetUs: 0,
     rttUs: null,
     jitterUs: null,
     confidence: 0,
     synced: false,
-    sent: new Map()
+    sent: new Map(),
+    samples: []
+  },
+  p2p: {
+    enabled: false,
+    iceServers: [],
+    pc: null,
+    dc: null,
+    attempt: 0,
+    connecting: false,
+    connected: false,
+    pendingCandidates: [],
+    reconnectTimer: null
   }
 };
 
 const $ = (id) => document.getElementById(id);
+const songSearchCache = new WeakMap();
+const songIdMapCache = new WeakMap();
+let songLibraryMemoryCache = null;
+let songLibraryDbPromise = null;
 const joinScreen = $('joinScreen');
 const appScreen = $('appScreen');
 const appVersionLabel = $('appVersion');
 const joinForm = $('joinForm');
 const codeInput = $('codeInput');
 const nameInput = $('nameInput');
-const controllerPasswordInput = $('controllerPasswordInput');
 const joinError = $('joinError');
 const recentRoomsSection = $('recentRoomsSection');
 const recentRooms = $('recentRooms');
 const gameStateLabel = $('gameStateLabel');
 const songSeqLabel = $('songSeqLabel');
 const playerList = $('playerList');
+const micPanel = $('micPanel');
 const micRoomCountLabel = $('micRoomCountLabel');
 const micRoomList = $('micRoomList');
+const micRoomHeader = micRoomCountLabel?.closest('.section-head');
+const micMeter = document.querySelector('#micPanel .meter');
+const micMetrics = document.querySelector('#micPanel .metrics');
 const slotButtons = $('slotButtons');
 const connectionState = $('connectionState');
+
+function keepJoinFieldAboveKeyboard(target) {
+  if (joinScreen.classList.contains('hidden')) return;
+  window.setTimeout(() => target.scrollIntoView({ block: 'center', inline: 'nearest' }), 80);
+  window.setTimeout(() => target.scrollIntoView({ block: 'center', inline: 'nearest' }), 320);
+}
 const eventLog = $('eventLog');
+const controlPanel = $('controlPanel');
 const controlStatus = $('controlStatus');
 const searchForm = $('searchForm');
+const searchFieldInput = $('searchFieldInput');
 const searchInput = $('searchInput');
+const clearSearchButton = $('clearSearchButton');
 const controlTextForm = $('controlTextForm');
 const controlTextInput = $('controlTextInput');
 const controlPlayerList = $('controlPlayerList');
 const songCountLabel = $('songCountLabel');
 const songLibraryLabel = $('songLibraryLabel');
+const songLibraryProgressWrap = $('songLibraryProgressWrap');
+const songLibraryProgressFill = $('songLibraryProgressFill');
+const songLibraryProgressText = $('songLibraryProgressText');
 const songResultList = $('songResultList');
 const songPager = $('songPager');
 const showAllSongsButton = $('showAllSongsButton');
 const addResultsButton = $('addResultsButton');
+const likeVisibleSongsButton = $('likeVisibleSongsButton');
+const showLikedSongsButton = $('showLikedSongsButton');
+const downloadSongsCsvButton = $('downloadSongsCsvButton');
 const playlistCountLabel = $('playlistCountLabel');
 const playlistList = $('playlistList');
 const playlistItemCountLabel = $('playlistItemCountLabel');
@@ -141,6 +295,31 @@ const playlistCountdownInput = $('playlistCountdownInput');
 const playlistAutomationToggleButton = $('playlistAutomationToggleButton');
 const playlistCountdownStartButton = $('playlistCountdownStartButton');
 const playlistNextButton = $('playlistNextButton');
+const pauseRestartButton = $('pauseRestartButton');
+const randomSongButton = document.querySelector('[data-command="song.random"]');
+const partyStatusLabel = $('partyStatusLabel');
+const partyStartButton = $('partyStartButton');
+const partyFindMatchButton = $('partyFindMatchButton');
+const partySkipButton = $('partySkipButton');
+const partyStopButton = $('partyStopButton');
+const partyMinPlayersInput = $('partyMinPlayersInput');
+const partyEndlessInput = $('partyEndlessInput');
+const partyCountdownInput = $('partyCountdownInput');
+const partySourceInput = $('partySourceInput');
+const partySaveButton = $('partySaveButton');
+const partyResetLeaderboardButton = $('partyResetLeaderboardButton');
+const partyUpvoteCountLabel = $('partyUpvoteCountLabel');
+const partyUpvoteList = $('partyUpvoteList');
+const partyMatchCountLabel = $('partyMatchCountLabel');
+const partyMatchList = $('partyMatchList');
+const partyPhaseLabel = $('partyPhaseLabel');
+const partyQueueList = $('partyQueueList');
+const partyLeaderboardList = $('partyLeaderboardList');
+const partyNotice = $('partyNotice');
+const partyTurnOverlay = $('partyTurnOverlay');
+const partyTurnTitle = $('partyTurnTitle');
+const partyTurnText = $('partyTurnText');
+const partyTurnAckButton = $('partyTurnAckButton');
 const micButton = $('micButton');
 const micStatus = $('micStatus');
 const noiseSuppressionInput = $('noiseSuppressionInput');
@@ -155,18 +334,31 @@ const deviceMusicStateValue = $('deviceMusicStateValue');
 const deviceMusicPhonePositionValue = $('deviceMusicPhonePositionValue');
 const deviceMusicTargetPositionValue = $('deviceMusicTargetPositionValue');
 const deviceMusicDriftValue = $('deviceMusicDriftValue');
+const deviceMusicRateValue = $('deviceMusicRateValue');
+const deviceMusicFileValue = $('deviceMusicFileValue');
+const deviceMusicDownloadValue = $('deviceMusicDownloadValue');
 const deviceMusicReadyValue = $('deviceMusicReadyValue');
 const nameChangeForm = $('nameChangeForm');
 const nameChangeInput = $('nameChangeInput');
+const difficultyModeInput = $('difficultyModeInput');
+const difficultyValueRow = $('difficultyValueRow');
+const difficultyInput = $('difficultyInput');
+const avatarPreview = $('avatarPreview');
+const avatarFileInput = $('avatarFileInput');
+const avatarCameraInput = $('avatarCameraInput');
+const avatarResetButton = $('avatarResetButton');
 const roomSettingsLabel = $('roomSettingsLabel');
 const changeRoomButton = $('changeRoomButton');
-const delayInput = $('delayInput');
-const delayMinusButton = $('delayMinusButton');
-const delayPlusButton = $('delayPlusButton');
-const delayValueLabel = $('delayValueLabel');
+const targetDriftInput = $('targetDriftInput');
+const targetDriftMinusButton = $('targetDriftMinusButton');
+const targetDriftPlusButton = $('targetDriftPlusButton');
+const targetDriftValueLabel = $('targetDriftValueLabel');
+const micDelayInput = $('micDelayInput');
+const micDelayMinusButton = $('micDelayMinusButton');
+const micDelayPlusButton = $('micDelayPlusButton');
+const micDelayValueLabel = $('micDelayValueLabel');
 const controllerStatusLabel = $('controllerStatusLabel');
 const controllerRoleForm = $('controllerRoleForm');
-const controllerRolePasswordInput = $('controllerRolePasswordInput');
 const releaseControllerButton = $('releaseControllerButton');
 const capacityInput = $('capacityInput');
 const capacityValueLabel = $('capacityValueLabel');
@@ -185,13 +377,28 @@ const processingValue = $('processingValue');
 const toggleDebugButton = $('toggleDebugButton');
 const lockBar = $('lockBar');
 const lockOverlay = $('lockOverlay');
+const lockPanel = $('lockPanel');
 const lockRoomLabel = $('lockRoomLabel');
 const lockSongLabel = $('lockSongLabel');
+const lockScoreLabel = $('lockScoreLabel');
+const lockProgressFill = $('lockProgressFill');
+const lockProgressLabel = $('lockProgressLabel');
+const lockLyricsLabel = $('lockLyricsLabel');
 const lockLevel = $('lockLevel');
 const lockPitchLabel = $('lockPitchLabel');
+const micLyricsPanel = $('micLyricsPanel');
 const unlockTrack = $('unlockTrack');
 const unlockFill = $('unlockFill');
 const unlockHandle = $('unlockHandle');
+
+function setRoomScreenVisible(visible) {
+  joinScreen.classList.toggle('hidden', visible);
+  appScreen.classList.toggle('hidden', !visible);
+  lockBar.classList.toggle('hidden', !visible);
+  if (!visible && lockOverlay && !lockOverlay.classList.contains('hidden')) {
+    closeLockScreen();
+  }
+}
 
 appVersionLabel.textContent = appVersion;
 
@@ -250,13 +457,268 @@ function loadSettings() {
           : (Object.prototype.hasOwnProperty.call(saved, 'playMusicOnDevice')
             ? Boolean(saved.playMusicOnDevice)
             : true),
-        playerDelayMs: clampDelayMs(saved.playerDelayMs),
+        targetDriftMs: clampDelayMs(saved.targetDriftMs),
+        micDelayMs: clampDelayMs(saved.micDelayMs ?? saved.playerDelayMs),
         settingsVersion
       });
     }
   } catch {
     // Keep defaults when older or invalid settings are stored.
   }
+}
+
+function songLibraryCacheMetadata() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(songLibraryCacheKey) || 'null');
+    return cached && cached.hash ? cached : null;
+  } catch {
+    localStorage.removeItem(songLibraryCacheKey);
+    return null;
+  }
+}
+
+function openSongLibraryDb() {
+  if (!window.indexedDB) return Promise.resolve(null);
+  if (songLibraryDbPromise) return songLibraryDbPromise;
+  songLibraryDbPromise = new Promise((resolve) => {
+    const request = indexedDB.open(songLibraryDbName, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(songLibraryDbStore)) db.createObjectStore(songLibraryDbStore, { keyPath: 'id' });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+    request.onblocked = () => resolve(null);
+  });
+  return songLibraryDbPromise;
+}
+
+async function loadCachedSongLibrary(expectedHash = '') {
+  if (songLibraryMemoryCache?.hash && Array.isArray(songLibraryMemoryCache.library)) {
+    if (!expectedHash || songLibraryMemoryCache.hash === expectedHash) return songLibraryMemoryCache;
+  }
+
+  const db = await openSongLibraryDb();
+  if (db) {
+    const record = await new Promise((resolve) => {
+      const tx = db.transaction(songLibraryDbStore, 'readonly');
+      const request = tx.objectStore(songLibraryDbStore).get(songLibraryDbRecord);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => resolve(null);
+    });
+    if (record?.hash && Array.isArray(record.library) && (!expectedHash || record.hash === expectedHash)) {
+      songLibraryMemoryCache = record;
+      return record;
+    }
+  }
+
+  try {
+    const cached = JSON.parse(localStorage.getItem(songLibraryCacheKey) || 'null');
+    if (!cached?.hash || !Array.isArray(cached.library) || (expectedHash && cached.hash !== expectedHash)) return null;
+    songLibraryMemoryCache = cached;
+    saveCachedSongLibrary(cached.hash, cached.library);
+    return cached;
+  } catch {
+    localStorage.removeItem(songLibraryCacheKey);
+    return null;
+  }
+}
+
+async function saveCachedSongLibrary(hash, library) {
+  if (!hash || !Array.isArray(library) || !library.length) return;
+  const record = {
+    id: songLibraryDbRecord,
+    hash,
+    storedAt: new Date().toISOString(),
+    library
+  };
+  songLibraryMemoryCache = record;
+  let stored = false;
+  const db = await openSongLibraryDb();
+  if (db) {
+    stored = await new Promise((resolve) => {
+      const tx = db.transaction(songLibraryDbStore, 'readwrite');
+      tx.objectStore(songLibraryDbStore).put(record);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+      tx.onabort = () => resolve(false);
+    });
+  }
+  try {
+    localStorage.setItem(songLibraryCacheKey, JSON.stringify({ hash, storedAt: record.storedAt }));
+  } catch {
+    // IndexedDB is the durable cache; localStorage only keeps the small hash hint.
+  }
+  state.songLibraryCacheUsable = stored;
+  if (state.roomId) {
+    send({ type: 'song.library.cached', songLibraryHash: hash });
+    send({ type: 'catalog.ready', catalogId: hash, songLibraryHash: hash, songCount: library.length });
+  }
+}
+
+function cachedSongLibraryHash() {
+  return songLibraryMemoryCache?.hash || songLibraryCacheMetadata()?.hash || '';
+}
+
+function normalizeLikedSongText(value) {
+  let text = String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+  try {
+    text = text.normalize('NFKC');
+  } catch {}
+  return text.replace(/\s+/g, ' ').toLocaleLowerCase();
+}
+
+function persistentSongLikeKey(song = {}) {
+  const artist = normalizeLikedSongText(song.artist);
+  const title = normalizeLikedSongText(song.title);
+  if (!artist && !title) return '';
+  return `${artist}\u0000${title}`;
+}
+
+function displayLikedSongText(value, maxLength = 180) {
+  return String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
+function loadPersistentLikedSongs() {
+  state.persistentLikedSongs = new Map();
+  try {
+    const parsed = JSON.parse(localStorage.getItem(likedSongsKey) || 'null');
+    const songs = Array.isArray(parsed?.songs) ? parsed.songs : (Array.isArray(parsed) ? parsed : []);
+    for (const raw of songs) {
+      const key = String(raw?.key || persistentSongLikeKey(raw));
+      if (!key) continue;
+      state.persistentLikedSongs.set(key, {
+        key,
+        artist: displayLikedSongText(raw.artist),
+        title: displayLikedSongText(raw.title),
+        likedAt: String(raw.likedAt || raw.updatedAt || new Date().toISOString()),
+        updatedAt: String(raw.updatedAt || raw.likedAt || new Date().toISOString())
+      });
+    }
+  } catch {
+    localStorage.removeItem(likedSongsKey);
+  }
+  state.persistentLikedSongsVersion += 1;
+  state.persistentLikedSongIdsCache = { library: null, version: -1, ids: new Set() };
+}
+
+function savePersistentLikedSongs() {
+  const songs = [...state.persistentLikedSongs.values()]
+    .sort((a, b) => `${a.artist}\u0000${a.title}`.localeCompare(`${b.artist}\u0000${b.title}`));
+  try {
+    localStorage.setItem(likedSongsKey, JSON.stringify({
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      songs
+    }));
+  } catch {
+    if (partyNotice) partyNotice.textContent = 'This browser could not save all liked songs.';
+  }
+}
+
+function invalidatePersistentLikedSongCache() {
+  state.persistentLikedSongsVersion += 1;
+  state.persistentLikedSongIdsCache = { library: null, version: -1, ids: new Set() };
+  state.lastPersistentLikeSyncKey = '';
+}
+
+function cleanupRecentlyUnlikedSongKeys() {
+  const now = Date.now();
+  for (const [key, expiresAt] of state.recentlyUnlikedSongKeys) {
+    if (Number(expiresAt || 0) <= now) state.recentlyUnlikedSongKeys.delete(key);
+  }
+}
+
+function rememberPersistentLikedSong(song, options = {}) {
+  const key = persistentSongLikeKey(song);
+  if (!key) return false;
+  cleanupRecentlyUnlikedSongKeys();
+  if (!options.force && state.recentlyUnlikedSongKeys.has(key)) return false;
+  const existing = state.persistentLikedSongs.get(key);
+  if (existing && !options.force && existing.artist && existing.title) return false;
+  const now = new Date().toISOString();
+  state.persistentLikedSongs.set(key, {
+    key,
+    artist: displayLikedSongText(song.artist || existing?.artist),
+    title: displayLikedSongText(song.title || existing?.title),
+    likedAt: existing?.likedAt || now,
+    updatedAt: now
+  });
+  state.recentlyUnlikedSongKeys.delete(key);
+  invalidatePersistentLikedSongCache();
+  if (options.save !== false) savePersistentLikedSongs();
+  return true;
+}
+
+function forgetPersistentLikedSong(song, options = {}) {
+  const key = persistentSongLikeKey(song);
+  if (!key) return false;
+  const deleted = state.persistentLikedSongs.delete(key);
+  state.recentlyUnlikedSongKeys.set(key, Date.now() + 30_000);
+  invalidatePersistentLikedSongCache();
+  if (deleted && options.save !== false) savePersistentLikedSongs();
+  return deleted;
+}
+
+function currentSongLibrary() {
+  return Array.isArray(state.songSelect?.library) ? state.songSelect.library : [];
+}
+
+function songById(songId) {
+  const id = Number(songId);
+  if (!Number.isInteger(id) || id < 0) return null;
+  const library = currentSongLibrary();
+  return songLibraryById(library).get(id) || null;
+}
+
+function persistentLikedSongIdsForLibrary(library = currentSongLibrary()) {
+  if (!Array.isArray(library) || !library.length || !state.persistentLikedSongs.size) return new Set();
+  const cache = state.persistentLikedSongIdsCache;
+  if (cache.library === library && cache.version === state.persistentLikedSongsVersion) {
+    return new Set(cache.ids);
+  }
+  const ids = new Set();
+  for (const song of library) {
+    const key = persistentSongLikeKey(song);
+    const songId = Number(song?.songId);
+    if (key && state.persistentLikedSongs.has(key) && Number.isInteger(songId) && songId >= 0) ids.add(songId);
+  }
+  state.persistentLikedSongIdsCache = { library, version: state.persistentLikedSongsVersion, ids };
+  return new Set(ids);
+}
+
+function persistentLikedSongsForCurrentCatalog() {
+  const songs = [];
+  for (const song of currentSongLibrary()) {
+    const key = persistentSongLikeKey(song);
+    const songId = Number(song?.songId);
+    if (!key || !state.persistentLikedSongs.has(key) || !Number.isInteger(songId) || songId < 0) continue;
+    songs.push({
+      songId,
+      title: song.title || '',
+      artist: song.artist || ''
+    });
+  }
+  return songs;
+}
+
+function syncPersistentLikesToBridge(reason = 'persistent-likes') {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !state.playerId) return false;
+  const songs = persistentLikedSongsForCurrentCatalog();
+  if (!songs.length) return false;
+  const syncKey = [
+    state.roomId || '',
+    state.songLibraryHash || '',
+    state.persistentLikedSongsVersion,
+    songs.length
+  ].join(':');
+  if (state.lastPersistentLikeSyncKey === syncKey) return false;
+  state.lastPersistentLikeSyncKey = syncKey;
+  for (let offset = 0; offset < songs.length; offset += 500) {
+    send({ type: 'party.likeShown', songs: songs.slice(offset, offset + 500) });
+  }
+  clientLog('party.likes.synced', { reason, songs: songs.length });
+  return true;
 }
 
 function saveSettings() {
@@ -269,6 +731,223 @@ function clampDelayMs(value) {
   return Math.max(-500, Math.min(500, Math.round(number / 10) * 10));
 }
 
+function sanitizeDifficultyMode(value) {
+  const mode = String(value || '').toLowerCase();
+  return ['easy', 'medium', 'hard', 'free'].includes(mode) ? mode : 'free';
+}
+
+function sanitizeDifficulty(value, mode = state.difficultyMode) {
+  const fixed = { easy: 0, medium: 1, hard: 2 };
+  const cleanMode = sanitizeDifficultyMode(mode);
+  if (Object.prototype.hasOwnProperty.call(fixed, cleanMode)) return fixed[cleanMode];
+  const number = Math.round(Number(value));
+  if (!Number.isFinite(number)) return 1;
+  return Math.max(0, Math.min(2, number));
+}
+
+function difficultyLabel(value) {
+  return ['Easy', 'Medium', 'Hard'][sanitizeDifficulty(value, 'free')] || 'Medium';
+}
+
+function avatarSource(avatarFile, avatarUrl) {
+  if (avatarUrl) return avatarUrl;
+  if (!avatarFile) return '';
+  return `/avatars/${encodeURIComponent(avatarFile)}`;
+}
+
+function setTextIfChanged(element, text) {
+  if (!element) return;
+  const next = String(text);
+  if (element.textContent !== next) element.textContent = next;
+}
+
+function playerUiSignature(player = {}) {
+  return [
+    player.playerId || '',
+    player.name || '',
+    Number(player.slot || 0),
+    player.role || '',
+    player.connected === false ? 0 : 1,
+    player.difficultyMode || '',
+    Number(player.difficulty ?? 1),
+    player.avatarFile || '',
+    player.avatarUrl || ''
+  ].join(':');
+}
+
+function playersUiSignature(players = []) {
+  return players.map(playerUiSignature).join('|');
+}
+
+function liveUiPlayers(players = state.players) {
+  return (Array.isArray(players) ? players : [])
+    .filter((player) => player && player.connected !== false && player.playerId)
+    .slice()
+    .sort((a, b) =>
+      (Number(a.slot || 0) - Number(b.slot || 0)) ||
+      String(a.name || '').localeCompare(String(b.name || '')) ||
+      String(a.playerId || '').localeCompare(String(b.playerId || ''))
+    );
+}
+
+function shouldRenderSignature(key, signature) {
+  const next = String(signature);
+  if (state.renderSignatures[key] === next) return false;
+  state.renderSignatures[key] = next;
+  return true;
+}
+
+function ownAvatarSource() {
+  return state.avatarDataUrl || avatarSource(state.avatarFile, state.avatarUrl);
+}
+
+function currentProfile(nameOverride = null) {
+  const mode = sanitizeDifficultyMode(state.difficultyMode);
+  return {
+    name: String(nameOverride ?? state.name ?? nameInput.value ?? '').trim().slice(0, 24) || 'Singer',
+    difficultyMode: mode,
+    difficulty: sanitizeDifficulty(state.difficulty, mode),
+    avatarId: state.avatarId || '',
+    avatarFile: state.avatarFile || ''
+  };
+}
+
+function saveProfile() {
+  const profile = currentProfile();
+  state.name = profile.name;
+  state.difficultyMode = profile.difficultyMode;
+  state.difficulty = profile.difficulty;
+  try {
+    if (state.name) localStorage.setItem(nameKey, state.name);
+    localStorage.setItem(difficultyModeKey, state.difficultyMode);
+    localStorage.setItem(difficultyKey, String(state.difficulty));
+    if (state.avatarId) localStorage.setItem(avatarIdKey, state.avatarId);
+    else localStorage.removeItem(avatarIdKey);
+    if (state.avatarFile) localStorage.setItem(avatarFileKey, state.avatarFile);
+    else localStorage.removeItem(avatarFileKey);
+    if (state.avatarDataUrl) localStorage.setItem(avatarDataUrlKey, state.avatarDataUrl);
+    else localStorage.removeItem(avatarDataUrlKey);
+  } catch {
+    localStorage.removeItem(avatarDataUrlKey);
+  }
+}
+
+function loadProfile() {
+  state.name = localStorage.getItem(nameKey) || state.name || '';
+  state.difficultyMode = sanitizeDifficultyMode(localStorage.getItem(difficultyModeKey) || 'free');
+  state.difficulty = sanitizeDifficulty(localStorage.getItem(difficultyKey), state.difficultyMode);
+  state.avatarId = localStorage.getItem(avatarIdKey) || '';
+  state.avatarFile = localStorage.getItem(avatarFileKey) || '';
+  state.avatarDataUrl = localStorage.getItem(avatarDataUrlKey) || '';
+  state.avatarUrl = avatarSource(state.avatarFile);
+}
+
+async function resolveStoredAvatar() {
+  if (!state.avatarId || state.avatarFile) return;
+  try {
+    const response = await fetch(`/api/avatar/${encodeURIComponent(state.avatarId)}`, {
+      cache: 'no-store',
+      headers: { accept: 'application/json' }
+    });
+    if (!response.ok) return;
+    const info = await response.json();
+    if (info?.avatarId !== state.avatarId || !info.avatarFile) return;
+    state.avatarFile = info.avatarFile;
+    state.avatarUrl = avatarSource(info.avatarFile, info.avatarUrl);
+    saveProfile();
+    renderProfileControls();
+  } catch {
+    // The cached avatar id is optional; failed lookup just falls back to the default preview.
+  }
+}
+
+function mergeProfileIntoPlayer(player, profile = {}) {
+  if (!player || typeof player !== 'object') return player;
+  if (profile.name !== undefined) player.name = profile.name;
+  if (profile.difficultyMode !== undefined) player.difficultyMode = sanitizeDifficultyMode(profile.difficultyMode);
+  if (profile.difficulty !== undefined) player.difficulty = sanitizeDifficulty(profile.difficulty, player.difficultyMode);
+  if (profile.difficultyLabel !== undefined) player.difficultyLabel = profile.difficultyLabel;
+  if (profile.avatarId !== undefined) player.avatarId = profile.avatarId || '';
+  if (profile.avatarFile !== undefined) player.avatarFile = profile.avatarFile || '';
+  if (profile.avatarUrl !== undefined) player.avatarUrl = profile.avatarUrl || avatarSource(player.avatarFile);
+  return player;
+}
+
+function applyOwnProfileFromMessage(message = {}) {
+  if (message.name !== undefined) state.name = message.name || state.name || '';
+  if (message.difficultyMode !== undefined) state.difficultyMode = sanitizeDifficultyMode(message.difficultyMode);
+  if (message.difficulty !== undefined) state.difficulty = sanitizeDifficulty(message.difficulty, state.difficultyMode);
+  if (message.avatarId !== undefined) state.avatarId = message.avatarId || '';
+  if (message.avatarFile !== undefined) state.avatarFile = message.avatarFile || '';
+  state.avatarUrl = avatarSource(state.avatarFile, message.avatarUrl);
+  saveProfile();
+  renderProfileControls();
+}
+
+async function ensureCachedAvatarOnServer() {
+  if (!state.avatarDataUrl) return;
+  if (state.avatarId) {
+    try {
+      const response = await fetch(`/api/avatar/${encodeURIComponent(state.avatarId)}`, {
+        cache: 'no-store',
+        headers: { accept: 'application/json' }
+      });
+      if (response.ok) {
+        const info = await response.json();
+        if (info?.avatarFile) {
+          state.avatarFile = info.avatarFile;
+          state.avatarUrl = avatarSource(info.avatarFile, info.avatarUrl);
+          saveProfile();
+          renderProfileControls();
+          return;
+        }
+      }
+    } catch {
+      // Fall through and restore via upload when the room connection is available.
+    }
+  }
+  send({ type: 'avatar.upload', avatarId: state.avatarId || undefined, dataUrl: state.avatarDataUrl });
+}
+
+function renderProfileControls() {
+  if (nameChangeInput) nameChangeInput.value = state.name || nameInput.value || '';
+  if (difficultyModeInput) difficultyModeInput.value = sanitizeDifficultyMode(state.difficultyMode);
+  if (difficultyInput) difficultyInput.value = String(sanitizeDifficulty(state.difficulty, 'free'));
+  if (difficultyValueRow) difficultyValueRow.classList.toggle('hidden', sanitizeDifficultyMode(state.difficultyMode) !== 'free');
+  const src = ownAvatarSource();
+  if (avatarPreview) {
+    avatarPreview.classList.toggle('hidden', !src);
+    if (src) avatarPreview.src = src;
+  }
+}
+
+function micRoomsUnlocked() {
+  return Boolean(state.settings.controlOnly)
+    || Boolean(state.micStream && state.audioContext && state.audioContext.state === 'running');
+}
+
+function renderMicEntryFlow() {
+  const unlocked = micRoomsUnlocked();
+  const starting = Boolean(state.audioContext && !state.micStream);
+  micPanel?.classList.toggle('mic-entry-locked', !unlocked);
+  micRoomHeader?.classList.remove('hidden');
+  micRoomList?.classList.remove('hidden');
+  slotButtons?.classList.remove('hidden');
+  micMeter?.classList.remove('hidden');
+  micMetrics?.classList.remove('hidden');
+  if (micButton) {
+    micButton.classList.toggle('hidden', unlocked);
+    micButton.disabled = starting || Boolean(state.settings.controlOnly);
+    if (!unlocked) micButton.textContent = starting ? 'Starting Mic...' : 'Start Mic';
+  }
+}
+
+function sendProfileUpdate() {
+  saveProfile();
+  renderProfileControls();
+  send({ type: 'player.profile.update', profile: currentProfile() });
+}
+
 function renderSettings() {
   noiseSuppressionInput.checked = state.settings.noiseSuppression;
   echoCancellationInput.checked = state.settings.echoCancellation;
@@ -278,9 +957,12 @@ function renderSettings() {
   controlOnlyInput.checked = state.settings.controlOnly;
   playMusicOnDeviceInput.checked = state.settings.playMusicOnDevice;
   nameChangeInput.value = state.name || nameInput.value || '';
-  delayInput.value = String(state.settings.playerDelayMs);
-  delayValueLabel.textContent = `${state.settings.playerDelayMs} ms`;
-  micButton.disabled = Boolean(state.audioContext || state.settings.controlOnly);
+  renderProfileControls();
+  targetDriftInput.value = String(state.settings.targetDriftMs);
+  targetDriftValueLabel.textContent = `${state.settings.targetDriftMs} ms`;
+  micDelayInput.value = String(state.settings.micDelayMs);
+  micDelayValueLabel.textContent = `${state.settings.micDelayMs} ms`;
+  renderMicEntryFlow();
   if (state.settings.controlOnly && !state.audioContext) {
     micStatus.textContent = 'Control-only mode is enabled in Settings.';
   }
@@ -294,7 +976,9 @@ function persistSettings() {
     type: 'settings.update',
     settings: {
       settingsVersion,
-      playerDelayMs: state.settings.playerDelayMs,
+      targetDriftMs: state.settings.targetDriftMs,
+      micDelayMs: state.settings.micDelayMs,
+      playerDelayMs: state.settings.micDelayMs,
       controlOnly: state.settings.controlOnly,
       playMusicOnDevice: state.settings.playMusicOnDevice,
       audio: {
@@ -329,14 +1013,40 @@ async function applyWakeLock() {
 
 function saveSession() {
   if (!state.displayCode || !state.playerId || !state.playerToken) return;
+  saveProfile();
   localStorage.setItem(sessionKey, JSON.stringify({
     displayCode: state.displayCode,
     name: state.name || nameInput.value || '',
+    difficultyMode: state.difficultyMode,
+    difficulty: state.difficulty,
+    avatarId: state.avatarId || '',
+    avatarFile: state.avatarFile || '',
     playerId: state.playerId,
-    playerToken: state.playerToken
+    playerToken: state.playerToken,
+    slot: Number(state.slot || 0)
   }));
-  if (state.name) localStorage.setItem(nameKey, state.name);
   if (state.displayCode) localStorage.setItem(codeKey, state.displayCode);
+  rememberLastMicSlot(state.slot);
+}
+
+function saveSessionForReload() {
+  try {
+    if (state.displayCode) localStorage.setItem(codeKey, state.displayCode);
+    saveSession();
+  } catch {
+    // Reload persistence is best-effort; never block page unload.
+  }
+}
+
+function rememberLastMicSlot(slot) {
+  const value = Number(slot);
+  if (!Number.isInteger(value) || value <= 0) return;
+  localStorage.setItem(lastMicSlotKey, String(value));
+}
+
+function loadLastMicSlot() {
+  const value = Number(localStorage.getItem(lastMicSlotKey) || 0);
+  return Number.isInteger(value) && value > 0 ? value : null;
 }
 
 function clearSession() {
@@ -361,6 +1071,17 @@ function stopClientHeartbeat() {
   }
 }
 
+function clearSongFullListRequestTimer() {
+  if (state.songFullListRequestTimer) {
+    window.clearTimeout(state.songFullListRequestTimer);
+    state.songFullListRequestTimer = null;
+  }
+  if (state.songCatalogRequestTimer) {
+    window.clearTimeout(state.songCatalogRequestTimer);
+    state.songCatalogRequestTimer = null;
+  }
+}
+
 function startClientHeartbeat() {
   stopClientHeartbeat();
   state.clientHeartbeatTimer = setInterval(() => {
@@ -369,52 +1090,67 @@ function startClientHeartbeat() {
 }
 
 function leaveClosedRoom(reason = 'Room closed') {
+  closeP2p(false);
+  const ws = state.ws;
+  state.ws = null;
+  if (ws && ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
+    ws.close();
+  }
   stopClientHeartbeat();
+  clearSongFullListRequestTimer();
   stopDeviceMusic('Device music stopped: game disconnected.');
   state.hostSongStartUs = null;
   state.mediaStartUs = 0;
+  state.songDurationSec = null;
+  resetSongMediaClock();
+  clearPitchQueue('Microphone queue reset: room disconnected.');
   state.currentSongMessage = null;
+  state.lastGameStateSeq = 0;
+  for (const pending of state.pendingCommands.values()) {
+    if (pending.timeoutId) window.clearTimeout(pending.timeoutId);
+    clearButtonFeedback(pending.button);
+  }
+  state.pendingCommands.clear();
+  state.players = [];
+  state.slot = null;
+  state.role = null;
+  state.scoreSnapshot = null;
+  state.playerScore = null;
   state.gameState = 'waiting';
+  state.renderSignatures = {};
   clearStoredRoom();
-  joinScreen.classList.remove('hidden');
-  appScreen.classList.add('hidden');
+  codeInput.value = '';
+  renderConnectionState();
+  setRoomScreenVisible(false);
   joinError.textContent = reason;
 }
 
 function showJoinScreenForRoomChange() {
+  closeP2p(true);
   if (state.ws) {
     state.ws.close();
     state.ws = null;
   }
   stopClientHeartbeat();
+  clearSongFullListRequestTimer();
   clearSession();
+  state.renderSignatures = {};
   codeInput.value = state.displayCode || localStorage.getItem(codeKey) || codeInput.value || '';
   nameInput.value = state.name || localStorage.getItem(nameKey) || nameInput.value || '';
-  appScreen.classList.add('hidden');
-  joinScreen.classList.remove('hidden');
+  setRoomScreenVisible(false);
   joinError.textContent = '';
 }
 
 function loadRecentRooms() {
-  try {
-    const rooms = JSON.parse(localStorage.getItem(roomsKey) || '[]');
-    return Array.isArray(rooms) ? rooms : [];
-  } catch {
-    return [];
-  }
+  return [];
 }
 
 function saveRecentRooms(rooms) {
-  localStorage.setItem(roomsKey, JSON.stringify(rooms.slice(0, 8)));
+  localStorage.removeItem(roomsKey);
 }
 
 function rememberRecentRoom(displayCode, name) {
-  const code = String(displayCode || '').toUpperCase().replace(/[^A-Z2-9]/g, '').slice(0, 4);
-  if (code.length !== 4) return;
-  const cleanName = String(name || '').trim();
-  const rooms = loadRecentRooms().filter((room) => room.displayCode !== code);
-  rooms.unshift({ displayCode: code, name: cleanName, updatedAt: Date.now() });
-  saveRecentRooms(rooms);
+  localStorage.removeItem(roomsKey);
   renderRecentRooms();
 }
 
@@ -444,17 +1180,247 @@ function renderRecentRooms() {
 }
 
 function saveJoinDraft(displayCode, name) {
-  const code = String(displayCode || '').toUpperCase().replace(/[^A-Z2-9]/g, '').slice(0, 4);
   const cleanName = String(name || '').trim();
-  if (code) localStorage.setItem(codeKey, code);
   if (cleanName) localStorage.setItem(nameKey, cleanName);
-  if (code.length === 4) rememberRecentRoom(code, cleanName);
+  localStorage.removeItem(roomsKey);
 }
 
-function send(message) {
+const p2pDirectTypes = new Set(['pitch.batch', 'clock.sync.ping']);
+
+function clientLog(event, data = {}) {
+  const payload = JSON.stringify({
+    event,
+    data: {
+      appVersion,
+      roomId: state.roomId || '',
+      playerId: state.playerId || '',
+      slot: state.slot ?? '',
+      role: state.role || '',
+      p2pConnected: Boolean(state.p2p.connected),
+      ...data
+    }
+  });
+  try {
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon('/api/client-log', new Blob([payload], { type: 'application/json' }));
+      return;
+    }
+  } catch {
+    // Fall back to fetch below.
+  }
+  fetch('/api/client-log', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: payload,
+    keepalive: true
+  }).catch(() => {});
+}
+
+function renderConnectionState() {
+  if (!connectionState) return;
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+    connectionState.textContent = 'disconnected';
+    return;
+  }
+  connectionState.textContent = state.p2p.connected ? 'connected direct' : 'connected relay';
+}
+
+function sendRelay(message) {
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return false;
   state.ws.send(JSON.stringify({ protocol, roomId: state.roomId, playerId: state.playerId, ...message }));
   return true;
+}
+
+function sendDirect(message) {
+  const dc = state.p2p.dc;
+  if (!dc || dc.readyState !== 'open') return false;
+  try {
+    dc.send(JSON.stringify({ protocol, roomId: state.roomId, playerId: state.playerId, ...message }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function send(message) {
+  if (p2pDirectTypes.has(message.type) && sendDirect(message)) return true;
+  return sendRelay(message);
+}
+
+function shortRequestId(prefix = 'req') {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function closeP2p(notify = false) {
+  if (state.p2p.reconnectTimer) window.clearTimeout(state.p2p.reconnectTimer);
+  state.p2p.reconnectTimer = null;
+  const dc = state.p2p.dc;
+  const pc = state.p2p.pc;
+  state.p2p.dc = null;
+  state.p2p.pc = null;
+  state.p2p.connecting = false;
+  state.p2p.connected = false;
+  state.p2p.pendingCandidates = [];
+  if (notify && state.roomId) sendRelay({ type: 'p2p.close', attempt: state.p2p.attempt });
+  try { dc?.close(); } catch {}
+  try { pc?.close(); } catch {}
+  renderConnectionState();
+}
+
+function scheduleP2pReconnect() {
+  if (!state.p2p.enabled || !state.roomId || state.p2p.reconnectTimer) return;
+  state.p2p.connected = false;
+  state.p2p.connecting = false;
+  renderConnectionState();
+  state.p2p.reconnectTimer = window.setTimeout(() => {
+    state.p2p.reconnectTimer = null;
+    startP2p();
+  }, 2000);
+}
+
+function p2pCandidatePayload(candidate) {
+  if (!candidate) return null;
+  if (typeof candidate.toJSON === 'function') return candidate.toJSON();
+  return {
+    candidate: candidate.candidate,
+    sdpMid: candidate.sdpMid,
+    sdpMLineIndex: candidate.sdpMLineIndex
+  };
+}
+
+function attachP2pDataChannel(dc, attempt) {
+  state.p2p.dc = dc;
+  dc.addEventListener('open', () => {
+    if (state.p2p.attempt !== attempt) return;
+    state.p2p.connecting = false;
+    state.p2p.connected = true;
+    renderConnectionState();
+    logLine('direct channel open');
+  });
+  dc.addEventListener('close', () => {
+    if (state.p2p.attempt !== attempt) return;
+    state.p2p.connected = false;
+    renderConnectionState();
+    scheduleP2pReconnect();
+  });
+  dc.addEventListener('error', () => {
+    if (state.p2p.attempt !== attempt) return;
+    state.p2p.connected = false;
+    renderConnectionState();
+  });
+  dc.addEventListener('message', (event) => {
+    try {
+      handleMessage(JSON.parse(event.data)).catch((error) => {
+        clientLog('direct.message.error', { error: error?.message || String(error) });
+      });
+    } catch {
+      logLine('bad direct message');
+    }
+  });
+}
+
+async function drainP2pCandidates() {
+  const pc = state.p2p.pc;
+  if (!pc || !pc.remoteDescription) return;
+  const pending = state.p2p.pendingCandidates.splice(0);
+  for (const candidate of pending) {
+    try {
+      await pc.addIceCandidate(candidate);
+    } catch {
+      // Stale candidates are expected after reconnect attempts.
+    }
+  }
+}
+
+async function handleP2pSignal(message) {
+  const pc = state.p2p.pc;
+  if (!pc) return;
+  if (Number(message.attempt || 0) && Number(message.attempt) !== state.p2p.attempt) return;
+
+  if (message.type === 'p2p.answer') {
+    const description = message.description || { type: message.descriptionType || message.sdpType || 'answer', sdp: message.sdp };
+    if (!description.sdp) return;
+    try {
+      await pc.setRemoteDescription(description);
+      await drainP2pCandidates();
+    } catch (error) {
+      logLine(`direct answer failed: ${error.message || 'error'}`);
+      scheduleP2pReconnect();
+    }
+    return;
+  }
+
+  if (message.type === 'p2p.ice') {
+    const candidate = message.candidate && typeof message.candidate === 'object'
+      ? message.candidate
+      : {
+          candidate: message.candidate,
+          sdpMid: message.sdpMid || message.mid,
+          sdpMLineIndex: message.sdpMLineIndex
+        };
+    if (!candidate.candidate) return;
+    if (!pc.remoteDescription) {
+      state.p2p.pendingCandidates.push(candidate);
+      return;
+    }
+    try {
+      await pc.addIceCandidate(candidate);
+    } catch {
+      // Ignore stale candidates from older network paths.
+    }
+    return;
+  }
+
+  if (message.type === 'p2p.error') {
+    logLine(`direct failed: ${message.code || message.reason || 'error'}`);
+    scheduleP2pReconnect();
+  }
+}
+
+async function startP2p() {
+  if (!state.p2p.enabled || !state.roomId || state.p2p.connecting || state.p2p.connected) return;
+  const PeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+  if (!PeerConnection) {
+    state.p2p.enabled = false;
+    renderConnectionState();
+    return;
+  }
+
+  closeP2p(false);
+  const attempt = state.p2p.attempt + 1;
+  state.p2p.attempt = attempt;
+  state.p2p.connecting = true;
+  try {
+    const pc = new PeerConnection({ iceServers: state.p2p.iceServers || [] });
+    state.p2p.pc = pc;
+    pc.addEventListener('icecandidate', (event) => {
+      const candidate = p2pCandidatePayload(event.candidate);
+      if (candidate) sendRelay({ type: 'p2p.ice', attempt, candidate });
+    });
+    pc.addEventListener('connectionstatechange', () => {
+      if (state.p2p.attempt !== attempt) return;
+      if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) scheduleP2pReconnect();
+    });
+    pc.addEventListener('iceconnectionstatechange', () => {
+      if (state.p2p.attempt !== attempt) return;
+      if (['failed', 'closed', 'disconnected'].includes(pc.iceConnectionState)) scheduleP2pReconnect();
+    });
+    attachP2pDataChannel(pc.createDataChannel('usdx-remote', { ordered: true }), attempt);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    sendRelay({
+      type: 'p2p.offer',
+      attempt,
+      description: {
+        type: pc.localDescription.type,
+        sdp: pc.localDescription.sdp
+      }
+    });
+    renderConnectionState();
+  } catch (error) {
+    logLine(`direct setup failed: ${error.message || 'error'}`);
+    closeP2p(false);
+  }
 }
 
 function clearButtonFeedback(button) {
@@ -503,12 +1469,53 @@ function markFireAndForgetButton(button, sent) {
   flashButtonFeedback(button, sent ? 'feedback-sent' : 'feedback-error', sent ? 420 : 900);
 }
 
+function displaySlot() {
+  const now = performance.now();
+  return state.pendingSlot != null && now < Number(state.pendingSlotUntilMs || 0)
+    ? Number(state.pendingSlot)
+    : Number(state.slot);
+}
+
 function updateIdentity() {
-  roomSettingsLabel.textContent = `Room ${state.displayCode || '----'} - ${slotLabelText(state.slot)} - ${state.role || '-'}`;
-  lockRoomLabel.textContent = `Room ${state.displayCode || '----'} - ${slotLabelText(state.slot)}`;
-  controllerStatusLabel.textContent = `role: ${state.role || '-'}`;
-  releaseControllerButton.disabled = state.role !== 'controller';
+  const slot = displaySlot();
+  setTextIfChanged(roomSettingsLabel, `Room ${state.displayCode || '----'} - ${slotLabelText(slot)} - ${state.role || '-'}`);
+  setTextIfChanged(controllerStatusLabel, 'all players can control');
+  if (releaseControllerButton) {
+    releaseControllerButton.disabled = true;
+    releaseControllerButton.classList.add('hidden');
+  }
+  if (controllerRoleForm) controllerRoleForm.classList.add('hidden');
+  renderLockIdentity();
   renderCapacityControl();
+}
+
+function renderPauseRestartButton() {
+  const paused = state.gameState === 'paused';
+  const singing = state.gameState === 'singing';
+  const singMode = singing || paused;
+  const signature = `${state.gameState || ''}|${paused ? 1 : 0}|${singing ? 1 : 0}|${singMode ? 1 : 0}`;
+  if (!shouldRenderSignature('pauseRestart', signature)) return;
+  if (pauseRestartButton) {
+    setTextIfChanged(pauseRestartButton, paused ? 'Resume' : 'Pause');
+    pauseRestartButton.dataset.command = paused ? 'game.resume' : 'game.pause';
+    pauseRestartButton.classList.toggle('state-paused', paused);
+  }
+  if (randomSongButton) {
+    setTextIfChanged(randomSongButton, singMode ? 'Restart' : 'Random');
+    randomSongButton.dataset.command = singMode ? 'song.restart' : 'song.random';
+  }
+}
+
+function renderLockIdentity() {
+  if (!lockRoomLabel) return;
+  const slot = displaySlot();
+  const colorClass = slotColorClass(slot);
+  lockRoomLabel.textContent = `Room ${state.displayCode || '----'} - ${slotLabelText(slot)}`;
+  if (lockPanel) {
+    lockPanel.classList.remove(...slotColorClasses.filter(Boolean), 'mic-lobby');
+    lockPanel.classList.add(colorClass);
+  }
+  renderLockLyrics();
 }
 
 function formatSongPosition(seconds) {
@@ -526,14 +1533,182 @@ function formatRemainingPosition(seconds) {
   return `-${formatSongPosition(remaining)}`;
 }
 
+function noteSongDurationFromMessage(message = {}) {
+  const durationUs = Number(message.durationUs);
+  const durationSec = Number(message.durationSec ?? message.songDurationSec);
+  let nextDuration = null;
+  if (Number.isFinite(durationUs) && durationUs > 0) nextDuration = durationUs / 1_000_000;
+  else if (Number.isFinite(durationSec) && durationSec > 0) nextDuration = durationSec;
+  if (nextDuration != null) state.songDurationSec = nextDuration;
+}
+
+function activeSongDurationSec() {
+  const audio = state.deviceMusicAudio;
+  if (audio && Number.isFinite(audio.duration) && audio.duration > 0) return audio.duration;
+  const duration = Number(state.songDurationSec);
+  return Number.isFinite(duration) && duration > 0 ? duration : null;
+}
+
+function currentSongProgressSnapshot(clientUs = clientNowUs()) {
+  const position = state.hostSongStartUs ? currentSongPositionSec(clientUs) : null;
+  const duration = activeSongDurationSec();
+  const remaining = position != null && duration != null
+    ? Math.max(0, duration - Math.max(0, position))
+    : null;
+  const progress = position != null && duration != null && duration > 0
+    ? Math.max(0, Math.min(1, Math.max(0, position) / duration))
+    : 0;
+  return { position, duration, remaining, progress };
+}
+
+function currentLyricsEntry() {
+  const message = state.currentLyricsMessage;
+  if (!message || Number(message.songSeq || state.songSeq || 0) !== Number(state.songSeq || 0)) return null;
+
+  const tracks = Array.isArray(message.tracks) ? message.tracks : [];
+  if (!tracks.length) {
+    const text = String(message.text || '').trim();
+    return text ? { text, notes: [] } : null;
+  }
+
+  const slot = Number(state.slot);
+  const preferredTrack = tracks.length > 1 && Number.isFinite(slot) && slot > 0
+    ? (slot - 1) % tracks.length
+    : 0;
+  return tracks.find((track) => Number(track.track) === preferredTrack) || tracks[0] || null;
+}
+
+function selectedLyricsTrack(message = state.currentLyricsMessage) {
+  if (!message) return null;
+  const tracks = Array.isArray(message.tracks) ? message.tracks : [];
+  if (!tracks.length) return null;
+  const slot = Number(state.slot);
+  const preferredTrack = tracks.length > 1 && Number.isFinite(slot) && slot > 0
+    ? (slot - 1) % tracks.length
+    : 0;
+  return tracks.find((track) => Number(track.track) === preferredTrack) || tracks[0] || null;
+}
+
+function currentLyricsText() {
+  const entry = currentLyricsEntry();
+  return entry ? String(entry.text || '').trim() : '';
+}
+
+function lyricNoteTiming(note) {
+  const startUs = Number(note.startUs);
+  const endUs = Number(note.endUs);
+  return {
+    startUs,
+    endUs: Number.isFinite(endUs) && endUs > startUs ? endUs : startUs + 1
+  };
+}
+
+function activeLyricIndex(notes, songUs) {
+  if (!Number.isFinite(songUs)) return -1;
+  let previous = -1;
+  let previousDistance = Number.POSITIVE_INFINITY;
+  let next = -1;
+  let nextDistance = Number.POSITIVE_INFINITY;
+
+  for (let index = 0; index < notes.length; index += 1) {
+    const { startUs, endUs } = lyricNoteTiming(notes[index]);
+    if (!Number.isFinite(startUs) || !Number.isFinite(endUs)) continue;
+    if (songUs >= startUs && songUs < endUs) return index;
+    if (songUs >= endUs && songUs - endUs < previousDistance) {
+      previous = index;
+      previousDistance = songUs - endUs;
+    }
+    if (songUs < startUs && startUs - songUs < nextDistance) {
+      next = index;
+      nextDistance = startUs - songUs;
+    }
+  }
+
+  if (previous >= 0 && previousDistance <= 250_000) return previous;
+  if (next >= 0 && nextDistance <= 120_000) return next;
+  return -1;
+}
+
+function classifyLyricNote(note, index, activeIndex, songUs) {
+  const { startUs, endUs } = lyricNoteTiming(note);
+  if (index === activeIndex) return 'current';
+  if (!Number.isFinite(songUs) || !Number.isFinite(startUs) || !Number.isFinite(endUs)) return 'upcoming';
+  if (songUs >= endUs) return 'past';
+  return 'upcoming';
+}
+
+function lyricProgress(note, songUs) {
+  const { startUs, endUs } = lyricNoteTiming(note);
+  if (!Number.isFinite(songUs) || !Number.isFinite(startUs) || !Number.isFinite(endUs)) return 0;
+  return Math.max(0, Math.min(1, (songUs - startUs) / Math.max(1, endUs - startUs)));
+}
+
+function renderLyricsInto(container, entry, songUs) {
+  if (!container) return;
+  const text = String(entry?.text || '').trim();
+  const notes = Array.isArray(entry?.notes) ? entry.notes : [];
+  const activeIndex = activeLyricIndex(notes, songUs);
+  container.replaceChildren();
+
+  if (notes.length) {
+    for (let index = 0; index < notes.length; index += 1) {
+      const note = notes[index];
+      const syllable = String(note.text || '');
+      if (!syllable) continue;
+      const span = document.createElement('span');
+      span.className = `lyric-syllable ${classifyLyricNote(note, index, activeIndex, songUs)}`;
+      if (index === activeIndex) span.style.setProperty('--lyric-progress', `${Math.round(lyricProgress(note, songUs) * 100)}%`);
+      span.textContent = syllable;
+      container.append(span);
+    }
+  } else if (text) {
+    const span = document.createElement('span');
+    span.className = 'lyric-syllable upcoming';
+    span.textContent = text;
+    container.append(span);
+  }
+
+  container.classList.toggle('hidden', !container.textContent.trim());
+}
+
+function renderRemoteLyrics() {
+  applyLyricSyncPoint();
+  const entry = currentLyricsEntry();
+  const songPosition = currentSongPositionSec();
+  const songUs = songPosition == null ? null : Math.round(songPosition * 1_000_000);
+  renderLyricsInto(lockLyricsLabel, entry, songUs);
+  renderLyricsInto(micLyricsPanel, entry, songUs);
+}
+
+function renderLockLyrics() {
+  renderRemoteLyrics();
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return '--';
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+  if (value >= 1024) return `${Math.round(value / 1024)} KB`;
+  return `${Math.round(value)} B`;
+}
+
 function updateSongProgressView() {
-  const position = state.hostSongStartUs ? currentSongPositionSec() : null;
+  const progressState = currentSongProgressSnapshot();
+  const position = progressState.position;
   songPositionValue.textContent = position == null ? (state.hostSongStartUs ? 'syncing' : '--') : formatSongPosition(position);
   const score = Number(state.playerScore);
   playerScoreValue.textContent = Number.isFinite(score) ? String(score) : '--';
+  renderLockIdentity();
+  if (lockScoreLabel) lockScoreLabel.textContent = Number.isFinite(score) ? String(score) : '--';
   if (lockSongLabel) {
-    lockSongLabel.textContent = `Song ${position == null ? (state.hostSongStartUs ? 'syncing' : '--:--') : formatSongPosition(position)} - Score ${Number.isFinite(score) ? score : '--'}`;
+    const remainingText = progressState.remaining == null
+      ? (position == null ? (state.hostSongStartUs ? 'syncing' : '--:--') : formatSongPosition(position))
+      : formatRemainingPosition(progressState.remaining);
+    lockSongLabel.textContent = `Remaining ${remainingText}`;
   }
+  if (lockProgressFill) lockProgressFill.style.width = `${Math.round(progressState.progress * 1000) / 10}%`;
+  if (lockProgressLabel) lockProgressLabel.textContent = progressState.duration == null ? 'Progress --' : `${Math.round(progressState.progress * 100)}%`;
+  renderLockLyrics();
 }
 
 function renderLockLevel(level, label) {
@@ -546,42 +1721,346 @@ function renderLockLevel(level, label) {
 
 function renderCapacityControl() {
   const maxPlayers = Math.max(1, Math.min(12, Number(state.maxPlayers || 6)));
+  const signature = `${maxPlayers}|${state.role || ''}`;
+  if (!shouldRenderSignature('capacityControl', signature)) return;
   capacityInput.value = String(maxPlayers);
   capacityInput.disabled = state.role !== 'controller';
-  capacityValueLabel.textContent = `${maxPlayers} ${maxPlayers === 1 ? 'slot' : 'slots'}`;
-  capacityStatus.textContent = state.role === 'controller'
-    ? 'Changing this updates available remote mic rooms for the active room.'
-    : 'Acquire controller to change available remote mic rooms.';
+  setTextIfChanged(capacityValueLabel, `${maxPlayers} ${maxPlayers === 1 ? 'slot' : 'slots'}`);
+  setTextIfChanged(capacityStatus, 'Changing this updates available remote mic rooms for the active room.');
 }
 
 function renderPlaylistAutomation() {
+  if (!playlistAutomationStatus || !playlistCountdownInput || !playlistAutomationToggleButton || !playlistCountdownStartButton || !playlistNextButton) return;
   const automation = state.playlistAutomation || {};
   const seconds = Math.max(1, Math.min(120, Number(automation.countdownSeconds || playlistCountdownInput.value || 15)));
   const remaining = Math.max(0, Number(automation.countdownRemaining || 0));
   const controller = state.role === 'controller';
-  playlistAutomationStatus.textContent = automation.enabled ? 'Enabled' : 'Disabled';
-  playlistCountdownLabel.textContent = `${seconds} s`;
-  playlistCountdownState.textContent = automation.countdownActive
+  const signature = [
+    automation.enabled ? 1 : 0,
+    seconds,
+    automation.countdownActive ? 1 : 0,
+    remaining,
+    automation.statusText || '',
+    controller ? 1 : 0
+  ].join('|');
+  if (!shouldRenderSignature('playlistAutomation', signature)) return;
+  setTextIfChanged(playlistAutomationStatus, automation.enabled ? 'Enabled' : 'Disabled');
+  setTextIfChanged(playlistCountdownLabel, `${seconds} s`);
+  setTextIfChanged(playlistCountdownState, automation.countdownActive
     ? `${remaining} s remaining`
-    : (automation.statusText || 'Idle');
+    : (automation.statusText || 'Idle'));
   if (document.activeElement !== playlistCountdownInput) playlistCountdownInput.value = String(seconds);
-  playlistAutomationToggleButton.textContent = automation.enabled ? 'Disable' : 'Enable';
+  setTextIfChanged(playlistAutomationToggleButton, automation.enabled ? 'Disable' : 'Enable');
   playlistAutomationToggleButton.disabled = !controller;
   playlistCountdownStartButton.disabled = !controller;
   playlistNextButton.disabled = !controller;
 }
 
+function playerLikedSong(songId) {
+  const id = Number(songId);
+  if (ownLikedSongIds().has(id)) return true;
+  return false;
+}
+
+function ownLikedSongIds() {
+  const ids = persistentLikedSongIdsForLibrary();
+  for (const songId of state.localLikedSongIds || []) {
+    const id = Number(songId);
+    if (Number.isInteger(id) && id >= 0) ids.add(id);
+  }
+  if (performance.now() < Number(state.partyLikePendingUntilMs || 0)) return ids;
+  for (const songId of bridgeOwnLikedSongIds()) ids.add(songId);
+  return ids;
+}
+
+function bridgeOwnLikedSongIds() {
+  const ids = new Set();
+  const likedByPlayer = state.party?.likedSongIdsByPlayer;
+  if (likedByPlayer && typeof likedByPlayer === 'object') {
+    const ownIds = Array.isArray(likedByPlayer[state.playerId]) ? likedByPlayer[state.playerId] : [];
+    for (const songId of ownIds) {
+      const id = Number(songId);
+      if (Number.isInteger(id) && id >= 0) ids.add(id);
+    }
+    return ids;
+  }
+  const likedSongs = Array.isArray(state.party?.likedSongs) ? state.party.likedSongs : [];
+  for (const song of likedSongs) {
+    if (!song?.likedBy?.some?.((player) => player.playerId === state.playerId)) continue;
+    const id = Number(song.songId);
+    if (Number.isInteger(id) && id >= 0) ids.add(id);
+  }
+  return ids;
+}
+
+function syncLocalLikedSongsFromParty() {
+  if (performance.now() < Number(state.partyLikePendingUntilMs || 0)) return;
+  const liked = persistentLikedSongIdsForLibrary();
+  let imported = false;
+  for (const songId of bridgeOwnLikedSongIds()) {
+    liked.add(songId);
+    const song = songById(songId);
+    if (song && rememberPersistentLikedSong(song, { save: false })) imported = true;
+  }
+  state.localLikedSongIds = liked;
+  if (imported) savePersistentLikedSongs();
+}
+
+function holdLocalPartyLikes() {
+  state.partyLikePendingUntilMs = performance.now() + 3000;
+  if (state.partyLikePendingTimer) window.clearTimeout(state.partyLikePendingTimer);
+  state.partyLikePendingTimer = window.setTimeout(() => {
+    state.partyLikePendingTimer = null;
+    state.partyLikePendingUntilMs = 0;
+    syncLocalLikedSongsFromParty();
+    scheduleSongSelectRender();
+    renderPartyState();
+  }, 3200);
+}
+
+function sendPartyLikeSong(song, sourceButton = null) {
+  const songId = Number(song?.songId);
+  if (!Number.isInteger(songId) || songId < 0) {
+    markFireAndForgetButton(sourceButton, false);
+    if (partyNotice) partyNotice.textContent = 'No song selected to like.';
+    return;
+  }
+  const liked = playerLikedSong(songId);
+  const songForStorage = songById(songId) || song;
+  if (liked) {
+    state.localLikedSongIds.delete(songId);
+    forgetPersistentLikedSong(songForStorage);
+  } else {
+    state.localLikedSongIds.add(songId);
+    rememberPersistentLikedSong(songForStorage, { force: true });
+  }
+  holdLocalPartyLikes();
+  scheduleSongSelectRender();
+  renderPartyState();
+  const ok = send({
+    type: liked ? 'party.unlike' : 'party.like',
+    songId,
+    title: song.title || '',
+    artist: song.artist || ''
+  });
+  markFireAndForgetButton(sourceButton, ok);
+}
+
+function sendPartyLikeMatchedSongs(sourceButton = null) {
+  const songs = visibleSongResults()
+    .map((song) => ({
+      songId: Number(song.songId),
+      title: song.title || '',
+      artist: song.artist || ''
+    }))
+    .filter((song) => Number.isInteger(song.songId) && song.songId >= 0 && !playerLikedSong(song.songId));
+  if (!songs.length) {
+    markFireAndForgetButton(sourceButton, false);
+    if (partyNotice) partyNotice.textContent = 'All matching songs are already liked.';
+    return;
+  }
+  for (const song of songs) {
+    state.localLikedSongIds.add(Number(song.songId));
+    rememberPersistentLikedSong(songById(song.songId) || song, { force: true, save: false });
+  }
+  savePersistentLikedSongs();
+  holdLocalPartyLikes();
+  scheduleSongSelectRender();
+  renderPartyState();
+  const ok = send({ type: 'party.likeShown', songs });
+  markFireAndForgetButton(sourceButton, ok);
+  if (partyNotice) partyNotice.textContent = ok
+    ? `Liked ${songs.length} matching songs.`
+    : `Saved ${songs.length} likes on this phone; reconnect to sync party mode.`;
+}
+
+function partyPhaseText(party) {
+  const phase = String(party.phase || (party.enabled ? 'collecting_votes' : 'off'));
+  const labels = {
+    off: 'Off',
+    collecting_votes: 'Collecting votes',
+    calling_players: 'Calling players',
+    singing: 'Singing',
+    scoring: 'Scoring',
+    next_countdown: 'Next song countdown'
+  };
+  const base = labels[phase] || phase.replace(/_/g, ' ');
+  const deadlineMs = Date.parse(party.countdownDeadlineAt || '');
+  const remaining = Number.isFinite(deadlineMs)
+    ? Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1000))
+    : Number(party.countdownRemaining || 0);
+  return phase === 'next_countdown' && remaining > 0 ? `${base} (${remaining}s)` : base;
+}
+
+function partySongLine(song) {
+  return [song?.artist || '', song?.title || '(untitled)'].filter(Boolean).join(' - ');
+}
+
+function appendPartyQueueItem(list, match, prefix) {
+  const item = document.createElement('li');
+  const label = document.createElement('div');
+  const title = document.createElement('strong');
+  const meta = document.createElement('span');
+  const badge = document.createElement('strong');
+  const likedBy = Array.isArray(match?.likedBy)
+    ? match.likedBy.map((player) => player.name).filter(Boolean).slice(0, 6).join(', ')
+    : '';
+  title.textContent = `${prefix}: ${partySongLine(match)}`;
+  meta.textContent = [
+    likedBy ? `players: ${likedBy}` : (match?.random ? 'random endless pick' : ''),
+    Number(match?.neededLikes || 0) > 0 ? `${Number(match.neededLikes)} more needed` : ''
+  ].filter(Boolean).join(' - ');
+  badge.textContent = match?.random ? 'random' : `${Number(match?.likedByCount || match?.likedBy?.length || 0)} likes`;
+  label.append(title, meta);
+  item.append(label, badge);
+  list.append(item);
+}
+
+function renderPartyState() {
+  const party = state.party || {};
+  const likedSongs = Array.isArray(party.likedSongs) ? party.likedSongs : [];
+  const matches = Array.isArray(party.matches) ? party.matches : [];
+  const leaderboard = Array.isArray(party.leaderboard) ? party.leaderboard : [];
+  const formLocked = Boolean(state.partySettingsDirty) || Date.now() < Number(state.partySettingsPendingUntilMs || 0);
+  if (partyStatusLabel) partyStatusLabel.textContent = party.statusText || (party.enabled ? 'Running' : 'Idle');
+  if (partyMinPlayersInput && !formLocked && document.activeElement !== partyMinPlayersInput) {
+    partyMinPlayersInput.value = String(Math.max(2, Math.min(12, Number(party.minPlayers || 2))));
+  }
+  if (partyEndlessInput && !formLocked) partyEndlessInput.checked = Boolean(party.endless);
+  if (partyCountdownInput && !formLocked && document.activeElement !== partyCountdownInput) {
+    partyCountdownInput.value = String(Math.max(1, Math.min(120, Number(party.countdownSeconds || 15))));
+  }
+  if (partySourceInput && !formLocked && document.activeElement !== partySourceInput) {
+    partySourceInput.value = party.source === 'playlist' ? 'playlist' : 'all';
+  }
+  const partyReady = Boolean(state.roomId);
+  if (partyStartButton) partyStartButton.disabled = !partyReady;
+  if (partyFindMatchButton) partyFindMatchButton.disabled = !partyReady || !party.enabled;
+  if (partyStopButton) partyStopButton.disabled = !partyReady || !party.enabled;
+  if (partySaveButton) partySaveButton.disabled = !partyReady;
+  if (partySkipButton) partySkipButton.disabled = !partyReady;
+  if (partyResetLeaderboardButton) partyResetLeaderboardButton.disabled = !partyReady;
+  const likedSongsTotal = Number.isFinite(Number(party.likedSongsTotal)) ? Number(party.likedSongsTotal) : likedSongs.length;
+  const matchesTotal = Number.isFinite(Number(party.matchesTotal)) ? Number(party.matchesTotal) : matches.length;
+  if (partyUpvoteCountLabel) partyUpvoteCountLabel.textContent = `${likedSongsTotal}`;
+  if (partyMatchCountLabel) partyMatchCountLabel.textContent = `${matchesTotal}`;
+  if (partyPhaseLabel) partyPhaseLabel.textContent = partyPhaseText(party);
+  if (partyNotice && party.notice) partyNotice.textContent = party.notice;
+
+  if (partyQueueList) {
+    const queue = Array.isArray(party.queue) ? party.queue : [];
+    partyQueueList.replaceChildren();
+    if (party.currentMatch) appendPartyQueueItem(partyQueueList, party.currentMatch, 'Now');
+    queue.slice(0, 8).forEach((match, index) => appendPartyQueueItem(partyQueueList, match, `Next ${index + 1}`));
+    if (!party.currentMatch && !queue.length) {
+      const item = document.createElement('li');
+      item.className = 'empty-player';
+      item.textContent = party.enabled ? 'Waiting for matching votes' : 'Party mode is stopped';
+      partyQueueList.append(item);
+    }
+  }
+
+  if (partyUpvoteList) {
+    partyUpvoteList.replaceChildren();
+    if (!likedSongs.length) {
+      const item = document.createElement('li');
+      item.className = 'empty-player';
+      item.textContent = 'No song upvotes yet';
+      partyUpvoteList.append(item);
+    } else {
+      for (const song of likedSongs.slice(0, 30)) {
+        const item = document.createElement('li');
+        const label = document.createElement('div');
+        const title = document.createElement('strong');
+        const meta = document.createElement('span');
+        const badge = document.createElement('strong');
+        const names = Array.isArray(song.likedBy)
+          ? song.likedBy.map((player) => player.name).filter(Boolean).slice(0, 5).join(', ')
+          : '';
+        title.textContent = song.title || '(untitled)';
+        meta.textContent = [
+          song.artist || '',
+          names ? `liked by ${names}` : ''
+        ].filter(Boolean).join(' - ');
+        badge.textContent = song.matched
+          ? `${Number(song.likedByCount || 0)} ready`
+          : `${Number(song.likedByCount || 0)} +${Number(song.neededLikes || 0)}`;
+        label.append(title, meta);
+        item.append(label, badge);
+        partyUpvoteList.append(item);
+      }
+    }
+  }
+
+  if (partyMatchList) {
+    partyMatchList.replaceChildren();
+    if (!matches.length) {
+      const item = document.createElement('li');
+      item.className = 'empty-player';
+      item.textContent = 'No matching liked songs yet';
+      partyMatchList.append(item);
+    } else {
+      for (const match of matches.slice(0, 20)) {
+        const item = document.createElement('li');
+        const label = document.createElement('div');
+        const title = document.createElement('strong');
+        const meta = document.createElement('span');
+        title.textContent = match.title || '(untitled)';
+        meta.textContent = `${match.artist || ''}${match.artist ? ' - ' : ''}${Number(match.likedByCount || 0)} likes`;
+        label.append(title, meta);
+        item.append(label);
+        partyMatchList.append(item);
+      }
+    }
+  }
+
+  if (partyLeaderboardList) {
+    partyLeaderboardList.replaceChildren();
+    if (!leaderboard.length) {
+      const item = document.createElement('li');
+      item.className = 'empty-player';
+      item.textContent = 'No scores yet';
+      partyLeaderboardList.append(item);
+    } else {
+      for (const entry of leaderboard.slice(0, 20)) {
+        const item = document.createElement('li');
+        const label = document.createElement('div');
+        const name = document.createElement('strong');
+        const meta = document.createElement('span');
+        const score = document.createElement('strong');
+        name.textContent = entry.name || 'Player';
+        meta.textContent = `${entry.rounds || 0} rounds`;
+        score.textContent = String(entry.points || 0);
+        label.append(name, meta);
+        item.append(label, score);
+        partyLeaderboardList.append(item);
+      }
+    }
+  }
+}
+
 function updateGameStateView() {
-  gameStateLabel.textContent = state.gameState || 'waiting';
-  songSeqLabel.textContent = String(state.songSeq || 0);
+  setTextIfChanged(gameStateLabel, state.gameState || 'waiting');
+  setTextIfChanged(songSeqLabel, state.songSeq || 0);
   updateSongProgressView();
+  renderMicEntryFlow();
   renderCapacityControl();
   renderPlaylistAutomation();
+  renderPauseRestartButton();
   renderMicRooms();
   renderControlPlayers();
 
-  playerList.replaceChildren();
   const players = Array.isArray(state.players) ? state.players : [];
+  const signature = [
+    playersUiSignature(players),
+    Number(state.maxPlayers || 6),
+    Number(displaySlot() || 0),
+    state.role || '',
+    state.playerId || ''
+  ].join('|');
+  if (!shouldRenderSignature('playerList', signature)) return;
+
+  playerList.replaceChildren();
   if (!players.length) {
     const item = document.createElement('li');
     item.className = 'empty-player';
@@ -608,7 +2087,14 @@ function updateGameStateView() {
 
 function renderControlPlayers() {
   if (!controlPlayerList) return;
-  const players = Array.isArray(state.players) ? state.players : [];
+  const players = liveUiPlayers();
+  const signature = [
+    state.role || '',
+    state.playerId || '',
+    playersUiSignature(players)
+  ].join('|');
+  if (!shouldRenderSignature('controlPlayers', signature)) return;
+
   controlPlayerList.replaceChildren();
   if (!players.length) {
     const empty = document.createElement('div');
@@ -625,38 +2111,96 @@ function renderControlPlayers() {
     const meta = document.createElement('span');
     row.className = `control-player ${slotColorClass(player.slot)}`;
     name.textContent = player.name || 'Player';
-    meta.textContent = `${slotLabelText(player.slot)} - ${player.role || 'viewer'}${player.connected === false ? ' - offline' : ''}`;
+    meta.textContent = `${slotLabelText(player.slot)} - ${player.role || 'viewer'}`;
     label.append(name, meta);
     row.append(label);
 
     if (state.role === 'controller' && player.playerId !== state.playerId) {
       const actions = document.createElement('div');
-      const role = document.createElement('button');
       const kick = document.createElement('button');
       actions.className = 'inline-actions';
-      role.type = 'button';
-      role.textContent = player.role === 'controller' ? 'Revoke' : 'Grant';
-      role.addEventListener('click', () => sendRoleMessage('player.setRole', {
-        targetPlayerId: player.playerId,
-        role: player.role === 'controller' ? 'singer' : 'controller'
-      }, role));
       kick.type = 'button';
       kick.textContent = 'Kick';
       kick.addEventListener('click', () => sendControl('player.kick', { playerId: player.playerId }, kick));
-      actions.append(role, kick);
+      actions.append(kick);
       row.append(actions);
     }
     controlPlayerList.append(row);
   }
 }
 
+function createRoomAvatar(player, slot) {
+  const src = avatarSource(player?.avatarFile, player?.avatarUrl);
+  if (src) {
+    const image = document.createElement('img');
+    image.className = 'room-avatar';
+    image.alt = '';
+    image.src = src;
+    image.loading = 'lazy';
+    return image;
+  }
+  const placeholder = document.createElement('span');
+  placeholder.className = 'room-avatar avatar-placeholder';
+  placeholder.textContent = Number(slot) > 0 ? String(slot) : '-';
+  return placeholder;
+}
+
+function autoStartMicForSlot(slot) {
+  if (Number(slot) <= 0 || state.audioContext || state.settings.controlOnly) return;
+  startMic().catch((error) => {
+    if (micStatus) micStatus.textContent = error?.message || 'Microphone failed';
+  });
+}
+
+function sendSlotProfile(slot, sourceButton) {
+  const now = performance.now();
+  const requestedSlot = Number(slot);
+  if (requestedSlot !== Number(state.slot) && now - Number(state.lastSlotProfileSentMs || 0) < slotSwitchCooldownMs) {
+    markFireAndForgetButton(sourceButton, false);
+    if (micStatus) micStatus.textContent = 'Wait a moment before switching mic rooms again.';
+    return false;
+  }
+  if (requestedSlot !== Number(state.slot)) state.lastSlotProfileSentMs = now;
+  const ok = send({
+    type: 'player.slotProfile.set',
+    slot: requestedSlot,
+    profile: currentProfile()
+  });
+  if (ok && requestedSlot !== Number(state.slot)) {
+    state.pendingPreviousSlot = state.slot;
+    state.pendingSlot = requestedSlot;
+    state.pendingSlotUntilMs = performance.now() + 2500;
+    state.slot = requestedSlot;
+    const self = state.players.find((player) => player.playerId === state.playerId);
+    if (self) self.slot = requestedSlot;
+    rememberLastMicSlot(requestedSlot);
+    if (micStatus) micStatus.textContent = requestedSlot > 0 ? `Mic ${requestedSlot} selected.` : 'Lobby selected.';
+    updateIdentity();
+    updateGameStateView();
+  } else if (!ok && micStatus) {
+    micStatus.textContent = 'Not connected to the relay; reconnect to switch mic rooms.';
+  }
+  if (ok) autoStartMicForSlot(requestedSlot);
+  markFireAndForgetButton(sourceButton, ok);
+  return ok;
+}
+
 function renderMicRooms() {
   if (!micRoomList) return;
   const maxPlayers = Math.max(1, Math.min(12, Number(state.maxPlayers || 6)));
   const players = Array.isArray(state.players) ? state.players : [];
+  const shownSlot = displaySlot();
+  const signature = [
+    maxPlayers,
+    shownSlot,
+    state.playerId || '',
+    playersUiSignature(players)
+  ].join('|');
+  if (!shouldRenderSignature('micRooms', signature)) return;
+
   micRoomList.replaceChildren();
   const assigned = players.filter((player) => Number(player.slot) > 0).length;
-  micRoomCountLabel.textContent = `${assigned}/${maxPlayers} mics`;
+  setTextIfChanged(micRoomCountLabel, `${assigned}/${maxPlayers} mics`);
 
   const lobbyOccupants = players.filter((player) => Number(player.slot) <= 0);
   const lobbyButton = document.createElement('button');
@@ -664,7 +2208,8 @@ function renderMicRooms() {
   const lobbyMeta = document.createElement('span');
   lobbyButton.type = 'button';
   lobbyButton.className = 'mic-room mic-lobby lobby-room';
-  if (Number(state.slot) <= 0) lobbyButton.classList.add('active-room');
+  lobbyButton.dataset.slot = '0';
+  if (shownSlot <= 0) lobbyButton.classList.add('active-room');
   lobbyTitle.textContent = 'Lobby';
   lobbyMeta.className = lobbyOccupants.length ? 'lobby-names' : 'lobby-empty';
   if (lobbyOccupants.length) {
@@ -677,29 +2222,31 @@ function renderMicRooms() {
     lobbyMeta.textContent = 'No one in lobby';
   }
   lobbyButton.append(lobbyTitle, lobbyMeta);
-  lobbyButton.addEventListener('click', () => {
-    markFireAndForgetButton(lobbyButton, send({ type: 'player.requestSlot', slot: 0 }));
-  });
   micRoomList.append(lobbyButton);
 
   for (let slot = 1; slot <= maxPlayers; slot += 1) {
-    const occupant = players.find((player) => Number(player.slot) === slot);
+    const occupant = players.find((player) => Number(player.slot) === slot && player.connected !== false)
+      || players.find((player) => Number(player.slot) === slot && player.playerId === state.playerId);
     const button = document.createElement('button');
     const title = document.createElement('strong');
     const meta = document.createElement('span');
+    const metaWrap = document.createElement('span');
     button.type = 'button';
     button.className = `mic-room ${slotColorClass(slot)}`;
-    if (Number(state.slot) === slot) button.classList.add('active-room');
-    if (occupant) button.classList.add('occupied');
-    button.disabled = Boolean(occupant && occupant.playerId !== state.playerId);
+    button.dataset.slot = String(slot);
+    if (shownSlot === slot) button.classList.add('active-room');
+    const occupiedByOther = Boolean(occupant && occupant.connected !== false && occupant.playerId !== state.playerId);
+    if (occupant && occupant.connected !== false) button.classList.add('occupied');
+    button.disabled = occupiedByOther;
     title.textContent = `Mic ${slot}`;
-    meta.textContent = occupant
-      ? `${occupant.name || 'Singer'} - ${occupant.connected === false ? 'offline' : occupant.role || 'singer'}`
-      : 'available';
-    button.append(title, meta);
-    button.addEventListener('click', () => {
-      markFireAndForgetButton(button, send({ type: 'player.requestSlot', slot }));
-    });
+    metaWrap.className = 'room-meta';
+    meta.textContent = occupant && occupant.connected !== false ? (occupant.name || 'Singer') : 'available';
+    const detail = document.createElement('small');
+    detail.textContent = occupant && occupant.connected !== false
+      ? `${difficultyLabel(occupant.difficulty)} - ${occupant.connected === false ? 'offline' : occupant.role || 'singer'}`
+      : 'Default avatar - Medium';
+    metaWrap.append(meta, detail);
+    button.append(createRoomAvatar(occupant && occupant.connected !== false ? occupant : null, slot), title, metaWrap);
     micRoomList.append(button);
   }
 }
@@ -718,6 +2265,7 @@ function sendControl(command, args = {}, sourceButton = null) {
   controlStatus.textContent = ok
     ? `Sent ${command}`
     : 'Not connected';
+  clientLog('control.send', { command, commandId, ok, relay: true });
   return commandId;
 }
 
@@ -756,6 +2304,21 @@ function playlistByIndex(index) {
   return playlists.find((item) => Number(item.index) === Number(index)) || null;
 }
 
+function playlistKey(playlist) {
+  return String(playlist?.filename || playlist?.name || playlist?.index || '');
+}
+
+function selectedPlaylist() {
+  const playlists = Array.isArray(state.songSelect?.playlists) ? state.songSelect.playlists : [];
+  let playlist = state.songPlaylistIndex == null ? null : playlistByIndex(state.songPlaylistIndex);
+  if (!playlist && state.songPlaylistKey) {
+    playlist = playlists.find((item) => playlistKey(item) === state.songPlaylistKey) || null;
+    if (playlist) state.songPlaylistIndex = Number(playlist.index);
+  }
+  if (playlist) state.songPlaylistKey = playlistKey(playlist);
+  return playlist;
+}
+
 function openPlaylistOverlay(target) {
   if (!playlistOverlay) return;
   state.playlistOverlayTarget = target;
@@ -774,12 +2337,21 @@ function closePlaylistOverlay() {
 function addOverlayTargetToPlaylist(playlistIndex, sourceButton = null) {
   const target = state.playlistOverlayTarget;
   if (!target) return;
+  const songCount = target.mode === 'results'
+    ? (Array.isArray(target.songIds) ? target.songIds.length : 0)
+    : 1;
+  const playlist = playlistByIndex(playlistIndex);
+  state.songPlaylistIndex = Number(playlistIndex);
+  state.songPlaylistKey = playlistKey(playlist);
+  state.showLikedSongsOnly = false;
+  resetSongPage();
+  renderSongSelectState();
   if (target.mode === 'results') {
     sendControl('playlist.addSongs', { playlistIndex, songIds: target.songIds || [] }, sourceButton);
   } else if (target.mode === 'song') {
     sendControl('playlist.addSongs', { playlistIndex, songIds: [target.songId] }, sourceButton);
   }
-  controlStatus.textContent = `Added to ${playlistNameByIndex(playlistIndex)}`;
+  controlStatus.textContent = `Adding ${songCount} song${songCount === 1 ? '' : 's'} to ${playlistNameByIndex(playlistIndex)}`;
   closePlaylistOverlay();
 }
 
@@ -788,9 +2360,9 @@ function renderPlaylistOverlay() {
   const target = state.playlistOverlayTarget;
   const data = state.songSelect || {};
   const playlists = Array.isArray(data.playlists) ? data.playlists : [];
-  playlistOverlayTitle.textContent = target?.mode === 'results' ? 'Add matching songs' : 'Add song';
+  playlistOverlayTitle.textContent = target?.mode === 'results' ? 'Add all matching songs' : 'Add song';
   playlistOverlaySubtitle.textContent = target?.mode === 'results'
-    ? `${(target.songIds || []).length} matching song ids will be added.`
+    ? `${(target.songIds || []).length} matched songs will be added, not just this page.`
     : (target?.title || 'Select a playlist');
 
   playlistOverlayList.replaceChildren();
@@ -809,7 +2381,7 @@ function renderPlaylistOverlay() {
     button.type = 'button';
     button.className = 'playlist-choice';
     name.textContent = playlist.name || `Playlist ${Number(playlist.index) + 1}`;
-    meta.textContent = `${playlist.size || 0} songs`;
+    meta.textContent = `${playlist.size || 0} songs - ${playlist.fixedOrder ? 'ordered' : 'random'}`;
     button.append(name, meta);
     button.addEventListener('click', () => addOverlayTargetToPlaylist(Number(playlist.index), button));
     playlistOverlayList.append(button);
@@ -836,48 +2408,230 @@ function stopPhonePreview() {
 
 function visibleSongResults() {
   const data = state.songSelect || {};
-  const library = Array.isArray(data.library) && data.library.length
-    ? data.library
-    : (Array.isArray(data.results) ? data.results : []);
-  const selectedPlaylist = state.songPlaylistIndex == null ? null : playlistByIndex(state.songPlaylistIndex);
-  const playlistItems = Array.isArray(selectedPlaylist?.items) ? selectedPlaylist.items : [];
-  const source = selectedPlaylist
+  const library = Array.isArray(data.library) ? data.library : [];
+  if (!library.length) return [];
+  const activePlaylist = selectedPlaylist();
+  const playlistItems = playlistItemsForActivePlaylist(activePlaylist, data);
+  const source = activePlaylist
     ? playlistItems.map((entry) => {
         const songId = Number(entry.songId);
-        const song = Number.isInteger(songId) ? library.find((item) => Number(item.songId) === songId) : null;
-        return { ...(song || {}), ...entry, playlistIndex: selectedPlaylist.index };
+        const song = Number.isInteger(songId) ? songLibraryById(library).get(songId) : null;
+        return { ...(song || {}), ...entry, playlistIndex: activePlaylist.index };
       })
     : library;
-  const query = state.songFilterText.trim().toLowerCase();
-  if (!query) return source;
+  const likedSongIds = ownLikedSongIds();
+  const filteredSource = state.showLikedSongsOnly
+    ? source.filter((song) => likedSongIds.has(Number(song.songId)))
+    : source;
+  const search = songSearchQuery();
+  const query = search.text.toLowerCase();
+  if (!query) return filteredSource;
   const words = query.split(/\s+/).filter(Boolean);
-  return source.filter((song) => {
-    const haystack = [
-      song.artist,
-      song.title,
-      song.year,
-      song.genre,
-      song.edition,
-      song.language
-    ].filter(Boolean).join(' ').toLowerCase();
+  return filteredSource.filter((song) => {
+    const haystack = songSearchHaystack(song, search.field);
     return words.every((word) => haystack.includes(word));
   });
+}
+
+function playlistItemsForActivePlaylist(activePlaylist, data = state.songSelect || {}) {
+  if (!activePlaylist) return [];
+  if (Array.isArray(activePlaylist.items) && activePlaylist.items.length) return activePlaylist.items;
+  if (Number(activePlaylist.index) === Number(data.curPlaylist) && Array.isArray(data.playlistItems)) {
+    return data.playlistItems;
+  }
+  return Array.isArray(activePlaylist.items) ? activePlaylist.items : [];
+}
+
+function songLibraryById(library) {
+  if (!Array.isArray(library)) return new Map();
+  let cached = songIdMapCache.get(library);
+  if (!cached) {
+    cached = new Map();
+    for (const song of library) {
+      const songId = Number(song?.songId);
+      if (Number.isInteger(songId)) cached.set(songId, song);
+    }
+    songIdMapCache.set(library, cached);
+  }
+  return cached;
+}
+
+function visibleSongPageResults() {
+  const results = visibleSongResults();
+  const pageCount = Math.max(1, Math.ceil(results.length / songPageSize));
+  const pageIndex = Math.max(0, Math.min(pageCount - 1, Number(state.songPage || 0)));
+  return results.slice(pageIndex * songPageSize, Math.min(results.length, (pageIndex + 1) * songPageSize));
+}
+
+const songSearchFields = new Set(['all', 'title', 'artist', 'language', 'edition', 'genre', 'year', 'creator', 'tags']);
+
+function normalizeSongSearchField(field) {
+  const value = String(field || '').toLowerCase();
+  return songSearchFields.has(value) ? value : 'all';
+}
+
+function songSearchQuery() {
+  const raw = String(state.songFilterText || '').trim();
+  const prefix = raw.match(/^([a-z]+)\s*:\s*(.*)$/i);
+  if (prefix) {
+    const field = normalizeSongSearchField(prefix[1]);
+    if (field !== 'all') return { field, text: prefix[2].trim() };
+  }
+  return { field: normalizeSongSearchField(state.songSearchField), text: raw };
+}
+
+function songSearchHaystack(song, field) {
+  if (song && typeof song === 'object') {
+    let cached = songSearchCache.get(song);
+    if (!cached) {
+      cached = new Map();
+      songSearchCache.set(song, cached);
+    }
+    const normalized = normalizeSongSearchField(field);
+    if (cached.has(normalized)) return cached.get(normalized);
+    const text = songSearchHaystackRaw(song, normalized);
+    cached.set(normalized, text);
+    return text;
+  }
+  return '';
+}
+
+function songSearchHaystackRaw(song, field) {
+  const metadata = [song.language, song.edition, song.genre, song.year, song.creator, song.tags];
+  const values = {
+    title: [song.title],
+    artist: [song.artist],
+    language: [song.language],
+    edition: [song.edition],
+    genre: [song.genre],
+    year: [song.year],
+    creator: [song.creator, song.tags],
+    tags: [song.tags, song.creator],
+    all: [
+      song.artist,
+      song.title,
+      ...metadata
+    ]
+  };
+  return (values[normalizeSongSearchField(field)] || values.all)
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
 }
 
 function resetSongPage() {
   state.songPage = 0;
 }
 
-function showPlaylistSongs(index) {
-  state.songPlaylistIndex = Number(index);
+function scheduleSongSelectRender() {
+  if (state.searchRenderTimer) window.clearTimeout(state.searchRenderTimer);
+  const delay = Math.max(
+    searchDebounceMinMs,
+    Math.min(searchDebounceMaxMs, Math.round(Number(state.lastSearchRenderCostMs || 0) * 4))
+  );
+  state.searchRenderTimer = window.setTimeout(() => {
+    state.searchRenderTimer = null;
+    renderSongSelectState();
+  }, delay);
+}
+
+function showPlaylistSongs(playlist, sourceButton = null) {
+  const target = typeof playlist === 'object' ? playlist : playlistByIndex(playlist);
+  state.songPlaylistIndex = Number(target?.index ?? playlist);
+  state.songPlaylistKey = playlistKey(target);
+  state.showLikedSongsOnly = false;
   resetSongPage();
+  if (Number.isInteger(Number(state.songPlaylistIndex)) && Number(state.songPlaylistIndex) >= 0) {
+    sendControl('playlist.load', { playlistIndex: Number(state.songPlaylistIndex) }, sourceButton);
+  }
   renderSongSelectState();
 }
 
 function showAllSongs() {
   state.songPlaylistIndex = null;
+  state.songPlaylistKey = '';
+  state.showLikedSongsOnly = false;
   resetSongPage();
   renderSongSelectState();
+}
+
+function clearSongSearch() {
+  state.songFilterText = '';
+  state.songSearchField = 'all';
+  if (searchInput) searchInput.value = '';
+  if (searchFieldInput) searchFieldInput.value = 'all';
+  resetSongPage();
+  scheduleSongSelectRender();
+}
+
+function showLikedSongs() {
+  state.showLikedSongsOnly = !state.showLikedSongsOnly;
+  state.songPlaylistIndex = null;
+  state.songPlaylistKey = '';
+  resetSongPage();
+  renderSongSelectState();
+}
+
+function csvCell(value) {
+  const text = String(value ?? '').replace(/\r?\n/g, ' ').trim();
+  return /[",\n;]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function csvFileName() {
+  const code = String(state.displayCode || 'room').toLowerCase();
+  const suffix = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  return `usdx-songs-matched-${code}-${suffix}.csv`;
+}
+
+function downloadSongsCsv() {
+  const songs = visibleSongResults();
+  if (!songs.length) {
+    markFireAndForgetButton(downloadSongsCsvButton, false);
+    return;
+  }
+
+  const headers = [
+    'songId',
+    'artist',
+    'title',
+    'year',
+    'genre',
+    'edition',
+    'language',
+    'creator',
+    'previewStart',
+    'previewAvailable',
+    'playlistIndex',
+    'playlistItemIndex'
+  ];
+  const rows = songs.map((song) => [
+    song.songId,
+    song.artist,
+    song.title,
+    song.year,
+    song.genre,
+    song.edition,
+    song.language,
+    song.creator,
+    song.previewStart,
+    song.previewAvailable === false ? 'false' : 'true',
+    song.playlistIndex ?? '',
+    song.itemIndex ?? ''
+  ]);
+  const csv = [
+    headers.map(csvCell).join(','),
+    ...rows.map((row) => row.map(csvCell).join(','))
+  ].join('\r\n');
+  const blob = new Blob([`\uFEFF${csv}\r\n`], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = csvFileName();
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  markFireAndForgetButton(downloadSongsCsvButton, true);
 }
 
 function renderSongPager(totalResults) {
@@ -917,9 +2671,453 @@ function renderSongPager(totalResults) {
   return { start, end, pageCount };
 }
 
-function requestSongState() {
-  state.songStateRequested = true;
-  send({ type: 'song.state.request' });
+async function requestSongState(options = {}) {
+  const ok = send({
+    type: 'song.state.request',
+    songLibraryHash: ''
+  });
+  if (!ok && songLibraryLabel) songLibraryLabel.textContent = 'Not connected; reconnect to load songs.';
+  return ok;
+}
+
+async function requestCatalog(options = {}) {
+  if (state.songLibraryTransfer && !options.forceFull) return false;
+  const now = performance.now();
+  if (state.songCatalogInFlight && !options.forceFull) return false;
+  if (state.songCatalogInFlight && now - Number(state.songFullListLastRequestMs || 0) < 1500) return false;
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !state.playerId) {
+    if (songLibraryLabel) songLibraryLabel.textContent = 'Connect to a room before loading the song catalog.';
+    return false;
+  }
+
+  const forceFull = Boolean(options.forceFull);
+  const requestedCatalogId = String(options.catalogId || state.songLibraryHash || cachedSongLibraryHash() || '');
+  let knownCatalogId = '';
+  if (!forceFull && requestedCatalogId) {
+    const cached = await loadCachedSongLibrary(requestedCatalogId);
+    if (cached) knownCatalogId = requestedCatalogId;
+  }
+
+  const expectedTotal = Number(state.songCatalogManifest?.totalSongs || state.songLibraryProgress?.indexedSongs || state.songSelect?.totalSongs || state.songSelect?.visibleSongs || 0);
+  const requestReason = String(options.reason || (forceFull ? 'catalog-transfer' : 'catalog-request'));
+  const requestCount = Number(state.songFullListRequestCount || 0) + 1;
+  const forceTransfer = forceFull || !knownCatalogId;
+  const requestId = String(options.requestId || shortRequestId('catalog'));
+  const ok = sendRelay({
+    type: 'catalog.request',
+    requestId,
+    knownCatalogId,
+    catalogId: requestedCatalogId,
+    forceTransfer
+  });
+  if (!ok) {
+    state.songCatalogInFlight = false;
+    if (songLibraryLabel) songLibraryLabel.textContent = 'Could not send catalog request; reconnect to load songs.';
+    logLine('catalog request send failed');
+    return false;
+  }
+
+  state.songCatalogInFlight = true;
+  state.songFullListLastRequestMs = now;
+  state.songFullListRequestCount = requestCount;
+  state.songFullListRequestReason = requestReason;
+  state.songCatalogRequestId = requestId;
+  state.songLibraryProgress = {
+    ...(state.songLibraryProgress || {}),
+    type: 'song.library.progress',
+    status: forceTransfer ? 'requesting_full' : 'requesting',
+    indexedSongs: expectedTotal,
+    transferReceived: 0,
+    transferTotal: expectedTotal,
+    message: knownCatalogId
+      ? 'Checking cached song catalog'
+      : `Requesting song catalog (${state.songFullListRequestReason})`
+  };
+  renderSongSelectState();
+  clientLog('catalog.request', {
+    reason: state.songFullListRequestReason,
+    requestCount: state.songFullListRequestCount,
+    requestId,
+    knownCatalogId: knownCatalogId ? knownCatalogId.slice(0, 12) : '',
+    requestedCatalogId: requestedCatalogId ? requestedCatalogId.slice(0, 12) : '',
+    forceFull
+  });
+  logLine(`catalog request sent ${requestId} ${forceTransfer ? 'transfer' : 'manifest'} ${requestedCatalogId ? requestedCatalogId.slice(0, 8) : 'new'}`);
+
+  if (forceTransfer) {
+    if (state.songCatalogRequestTimer) window.clearTimeout(state.songCatalogRequestTimer);
+    state.songCatalogRequestTimer = window.setTimeout(() => {
+      state.songCatalogRequestTimer = null;
+      const hasLibrary = Array.isArray(state.songSelect?.library) && state.songSelect.library.length;
+      if (hasLibrary || state.songLibraryTransfer) return;
+      state.songCatalogInFlight = false;
+      state.songLibraryProgress = {
+        ...(state.songLibraryProgress || {}),
+        status: 'catalog_timeout',
+        message: 'Catalog request reached the server, but no catalog transfer started. Restart the bridge and check server logs for catalog.request.forwarded and catalog.request.received.'
+      };
+      clientLog('catalog.timeout', {
+        reason: state.songFullListRequestReason,
+        requestId,
+        requestedCatalogId: requestedCatalogId ? requestedCatalogId.slice(0, 12) : '',
+        knownCatalogId: knownCatalogId ? knownCatalogId.slice(0, 12) : ''
+      });
+      renderSongSelectState();
+    }, 10000);
+  }
+  return true;
+}
+
+function scheduleFullSongListRequest(reason = '', delayMs = 1200) {
+  if (state.songLibraryTransfer || state.songFullListRequestTimer) return;
+  if (state.songCatalogInFlight && performance.now() - Number(state.songFullListLastRequestMs || 0) < 10000) return;
+  const library = Array.isArray(state.songSelect?.library) ? state.songSelect.library : [];
+  if (library.length) return;
+  state.songFullListRequestTimer = window.setTimeout(() => {
+    state.songFullListRequestTimer = null;
+    const stillMissing = !Array.isArray(state.songSelect?.library) || !state.songSelect.library.length;
+    if (!stillMissing || state.songLibraryTransfer) return;
+    const now = performance.now();
+    if (state.songCatalogInFlight && now - Number(state.songFullListLastRequestMs || 0) < 10000) return;
+    if (now - Number(state.songFullListLastRequestMs || 0) < 2500) {
+      scheduleFullSongListRequest(reason, 1500);
+      return;
+    }
+    requestCatalog({ forceFull: true, reason });
+  }, delayMs);
+}
+
+function ensureCatalogRequested(reason = 'ensure-catalog') {
+  if (!state.roomId || !state.playerId) return;
+  if (Array.isArray(state.songSelect?.library) && state.songSelect.library.length) return;
+  if (state.songLibraryTransfer || state.songCatalogInFlight) return;
+  const key = `${state.roomId}:${cachedSongLibraryHash() || state.songLibraryHash || 'new'}`;
+  if (state.songCatalogRequestedForRoom === key) return;
+  state.songCatalogRequestedForRoom = key;
+  requestCatalog({ reason });
+}
+
+async function hydrateCachedCatalog(reason = 'cache') {
+  const hash = cachedSongLibraryHash();
+  if (!hash) return false;
+  const cached = await loadCachedSongLibrary(hash);
+  if (!cached?.library?.length) return false;
+  state.songLibraryHash = hash;
+  state.songCatalogInFlight = false;
+  state.songFullListLastRequestMs = 0;
+  state.songLibraryProgress = {
+    type: 'song.library.progress',
+    status: 'ready',
+    indexedSongs: cached.library.length,
+    transferReceived: cached.library.length,
+    transferTotal: cached.library.length,
+    message: `Loaded cached song catalog (${reason})`
+  };
+  state.songSelect = await mergeSongSelectState(state.songSelect, {
+    type: 'song.select.state',
+    source: 'cache',
+    libraryHash: hash,
+    selectedSongId: state.songSelect?.selectedSongId ?? -1,
+    visibleSongs: cached.library.length,
+    totalSongs: cached.library.length,
+    library: cached.library,
+    results: Array.isArray(state.songSelect?.results) ? state.songSelect.results : cached.library.slice(0, 30),
+    playlists: Array.isArray(state.songSelect?.playlists) ? state.songSelect.playlists : []
+  });
+  state.localLikedSongIds = persistentLikedSongIdsForLibrary(cached.library);
+  syncPersistentLikesToBridge(`cache-${reason}`);
+  renderSongSelectState();
+  logLine(`catalog loaded from cache ${hash.slice(0, 8)} ${cached.library.length}`);
+  return true;
+}
+
+async function mergeSongSelectState(previous, message) {
+  const incoming = { ...message };
+  if (incoming.libraryHash) state.songLibraryHash = String(incoming.libraryHash);
+  if (Array.isArray(incoming.library) && incoming.libraryHash) {
+    saveCachedSongLibrary(String(incoming.libraryHash), incoming.library);
+  } else if (!Array.isArray(incoming.library) && incoming.libraryHash) {
+    const cached = await loadCachedSongLibrary(String(incoming.libraryHash));
+    if (cached) {
+      incoming.library = cached.library;
+      state.songLibraryCacheUsable = true;
+    } else {
+      state.songLibraryCacheUsable = false;
+      incoming.libraryCached = false;
+      scheduleFullSongListRequest('catalog-cache-miss', 0);
+    }
+  }
+  if (!previous || typeof previous !== 'object') return incoming;
+  const merged = { ...previous, ...incoming };
+  for (const field of ['library', 'results', 'playlists', 'playlistItems']) {
+    if (!Array.isArray(incoming[field]) && Array.isArray(previous[field])) {
+      merged[field] = previous[field];
+    }
+  }
+  for (const field of ['source', 'visibleSongs', 'totalSongs', 'searchActive', 'playlistActive', 'curPlaylist', 'libraryProgress']) {
+    if (incoming[field] === undefined && previous[field] !== undefined) {
+      merged[field] = previous[field];
+    }
+  }
+  const currentSongId = Number(merged.currentSong?.songId);
+  if (Number.isInteger(currentSongId) && currentSongId >= 0) {
+    for (const field of ['library', 'results']) {
+      if (!Array.isArray(merged[field])) continue;
+      const index = merged[field].findIndex((song) => Number(song.songId) === currentSongId);
+      if (index >= 0) {
+        merged[field] = merged[field].slice();
+        merged[field][index] = { ...merged[field][index], ...merged.currentSong };
+      }
+    }
+  }
+  return merged;
+}
+
+function activeSongLibraryProgress(data = {}) {
+  const transfer = state.songLibraryTransfer;
+  if (transfer) {
+    return {
+      type: 'song.library.progress',
+      status: 'receiving',
+      indexedSongs: Number(transfer.total || 0),
+      transferReceived: Number(transfer.received || 0),
+      transferTotal: Number(transfer.total || 0),
+      message: 'Receiving song list'
+    };
+  }
+  const hasLibrary = Array.isArray(data.library) && data.library.length;
+  if (!hasLibrary && state.songFullListLastRequestMs) {
+    const total = Number(state.songLibraryProgress?.transferTotal || state.songLibraryProgress?.indexedSongs || data.totalSongs || data.visibleSongs || 0);
+    if (state.songLibraryProgress) {
+      return {
+        ...state.songLibraryProgress,
+        type: 'song.library.progress',
+        indexedSongs: Number(state.songLibraryProgress.indexedSongs || total),
+        transferReceived: Number(state.songLibraryProgress.transferReceived || 0),
+        transferTotal: Number(state.songLibraryProgress.transferTotal || total)
+      };
+    }
+    return {
+      type: 'song.library.progress',
+      status: 'requesting_full',
+      indexedSongs: total,
+      transferReceived: 0,
+      transferTotal: total,
+      message: `Requested song catalog${state.songCatalogRequestId ? ` ${state.songCatalogRequestId}` : ''}${state.songFullListRequestCount ? ` (${state.songFullListRequestCount})` : ''}`
+    };
+  }
+  return state.songLibraryProgress || data.libraryProgress || null;
+}
+
+function songLibraryProgressInfo(progress, hasLibrary = false) {
+  if (hasLibrary) {
+    return { visible: false, percent: 100, label: '100%' };
+  }
+  if (!progress || typeof progress !== 'object') {
+    return { visible: false, percent: 0, label: '' };
+  }
+  if (['receiving', 'requesting', 'requesting_full', 'catalog_accepted', 'catalog_forwarded', 'catalog_timeout'].includes(progress.status)) {
+    const received = Number(progress.transferReceived || 0);
+    const total = Number(progress.transferTotal || 0);
+    if (total > 0) {
+      const percent = Math.max(1, Math.min(99, Math.floor(received * 100 / total)));
+      return { visible: true, percent, label: `${percent}%` };
+    }
+    return { visible: true, percent: 1, label: '1%' };
+  }
+  const indexed = Number(progress.indexedSongs || 0);
+  const files = Number(progress.scannedFiles || 0);
+  const status = String(progress.status || '');
+  if (status === 'ready' && indexed > 0) return { visible: false, percent: 0, label: '' };
+  if (files > 0 && indexed > 0) {
+    const percent = Math.max(1, Math.min(99, Math.floor(indexed * 100 / files)));
+    return { visible: true, percent, label: `${percent}%` };
+  }
+  if (files > 0) {
+    return { visible: true, percent: 1, label: '1%' };
+  }
+  return { visible: false, percent: 0, label: '' };
+}
+
+function renderSongLibraryProgress(progress, hasLibrary = false) {
+  if (!songLibraryProgressWrap || !songLibraryProgressFill || !songLibraryProgressText) return;
+  const info = songLibraryProgressInfo(progress, hasLibrary);
+  songLibraryProgressWrap.classList.toggle('hidden', !info.visible);
+  songLibraryProgressWrap.setAttribute('aria-hidden', info.visible ? 'false' : 'true');
+  songLibraryProgressFill.style.setProperty('--song-library-progress', `${info.percent}%`);
+  songLibraryProgressText.textContent = info.label;
+}
+
+function startSongLibraryTransfer(message) {
+  if (state.songCatalogRequestTimer) {
+    window.clearTimeout(state.songCatalogRequestTimer);
+    state.songCatalogRequestTimer = null;
+  }
+  state.songFullListRequestTimer = null;
+  const total = Math.max(0, Number(message.total || 0));
+  state.songLibraryTransfer = {
+    libraryHash: String(message.libraryHash || ''),
+    total,
+    received: 0,
+    chunks: []
+  };
+  state.songLibraryProgress = {
+    type: 'song.library.progress',
+    status: 'receiving',
+    indexedSongs: total,
+    transferReceived: 0,
+    transferTotal: total,
+    message: 'Receiving song list'
+  };
+  state.songCatalogInFlight = true;
+  renderSongSelectState();
+}
+
+function appendSongLibraryTransferChunk(message) {
+  const hash = String(message.libraryHash || '');
+  if (!state.songLibraryTransfer || state.songLibraryTransfer.libraryHash !== hash) {
+    startSongLibraryTransfer(message);
+  }
+  const transfer = state.songLibraryTransfer;
+  const chunk = Array.isArray(message.library) ? message.library : [];
+  transfer.chunks.push(...chunk);
+  transfer.received += chunk.length;
+  state.songLibraryProgress = {
+    ...state.songLibraryProgress,
+    status: 'receiving',
+    indexedSongs: transfer.total,
+    transferReceived: transfer.received,
+    transferTotal: transfer.total,
+    message: 'Receiving song list'
+  };
+  renderSongSelectState();
+}
+
+function startCatalogTransfer(message) {
+  if (message.requestId && state.songCatalogRequestId && message.requestId !== state.songCatalogRequestId) return;
+  const catalogId = String(message.catalogId || message.libraryHash || '');
+  startSongLibraryTransfer({
+    ...message,
+    libraryHash: catalogId,
+    total: Number(message.totalSongs || message.total || 0)
+  });
+  state.songCatalogManifest = {
+    ...(state.songCatalogManifest || {}),
+    catalogId,
+    totalSongs: Number(message.totalSongs || message.total || 0),
+    source: message.source || state.songCatalogManifest?.source || 'bridge-scan'
+  };
+}
+
+function appendCatalogTransferChunk(message) {
+  if (message.requestId && state.songCatalogRequestId && message.requestId !== state.songCatalogRequestId) return;
+  const catalogId = String(message.catalogId || message.libraryHash || '');
+  appendSongLibraryTransferChunk({
+    ...message,
+    libraryHash: catalogId,
+    library: Array.isArray(message.songs) ? message.songs : message.library
+  });
+}
+
+async function applyCatalogManifest(message) {
+  const catalogId = String(message.catalogId || message.libraryHash || '');
+  if (!catalogId) return;
+  if (state.songCatalogRequestTimer) {
+    window.clearTimeout(state.songCatalogRequestTimer);
+    state.songCatalogRequestTimer = null;
+  }
+  state.songCatalogManifest = {
+    ...message,
+    catalogId,
+    totalSongs: Number(message.totalSongs || message.total || 0)
+  };
+  state.songLibraryHash = catalogId;
+  const cached = await loadCachedSongLibrary(catalogId);
+  if (cached) {
+    state.songLibraryCacheUsable = true;
+    state.songLibraryTransfer = null;
+    state.songFullListLastRequestMs = 0;
+    state.songFullListRequestReason = '';
+    state.songCatalogInFlight = false;
+    state.songLibraryProgress = {
+      ...(state.songLibraryProgress || {}),
+      status: 'ready',
+      indexedSongs: cached.library.length,
+      transferReceived: cached.library.length,
+      transferTotal: cached.library.length,
+      message: `Loaded ${cached.library.length} cached songs`
+    };
+    const incoming = {
+      ...(message.state && typeof message.state === 'object' ? message.state : {}),
+      type: 'song.select.state',
+      libraryHash: catalogId,
+      library: cached.library,
+      libraryCached: true
+    };
+    state.songSelect = await mergeSongSelectState(state.songSelect, incoming);
+    state.localLikedSongIds = persistentLikedSongIdsForLibrary(cached.library);
+    send({ type: 'catalog.ready', catalogId, songLibraryHash: catalogId, songCount: cached.library.length });
+    syncPersistentLikesToBridge('catalog-manifest-cache');
+    renderSongSelectState();
+    return;
+  }
+  state.songLibraryCacheUsable = false;
+  requestCatalog({ forceFull: true, catalogId, reason: 'manifest-cache-miss' });
+}
+
+async function finishCatalogTransfer(message) {
+  if (message.requestId && state.songCatalogRequestId && message.requestId !== state.songCatalogRequestId) return;
+  const catalogId = String(message.catalogId || message.libraryHash || '');
+  await finishSongLibraryTransfer({
+    ...message,
+    libraryHash: catalogId,
+    total: Number(message.totalSongs || message.total || 0),
+    state: message.state
+  });
+}
+
+async function finishSongLibraryTransfer(message) {
+  const transfer = state.songLibraryTransfer;
+  if (!transfer || transfer.libraryHash !== String(message.libraryHash || '')) return;
+  const library = transfer.chunks;
+  const incoming = {
+    ...(message.state && typeof message.state === 'object' ? message.state : {}),
+    type: 'song.select.state',
+    libraryHash: String(message.libraryHash || transfer.libraryHash || ''),
+    library
+  };
+  state.songLibraryTransfer = null;
+  if (state.songCatalogRequestTimer) {
+    window.clearTimeout(state.songCatalogRequestTimer);
+    state.songCatalogRequestTimer = null;
+  }
+  state.songFullListLastRequestMs = 0;
+  state.songFullListRequestReason = '';
+  state.songLibraryProgress = {
+    ...(state.songLibraryProgress || {}),
+    status: 'ready',
+    indexedSongs: library.length,
+    transferReceived: library.length,
+    transferTotal: library.length,
+    message: `Received ${library.length} songs`
+  };
+  state.songCatalogInFlight = false;
+  state.songSelect = await mergeSongSelectState(state.songSelect, incoming);
+  state.localLikedSongIds = persistentLikedSongIdsForLibrary(library);
+  syncPersistentLikesToBridge('catalog-transfer');
+  renderSongSelectState();
+}
+
+function songSelectStateNeedsRender(previous, message) {
+  if (!previous) return true;
+  if (['library', 'results', 'playlists', 'playlistItems'].some((field) => Array.isArray(message[field]))) return true;
+  if (message.libraryHash && message.libraryHash !== previous.libraryHash) return true;
+  for (const field of ['selectedSongId', 'visibleSongs', 'totalSongs', 'searchActive', 'playlistActive', 'curPlaylist', 'source']) {
+    if (message[field] !== undefined && message[field] !== previous[field]) return true;
+  }
+  if (message.libraryProgress) return true;
+  if (message.currentSong && Number(message.currentSong.songId) !== Number(previous.currentSong?.songId)) return true;
+  return false;
 }
 
 async function startPhonePreview(song, button, slider) {
@@ -934,7 +3132,7 @@ async function startPhonePreview(song, button, slider) {
   button.disabled = true;
   button.textContent = 'Loading';
   try {
-    const response = await fetch(`/api/preview?roomId=${encodeURIComponent(state.roomId)}&songId=${songId}`, {
+    const response = await fetch(`/api/song-preview?roomId=${encodeURIComponent(state.roomId)}&songId=${songId}`, {
       cache: 'no-store'
     });
     if (!response.ok) throw new Error(await response.text() || 'preview unavailable');
@@ -974,6 +3172,7 @@ async function startPhonePreview(song, button, slider) {
 }
 
 function stopDeviceMusic(status = 'Device music is off.') {
+  const errorStatus = isDeviceMusicErrorStatus(status);
   if (state.deviceMusicTimer) {
     clearTimeout(state.deviceMusicTimer);
     state.deviceMusicTimer = null;
@@ -982,6 +3181,10 @@ function stopDeviceMusic(status = 'Device music is off.') {
     clearTimeout(state.deviceMusicRetryTimer);
     state.deviceMusicRetryTimer = null;
   }
+  if (state.deviceMusicRecoveryTimer) {
+    clearTimeout(state.deviceMusicRecoveryTimer);
+    state.deviceMusicRecoveryTimer = null;
+  }
   if (state.deviceMusicSyncTimer) {
     clearInterval(state.deviceMusicSyncTimer);
     state.deviceMusicSyncTimer = null;
@@ -989,17 +3192,35 @@ function stopDeviceMusic(status = 'Device music is off.') {
   if (state.deviceMusicAudio) {
     state.deviceMusicAudio.pause();
     try { state.deviceMusicAudio.playbackRate = 1; } catch {}
-    state.deviceMusicAudio.src = '';
+    try {
+      state.deviceMusicAudio.removeAttribute('src');
+      state.deviceMusicAudio.load();
+    } catch {
+      state.deviceMusicAudio.src = '';
+    }
+  }
+  if (state.deviceMusicAbortController) {
+    state.deviceMusicAbortController.abort();
   }
   if (state.deviceMusicObjectUrl) URL.revokeObjectURL(state.deviceMusicObjectUrl);
   state.deviceMusicAudio = null;
   state.deviceMusicObjectUrl = null;
+  state.deviceMusicAbortController = null;
   state.deviceMusicSongSeq = null;
+  state.deviceMusicSongId = null;
+  state.deviceMusicFileLabel = null;
+  state.deviceMusicDownloadLoadedBytes = 0;
+  state.deviceMusicDownloadTotalBytes = null;
+  state.deviceMusicMediaInfo = null;
+  state.deviceMusicExtensionFallbacks = null;
+  state.deviceMusicInitialLeadUntilMs = 0;
+  state.deviceMusicInitialSeekPending = false;
+  state.deviceMusicKey = null;
   state.deviceMusicBlocked = false;
-  state.deviceMusicStreamOffsetSec = 0;
   state.deviceMusicPositionAnchorSec = null;
   state.deviceMusicPositionAnchorClientUs = null;
-  setDeviceMusicStatus(status, status.includes('failed') ? 'state-error' : '');
+  state.deviceMusicStickyErrorText = errorStatus ? status : null;
+  setDeviceMusicStatus(status, errorStatus ? 'state-error' : '');
 }
 
 function pauseDeviceMusicBuffered(status = 'Device music stopped.') {
@@ -1025,6 +3246,18 @@ function pauseDeviceMusicBuffered(status = 'Device music stopped.') {
 }
 
 function findSongForDeviceMusic(message = {}) {
+  if (state.gameState === 'song_select') {
+    const selectedSongId = Number(state.songSelect?.selectedSongId);
+    const data = state.songSelect || {};
+    const library = Array.isArray(data.library) ? data.library : [];
+    if (Number.isInteger(selectedSongId) && selectedSongId >= 0) {
+      return (Number(data.currentSong?.songId) === selectedSongId ? data.currentSong : null)
+        || library.find((song) => Number(song.songId) === selectedSongId)
+        || { songId: selectedSongId };
+    }
+    return null;
+  }
+
   if ((!message || !Object.keys(message).length) && state.currentSongMessage) {
     message = state.currentSongMessage;
   }
@@ -1059,18 +3292,217 @@ function findSongForDeviceMusic(message = {}) {
   return null;
 }
 
+function deviceMusicSongLabel(song, songId, fileName = '') {
+  const title = String(song?.title || '').trim();
+  const artist = String(song?.artist || '').trim();
+  const songLabel = title && artist ? `${artist} - ${title}` : (title || artist || `song ${songId}`);
+  const fileLabel = String(fileName || '').trim();
+  return fileLabel ? `${songLabel} (${fileLabel})` : songLabel;
+}
+
+function extensionFromFileName(fileName = '') {
+  const match = String(fileName || '').match(/\.([^.?#/\\]+)$/);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function deviceMusicSongExtension(song = {}) {
+  return extensionFromFileName(song?.audioFileName || song?.audioFile || song?.fileName || state.deviceMusicFileLabel || '');
+}
+
+function deviceMusicTargetKey() {
+  if (state.gameState === 'song_select') {
+    return `select:${Number(state.songSelect?.selectedSongId ?? -1)}`;
+  }
+  return `song:${Number(state.songSeq || 0)}`;
+}
+
 function currentSongPositionSec(clientUs = clientNowUs()) {
+  const position = rawSongPositionSec(clientUs);
+  return position == null ? null : Math.max(0, position);
+}
+
+function rawSongPositionSec(clientUs = clientNowUs()) {
+  if (state.songMediaAnchorSec != null && state.songMediaAnchorClientUs != null) {
+    if (state.gameState === 'paused') return state.songMediaAnchorSec;
+    const elapsedSec = (clientUs - state.songMediaAnchorClientUs) / 1_000_000;
+    const rate = Number.isFinite(state.songMediaRate) && state.songMediaRate > 0 ? state.songMediaRate : 1;
+    return state.songMediaAnchorSec + elapsedSec * rate;
+  }
   if (!state.hostSongStartUs || !state.clock.synced) return null;
   return (hostClockEstimateUs(clientUs) - state.hostSongStartUs) / 1_000_000;
 }
 
+function currentSelectPreviewPositionSec(clientUs = clientNowUs()) {
+  if (!Number.isInteger(Number(state.selectPreviewSongId))
+    || state.selectPreviewAnchorSec == null
+    || state.selectPreviewAnchorClientUs == null) {
+    return null;
+  }
+  if (state.selectPreviewAnchorExpiresMs && performance.now() > Number(state.selectPreviewAnchorExpiresMs)) {
+    state.selectPreviewSongId = null;
+    state.selectPreviewAnchorSec = null;
+    state.selectPreviewAnchorClientUs = null;
+    state.selectPreviewAnchorExpiresMs = 0;
+    return null;
+  }
+  const elapsedSec = Math.max(0, (clientUs - state.selectPreviewAnchorClientUs) / 1_000_000);
+  return Math.max(0, state.selectPreviewAnchorSec + elapsedSec);
+}
+
+function hasActiveSongClock() {
+  return Boolean(state.songSeq && rawSongPositionSec() != null);
+}
+
+function hostTimestampToClientUs(hostUs) {
+  const value = Number(hostUs);
+  if (!Number.isFinite(value) || !state.clock.synced) return clientNowUs();
+  return Math.round(value - state.clock.offsetUs);
+}
+
+function resetSongMediaClock() {
+  state.songMediaAnchorSec = null;
+  state.songMediaAnchorClientUs = null;
+  state.songMediaRate = 1;
+  state.lyricSyncPoints = [];
+}
+
+function clearPitchQueue(reason = '') {
+  if (!state.pitchQueue.length && !state.pitchVoteBucket) return;
+  state.pitchQueue = [];
+  state.pitchVoteBucket = null;
+  state.pitchLastVotedTone = null;
+  if (reason) micStatus.textContent = reason;
+}
+
+function updateMicTransportStatus(force = false) {
+  const now = performance.now();
+  if (!force && now - state.pitchLastStatusMs < 1000) return;
+  state.pitchLastStatusMs = now;
+  if (!state.audioContext) return;
+
+  const slot = Number(state.slot || 0);
+  if (slot <= 0) {
+    micStatus.textContent = `Mic active, not sending: select a Mic room. Queued ${state.pitchQueue.length}.`;
+    return;
+  }
+  if (!state.songSeq || rawSongPositionSec() == null) {
+    micStatus.textContent = `Mic active on Mic ${slot}, waiting for song timing. Queued ${state.pitchQueue.length}.`;
+    return;
+  }
+  const sentAgeMs = state.pitchLastSentMs ? Math.round(now - state.pitchLastSentMs) : null;
+  const timestampLagText = state.pitchTimestampLagUs == null
+    ? ''
+    : `, audio lag ${Math.round(state.pitchTimestampLagUs / 1000)} ms`;
+  micStatus.textContent = `Mic ${slot}: captured ${state.pitchFramesCaptured}, sent ${state.pitchFramesSent}, queued ${state.pitchQueue.length}${sentAgeMs == null ? '' : `, last sent ${sentAgeMs} ms ago`}${timestampLagText}.`;
+}
+
+function currentGameAudioPositionSec(clientUs = clientNowUs()) {
+  if (state.gameState === 'song_select') return currentSelectPreviewPositionSec(clientUs);
+  return currentSongPositionSec(clientUs);
+}
+
+function updateLyricSyncPoints(message = {}) {
+  const track = selectedLyricsTrack(message);
+  const mediaStartUs = Number(message.mediaStartUs);
+  const hostStateUs = Number(message.hostStateUs);
+  if (!track || !Number.isFinite(mediaStartUs) || !Number.isFinite(hostStateUs) || !state.clock.synced) {
+    state.lyricSyncPoints = [];
+    return;
+  }
+
+  const hostStateClientUs = hostTimestampToClientUs(hostStateUs);
+  const points = [];
+  const addPoint = (line) => {
+    const songUs = Number(line?.lineStartUs);
+    if (!Number.isFinite(songUs) || songUs < 0) return;
+    const clientUs = Math.round(hostStateClientUs + (songUs - mediaStartUs));
+    if (clientUs < clientNowUs() - 500_000) return;
+    points.push({ songUs, clientUs });
+  };
+
+  addPoint(track);
+  for (const line of Array.isArray(track.nextLines) ? track.nextLines : []) addPoint(line);
+  points.sort((a, b) => a.clientUs - b.clientUs);
+  state.lyricSyncPoints = points.filter((point, index) =>
+    index === 0 || Math.abs(point.songUs - points[index - 1].songUs) > 1);
+}
+
+function applyLyricSyncPoint(clientUs = clientNowUs()) {
+  if (!['singing', 'paused'].includes(state.gameState) || !state.lyricSyncPoints.length) return;
+
+  let applied = null;
+  while (state.lyricSyncPoints.length && state.lyricSyncPoints[0].clientUs <= clientUs) {
+    applied = state.lyricSyncPoints.shift();
+  }
+
+  if (!applied || clientUs - applied.clientUs > 500_000) return;
+
+  const before = rawSongPositionSec(clientUs);
+  state.songMediaAnchorSec = applied.songUs / 1_000_000;
+  state.songMediaAnchorClientUs = applied.clientUs;
+  state.songMediaRate = 1;
+
+  const after = rawSongPositionSec(clientUs);
+  if (before != null && after != null && Math.abs(after - before) > 0.12) {
+    clearPitchQueue('Microphone queue reset at lyric sync point.');
+  }
+}
+
+function updateSongMediaAnchor(message = {}, source = '') {
+  const mediaStartUs = Number(message.mediaStartUs);
+  const hostStateUs = Number(message.hostStateUs);
+  if (!Number.isFinite(mediaStartUs) || mediaStartUs < 0 || !Number.isFinite(hostStateUs)) return false;
+
+  const anchorSec = mediaStartUs / 1_000_000;
+  const anchorClientUs = hostTimestampToClientUs(hostStateUs);
+  if (source === 'song.started' || source === 'song.resumed' || state.songMediaAnchorSec == null || state.songMediaAnchorClientUs == null) {
+    state.songMediaAnchorSec = anchorSec;
+    state.songMediaAnchorClientUs = anchorClientUs;
+    state.songMediaRate = 1;
+    return true;
+  }
+
+  const elapsedClientSec = (anchorClientUs - state.songMediaAnchorClientUs) / 1_000_000;
+  const elapsedMediaSec = anchorSec - state.songMediaAnchorSec;
+  const previousRate = Number.isFinite(state.songMediaRate) && state.songMediaRate > 0 ? state.songMediaRate : 1;
+  const predictedAnchorSec = state.gameState === 'paused'
+    ? state.songMediaAnchorSec
+    : state.songMediaAnchorSec + elapsedClientSec * previousRate;
+  const discontinuitySec = anchorSec - predictedAnchorSec;
+  if (Math.abs(discontinuitySec) > songMediaDiscontinuityThresholdSec) {
+    clearPitchQueue('Microphone queue reset for playhead jump.');
+    state.songMediaAnchorSec = anchorSec;
+    state.songMediaAnchorClientUs = anchorClientUs;
+    state.songMediaRate = 1;
+    if (state.deviceMusicAudio && state.settings.playMusicOnDevice) {
+      forceDeviceMusicSeekToGame(state.deviceMusicAudio);
+    }
+    return true;
+  }
+
+  if (elapsedClientSec > 0.4 && elapsedMediaSec > 0) {
+    const observedRate = Math.max(0.98, Math.min(1.02, elapsedMediaSec / elapsedClientSec));
+    state.songMediaRate = state.songMediaRate * 0.85 + observedRate * 0.15;
+  }
+  state.songMediaAnchorSec = anchorSec;
+  state.songMediaAnchorClientUs = anchorClientUs;
+  return true;
+}
+
 function updateSongClockFromMessage(message = {}, source = '') {
+  noteSongDurationFromMessage(message);
   const songSeq = Number(message.songSeq || state.songSeq || 0);
-  if (Number.isFinite(songSeq) && songSeq > 0) state.songSeq = songSeq;
+  if (Number.isFinite(songSeq) && songSeq > 0) {
+    if (state.songSeq && songSeq !== state.songSeq) {
+      clearPitchQueue('Microphone queue reset for new song.');
+    }
+    state.songSeq = songSeq;
+  }
 
   const mediaStartUs = Number(message.mediaStartUs);
   if (Number.isFinite(mediaStartUs) && mediaStartUs >= 0) {
     state.mediaStartUs = mediaStartUs;
+    updateSongMediaAnchor(message, source);
   }
 
   const hostSongStartUs = Number(message.hostSongStartUs);
@@ -1102,9 +3534,30 @@ function updateSongClockFromMessage(message = {}, source = '') {
 }
 
 function desiredDeviceMusicPositionSec(clientUs = clientNowUs()) {
-  const position = currentSongPositionSec(clientUs);
+  const position = currentGameAudioPositionSec(clientUs);
   if (position == null) return 0;
-  return Math.max(0, position + deviceMusicOutputLeadSec);
+  const initialLead = performance.now() < Number(state.deviceMusicInitialLeadUntilMs || 0)
+    ? deviceMusicInitialLeadSec
+    : 0;
+  return Math.max(0, position + deviceMusicOutputLeadSec + state.settings.targetDriftMs / 1000 + initialLead);
+}
+
+function deviceMusicGameTargetEnded(clientUs = clientNowUs()) {
+  const position = currentGameAudioPositionSec(clientUs);
+  const duration = activeSongDurationSec();
+  return position != null && duration != null && duration > 0 && position >= duration - 0.15;
+}
+
+function stopDeviceMusicAtGameEnd(audio = state.deviceMusicAudio) {
+  if (!audio || state.deviceMusicAudio !== audio) return false;
+  if (!deviceMusicGameTargetEnded()) return false;
+  try {
+    audio.pause();
+    audio.playbackRate = 1;
+  } catch {}
+  resetDeviceMusicPositionAnchor(audio);
+  setDeviceMusicStatus('Device music stopped: game preview ended.');
+  return true;
 }
 
 function resetDeviceMusicPositionAnchor(audio, clientUs = clientNowUs(), positionSec = null) {
@@ -1145,12 +3598,60 @@ function deviceMusicReadyLabel(audio) {
   const ready = ['empty', 'metadata', 'current data', 'future data', 'enough data'][audio.readyState] || String(audio.readyState);
   const network = ['empty', 'idle', 'loading', 'no source'][audio.networkState] || String(audio.networkState);
   const buffered = audio.buffered && audio.buffered.length
-    ? `${formatSongPosition(state.deviceMusicStreamOffsetSec + audio.buffered.start(0))}-${formatSongPosition(state.deviceMusicStreamOffsetSec + audio.buffered.end(audio.buffered.length - 1))}`
+    ? `${formatSongPosition(audio.buffered.start(0))}-${formatSongPosition(audio.buffered.end(audio.buffered.length - 1))}`
     : '--';
   return `${ready} / ${network} / ${buffered}`;
 }
 
+function deviceMusicDownloadLabel() {
+  const audio = state.deviceMusicAudio;
+  if (audio && !state.deviceMusicObjectUrl) {
+    if (audio.buffered && audio.buffered.length) {
+      const start = audio.buffered.start(0);
+      const end = audio.buffered.end(audio.buffered.length - 1);
+      return `${formatSongPosition(start)}-${formatSongPosition(end)} buffered`;
+    }
+    return audio.networkState === HTMLMediaElement.NETWORK_LOADING ? 'streaming' : '--';
+  }
+  const loaded = Number(state.deviceMusicDownloadLoadedBytes || 0);
+  const total = Number(state.deviceMusicDownloadTotalBytes);
+  if (Number.isFinite(total) && total > 0) {
+    const percent = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
+    return `${percent}% (${formatBytes(loaded)} / ${formatBytes(total)})`;
+  }
+  if (loaded > 0) return `${formatBytes(loaded)} downloaded`;
+  return state.deviceMusicAudio ? 'complete' : '--';
+}
+
+function deviceMusicDownloadComplete() {
+  if (!state.deviceMusicAudio) return false;
+  if (!state.deviceMusicObjectUrl) {
+    const audio = state.deviceMusicAudio;
+    if (!audio.buffered || !audio.buffered.length || !Number.isFinite(audio.duration) || audio.duration <= 0) return false;
+    return audio.buffered.start(0) <= 0.25 && audio.buffered.end(audio.buffered.length - 1) >= audio.duration - 0.25;
+  }
+  const loaded = Number(state.deviceMusicDownloadLoadedBytes || 0);
+  const total = Number(state.deviceMusicDownloadTotalBytes);
+  return !Number.isFinite(total) || total <= 0 || loaded >= total;
+}
+
+function isDeviceMusicErrorStatus(text) {
+  return /\b(failed|unsupported|not supported|codec|error)\b/i.test(String(text || ''));
+}
+
 function setDeviceMusicStatus(text, stateClass = '') {
+  if (state.deviceMusicStickyErrorText && stateClass !== 'state-error') {
+    deviceMusicStatus.textContent = state.deviceMusicStickyErrorText;
+    deviceMusicStatus.classList.remove('state-playing', 'state-buffering');
+    deviceMusicStatus.classList.add('state-error');
+    updateDeviceMusicDiagnostics();
+    return;
+  }
+  if (stateClass === 'state-error') {
+    state.deviceMusicStickyErrorText = text;
+  } else if (state.deviceMusicStickyErrorText && text !== state.deviceMusicStickyErrorText) {
+    state.deviceMusicStickyErrorText = null;
+  }
   deviceMusicStatus.textContent = text;
   deviceMusicStatus.classList.remove('state-playing', 'state-buffering', 'state-error');
   if (stateClass) deviceMusicStatus.classList.add(stateClass);
@@ -1160,14 +3661,15 @@ function setDeviceMusicStatus(text, stateClass = '') {
 function updateDeviceMusicDiagnostics(stateText = null) {
   const audio = state.deviceMusicAudio;
   const sampleClientUs = clientNowUs();
-  const gamePosition = state.hostSongStartUs ? currentSongPositionSec(sampleClientUs) : null;
-  const playbackTarget = state.hostSongStartUs && gamePosition != null ? desiredDeviceMusicPositionSec(sampleClientUs) : null;
+  const gamePosition = currentGameAudioPositionSec(sampleClientUs);
+  const playbackTarget = gamePosition != null ? desiredDeviceMusicPositionSec(sampleClientUs) : null;
   const audioPosition = estimateDeviceMusicPhonePositionSec(audio, sampleClientUs);
-  const phone = audioPosition == null ? null : state.deviceMusicStreamOffsetSec + audioPosition;
-  const songDuration = audio && Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : null;
+  const phone = audioPosition;
+  const songDuration = activeSongDurationSec();
   const gameRemaining = gamePosition != null && songDuration != null ? songDuration - Math.max(0, gamePosition) : null;
   const phoneRemaining = phone != null && songDuration != null ? songDuration - Math.max(0, phone) : null;
   const drift = audio && playbackTarget != null && phone != null ? playbackTarget - phone : null;
+  const fullyDownloaded = deviceMusicDownloadComplete();
   let status = stateText;
   if (!status) {
     if (!state.settings.playMusicOnDevice) status = 'off';
@@ -1175,13 +3677,16 @@ function updateDeviceMusicDiagnostics(stateText = null) {
     else if (!audio) status = 'waiting';
     else if (state.gameState === 'paused') status = 'game paused';
     else if (state.deviceMusicBlocked) status = 'starting';
-    else if (audio.paused) status = audio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA ? 'buffering' : 'starting';
-    else status = audio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA ? 'buffering' : 'playing';
+    else if (audio.paused) status = fullyDownloaded ? 'ready' : (audio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA ? 'buffering' : 'starting');
+    else status = fullyDownloaded ? 'playing' : (audio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA ? 'buffering' : 'playing');
   }
   deviceMusicStateValue.textContent = status;
   deviceMusicPhonePositionValue.textContent = phoneRemaining == null ? (phone == null ? '--' : 'syncing') : formatRemainingPosition(phoneRemaining);
-  deviceMusicTargetPositionValue.textContent = gameRemaining == null ? (state.hostSongStartUs ? 'syncing' : '--') : formatRemainingPosition(gameRemaining);
+  deviceMusicTargetPositionValue.textContent = gameRemaining == null ? (gamePosition == null ? '--' : 'syncing') : formatRemainingPosition(gameRemaining);
   deviceMusicDriftValue.textContent = drift == null ? '--' : `${Math.round(drift * 1000)} ms`;
+  deviceMusicRateValue.textContent = audio ? `${Number(audio.playbackRate || 1).toFixed(5)}x` : '--';
+  deviceMusicFileValue.textContent = state.deviceMusicFileLabel || '--';
+  deviceMusicDownloadValue.textContent = deviceMusicDownloadLabel();
   deviceMusicReadyValue.textContent = deviceMusicReadyLabel(audio);
 }
 
@@ -1192,30 +3697,61 @@ function clampDeviceMusicPosition(audio, positionSec) {
   return Math.max(0, positionSec);
 }
 
+function canSeekDeviceMusic(audio, positionSec) {
+  if (!audio) return false;
+  if (!audio.seekable || !audio.seekable.length) {
+    return Number.isFinite(audio.duration)
+      && audio.duration > 0
+      && positionSec >= 0
+      && positionSec <= audio.duration;
+  }
+  for (let index = 0; index < audio.seekable.length; index += 1) {
+    if (positionSec >= audio.seekable.start(index) && positionSec <= audio.seekable.end(index)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function deviceMusicPlaybackRateForDrift(drift) {
+  if (!Number.isFinite(drift)) return deviceMusicNominalPlaybackRate;
+  const absDrift = Math.abs(drift);
+  if (absDrift <= deviceMusicSoftSyncThresholdSec) return deviceMusicNominalPlaybackRate;
+
+  const effectiveDrift = absDrift - deviceMusicSoftSyncThresholdSec;
+  const strength = 1 - Math.exp(-effectiveDrift / deviceMusicRateCurveScaleSec);
+  const correction = Math.sign(drift) * deviceMusicMaxPlaybackRateDeviation * strength;
+  return deviceMusicNominalPlaybackRate + correction;
+}
+
 function syncDeviceMusicAudio(audio, force = false) {
   if (state.deviceMusicAudio !== audio) return null;
   if (audio.readyState < HTMLMediaElement.HAVE_METADATA) return null;
+  if (stopDeviceMusicAtGameEnd(audio)) return null;
   const sampleClientUs = clientNowUs();
   const desiredMedia = desiredDeviceMusicPositionSec(sampleClientUs);
-  const desired = clampDeviceMusicPosition(audio, desiredMedia - state.deviceMusicStreamOffsetSec);
+  const desired = clampDeviceMusicPosition(audio, desiredMedia);
   const phone = estimateDeviceMusicPhonePositionSec(audio, sampleClientUs);
   if (phone == null) return null;
   const drift = desired - phone;
-  if (force || Math.abs(drift) > deviceMusicHardSeekThresholdSec) {
-    try {
-      audio.currentTime = desired;
-      audio.playbackRate = 1;
-      resetDeviceMusicPositionAnchor(audio, sampleClientUs, desired);
-    } catch {
-      return null;
+  const canInitialSeek = state.deviceMusicInitialSeekPending && (force || Math.abs(drift) > deviceMusicHardSeekThresholdSec);
+  if (canInitialSeek) {
+    if (canSeekDeviceMusic(audio, desired)) {
+      try {
+        audio.currentTime = desired;
+        audio.playbackRate = deviceMusicNominalPlaybackRate;
+        resetDeviceMusicPositionAnchor(audio, sampleClientUs, desired);
+        state.deviceMusicInitialSeekPending = false;
+      } catch {
+        return null;
+      }
+    } else {
+      resetDeviceMusicPositionAnchor(audio, sampleClientUs, phone);
+      audio.playbackRate = deviceMusicPlaybackRateForDrift(drift);
     }
-  } else if (Math.abs(drift) > deviceMusicSoftSyncThresholdSec) {
-    const correction = Math.max(-0.02, Math.min(0.02, drift * 0.25));
-    resetDeviceMusicPositionAnchor(audio, sampleClientUs, phone);
-    audio.playbackRate = 1 + correction;
   } else {
     resetDeviceMusicPositionAnchor(audio, sampleClientUs, phone);
-    audio.playbackRate = 1;
+    audio.playbackRate = deviceMusicPlaybackRateForDrift(drift);
   }
   return drift;
 }
@@ -1223,12 +3759,16 @@ function syncDeviceMusicAudio(audio, force = false) {
 function forceDeviceMusicSeekToGame(audio) {
   if (state.deviceMusicAudio !== audio) return null;
   if (audio.readyState < HTMLMediaElement.HAVE_METADATA) return null;
+  if (stopDeviceMusicAtGameEnd(audio)) return null;
+  if (!state.deviceMusicInitialSeekPending) return syncDeviceMusicAudio(audio, false);
   const sampleClientUs = clientNowUs();
-  const desired = clampDeviceMusicPosition(audio, desiredDeviceMusicPositionSec(sampleClientUs) - state.deviceMusicStreamOffsetSec);
+  const desired = clampDeviceMusicPosition(audio, desiredDeviceMusicPositionSec(sampleClientUs));
+  if (!canSeekDeviceMusic(audio, desired)) return syncDeviceMusicAudio(audio, false);
   try {
     audio.currentTime = desired;
-    audio.playbackRate = 1;
+    audio.playbackRate = deviceMusicNominalPlaybackRate;
     resetDeviceMusicPositionAnchor(audio, sampleClientUs, desired);
+    state.deviceMusicInitialSeekPending = false;
     return desired;
   } catch {
     return null;
@@ -1239,23 +3779,26 @@ function startDeviceMusicSync(audio) {
   if (state.deviceMusicSyncTimer) clearInterval(state.deviceMusicSyncTimer);
   state.deviceMusicSyncTimer = setInterval(() => {
     if (state.deviceMusicAudio !== audio) return;
-    if (state.gameState !== 'singing') return;
+    if (!['singing', 'song_select'].includes(state.gameState)) return;
     const drift = syncDeviceMusicAudio(audio, false);
     if (drift != null) {
-      setDeviceMusicStatus(`Device music playing. Drift ${Math.round(drift * 1000)} ms.`, 'state-playing');
+      setDeviceMusicStatus(`Device music playing. Target drift ${Math.round(drift * 1000)} ms.`, 'state-playing');
     }
   }, 750);
 }
 
 function playDeviceMusicAudio(reason = '') {
   const audio = state.deviceMusicAudio;
-  if (!state.settings.playMusicOnDevice || !audio || state.gameState !== 'singing') return false;
+  if (!state.settings.playMusicOnDevice || !audio || !['singing', 'song_select'].includes(state.gameState)) return false;
+  if (stopDeviceMusicAtGameEnd(audio)) return false;
   if (audio.readyState < HTMLMediaElement.HAVE_METADATA) {
     setDeviceMusicStatus('Device music waiting for metadata.', 'state-buffering');
     return false;
   }
-  if (currentSongPositionSec() == null) {
-    setDeviceMusicStatus('Device music waiting for clock sync.', 'state-buffering');
+  if (currentGameAudioPositionSec() == null) {
+    setDeviceMusicStatus(state.gameState === 'song_select'
+      ? 'Device music waiting for preview clock.'
+      : 'Device music waiting for clock sync.', 'state-buffering');
     return false;
   }
   syncDeviceMusicAudio(audio, audio.paused);
@@ -1268,8 +3811,21 @@ function playDeviceMusicAudio(reason = '') {
     .catch(() => {
       state.deviceMusicBlocked = true;
       setDeviceMusicStatus('Device music starting...', 'state-buffering');
-    });
+  });
   return true;
+}
+
+function keepDeviceMusicPlaying(reason = '') {
+  const audio = state.deviceMusicAudio;
+  if (!state.settings.playMusicOnDevice || !audio || state.gameState !== 'singing') return false;
+  if (state.deviceMusicKey !== deviceMusicTargetKey()) return false;
+  if (currentGameAudioPositionSec() == null) return false;
+  if (audio.paused || audio.ended) {
+    state.deviceMusicBlocked = false;
+    playDeviceMusicAudio(reason || 'keepalive');
+    return true;
+  }
+  return false;
 }
 
 function scheduleDeviceMusicRetry(message = {}, delayMs = 1000) {
@@ -1277,7 +3833,8 @@ function scheduleDeviceMusicRetry(message = {}, delayMs = 1000) {
   const songSeq = state.songSeq;
   state.deviceMusicRetryTimer = setTimeout(() => {
     state.deviceMusicRetryTimer = null;
-    if (!state.settings.playMusicOnDevice || !state.hostSongStartUs) return;
+    if (!state.settings.playMusicOnDevice) return;
+    if (state.gameState !== 'song_select' && !state.hostSongStartUs) return;
     if (state.songSeq !== songSeq || state.deviceMusicAudio) return;
     startDeviceMusic(Object.keys(message || {}).length ? message : state.currentSongMessage || {});
   }, delayMs);
@@ -1286,22 +3843,149 @@ function scheduleDeviceMusicRetry(message = {}, delayMs = 1000) {
 function maybeStartDeviceMusic(message = {}) {
   if (!state.settings.playMusicOnDevice) return;
   if (message && Object.keys(message).length) updateSongClockFromMessage(message, message.type || 'device music');
-  if (!state.hostSongStartUs) {
+  if (state.gameState === 'song_select') {
+    if (deviceMusicTargetKey() === 'select:-1') {
+      setDeviceMusicStatus('Device music enabled. Waiting for selected song.', 'state-buffering');
+      return;
+    }
+  } else if (!state.hostSongStartUs) {
     setDeviceMusicStatus('Device music enabled. Waiting for song clock.', 'state-buffering');
     return;
   }
-  if (!state.clock.synced) {
+  if (state.gameState !== 'song_select' && !state.clock.synced) {
     setDeviceMusicStatus('Device music enabled. Waiting for clock sync.', 'state-buffering');
     return;
   }
-  if (state.deviceMusicAudio && state.deviceMusicSongSeq === state.songSeq) return;
+  const key = deviceMusicTargetKey();
+  if (state.deviceMusicRecoveryTimer && state.deviceMusicKey === key) return;
+  if ((state.deviceMusicAudio || state.deviceMusicAbortController) && state.deviceMusicKey === key) return;
   startDeviceMusic(Object.keys(message || {}).length ? message : state.currentSongMessage || {});
 }
 
-async function startDeviceMusic(message = {}) {
+async function readDeviceMusicBlob(response) {
+  const contentType = response.headers.get('content-type') || 'audio/mpeg';
+  const headerLength = Number(response.headers.get('content-length'));
+  state.deviceMusicDownloadLoadedBytes = 0;
+  state.deviceMusicDownloadTotalBytes = Number.isFinite(headerLength) && headerLength > 0 ? headerLength : null;
+
+  if (!response.body || typeof response.body.getReader !== 'function') {
+    const blob = await response.blob();
+    state.deviceMusicDownloadLoadedBytes = blob.size;
+    state.deviceMusicDownloadTotalBytes = state.deviceMusicDownloadTotalBytes || blob.size;
+    updateDeviceMusicDiagnostics();
+    return blob;
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let loaded = 0;
+  let lastUiUpdateMs = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.byteLength;
+    state.deviceMusicDownloadLoadedBytes = loaded;
+    const nowMs = performance.now();
+    if (nowMs - lastUiUpdateMs > 100) {
+      lastUiUpdateMs = nowMs;
+      setDeviceMusicStatus(`Device music downloading ${deviceMusicDownloadLabel()}.`, 'state-buffering');
+    }
+  }
+
+  state.deviceMusicDownloadLoadedBytes = loaded;
+  if (!state.deviceMusicDownloadTotalBytes && loaded > 0) state.deviceMusicDownloadTotalBytes = loaded;
+  updateDeviceMusicDiagnostics();
+  return new Blob(chunks, { type: contentType });
+}
+
+function sniffMpegLayer(bytes) {
+  for (let index = 0; index < bytes.length - 1; index += 1) {
+    if (bytes[index] !== 0xff || (bytes[index + 1] & 0xe0) !== 0xe0) continue;
+    const versionBits = (bytes[index + 1] >> 3) & 0x03;
+    const layerBits = (bytes[index + 1] >> 1) & 0x03;
+    const version = versionBits === 3 ? 'MPEG-1' : versionBits === 2 ? 'MPEG-2' : versionBits === 0 ? 'MPEG-2.5' : 'MPEG reserved';
+    const layer = layerBits === 1 ? 'Layer III (MP3)' : layerBits === 2 ? 'Layer II (MP2)' : layerBits === 3 ? 'Layer I (MP1)' : 'reserved layer';
+    const label = layerBits === 1 ? 'MP3 audio' : layerBits === 2 ? 'MP2 audio' : layerBits === 3 ? 'MP1 audio' : 'MPEG audio';
+    return { kind: 'mpeg', codec: label, detail: `${version} ${layer}`, mime: 'audio/mpeg' };
+  }
+  return null;
+}
+
+function sniffAudioBytes(buffer, servedType = '', fileName = '') {
+  const bytes = new Uint8Array(buffer || []);
+  const ascii = (start, length) => String.fromCharCode(...bytes.slice(start, start + length));
+  const info = {
+    fileName,
+    extension: (String(fileName).match(/\.([^.?#/\\]+)$/)?.[1] || '').toLowerCase(),
+    servedType: servedType || '',
+    codec: 'unknown audio',
+    detail: 'unknown header',
+    mime: servedType || ''
+  };
+  if (bytes.length >= 10 && ascii(0, 3) === 'ID3') {
+    const mpeg = sniffMpegLayer(bytes.slice(10)) || {};
+    return { ...info, kind: 'mpeg', codec: mpeg.codec || 'MPEG audio with ID3 tag', detail: mpeg.detail || 'ID3 tagged MPEG audio', mime: 'audio/mpeg' };
+  }
+  const mpeg = sniffMpegLayer(bytes);
+  if (mpeg) return { ...info, ...mpeg };
+  if (bytes.length >= 12 && ascii(4, 4) === 'ftyp') return { ...info, kind: 'mp4', codec: 'MP4/M4A audio', detail: `MP4 brand ${ascii(8, 4)}`, mime: 'audio/mp4' };
+  if (bytes.length >= 4 && ascii(0, 4) === 'OggS') return { ...info, kind: 'ogg', codec: 'Ogg audio', detail: 'Ogg container', mime: 'audio/ogg' };
+  if (bytes.length >= 4 && ascii(0, 4) === 'fLaC') return { ...info, kind: 'flac', codec: 'FLAC audio', detail: 'FLAC stream', mime: 'audio/flac' };
+  if (bytes.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WAVE') return { ...info, kind: 'wav', codec: 'WAV audio', detail: 'RIFF/WAVE', mime: 'audio/wav' };
+  return info;
+}
+
+function mediaUnsupportedMessage(code = null) {
+  const info = state.deviceMusicMediaInfo || {};
+  const parts = ['Device music codec is not supported by this browser'];
+  if (code) parts.push(`media error ${code}`);
+  if (info.codec) parts.push(info.codec);
+  if (info.detail && info.detail !== info.codec) parts.push(info.detail);
+  if (info.servedType) parts.push(`served as ${info.servedType}`);
+  if (info.fileName) parts.push(`file ${info.fileName}`);
+  if (info.extension === 'm4a' && info.kind === 'mpeg') {
+    parts.push('the file extension is .m4a but the bytes are MPEG audio');
+  }
+  if (info.codec && (info.codec.includes('MP1') || info.codec.includes('MP2'))) {
+    parts.push('many phone browsers do not decode MPEG Layer I/II in HTML audio');
+  }
+  return `${parts.join('; ')}.`;
+}
+
+function deviceMusicFallbackExtensions(info = {}) {
+  const extension = String(info.extension || '').toLowerCase();
+  if (extension === 'm4a') return ['mp3', 'mp4', 'mp2', 'mp1', 'mpeg'];
+  if (extension === 'mp4') return ['mp3', 'm4a', 'mp2', 'mp1', 'mpeg'];
+  if (extension === 'mp3' || extension === 'mpeg' || extension === 'mpg') return ['mp4', 'm4a', 'mp2', 'mp1'];
+  if (extension === 'mp2') return ['mp3', 'mp4', 'm4a', 'mp1', 'mpeg'];
+  if (extension === 'mp1') return ['mp3', 'mp4', 'm4a', 'mp2', 'mpeg'];
+  return ['mp3', 'mp4', 'm4a', 'mp2', 'mp1', 'mpeg'];
+}
+
+async function probeDeviceMusicMedia(audioUrl, fileLabel = '') {
+  try {
+    const response = await fetch(audioUrl, {
+      cache: 'no-store',
+      headers: { Range: 'bytes=0-255' }
+    });
+    if (!response.ok && response.status !== 206) return null;
+    const buffer = await response.arrayBuffer();
+    const fileName = response.headers.get('x-usdx-audio-file') || fileLabel;
+    const info = sniffAudioBytes(buffer, response.headers.get('content-type') || '', fileName);
+    state.deviceMusicMediaInfo = info;
+    return info;
+  } catch {
+    return null;
+  }
+}
+
+async function startDeviceMusic(message = {}, recoveryAttempt = 0, extensionAttempt = 0, extensionFallbacksOverride = null) {
   if (!state.settings.playMusicOnDevice) return;
+  if (recoveryAttempt === 0 && extensionAttempt === 0) state.deviceMusicStickyErrorText = null;
   if (message && Object.keys(message).length) updateSongClockFromMessage(message, message.type || 'device music');
-  if (!state.roomId || !state.hostSongStartUs || !state.clock.synced) {
+  const isSongSelectPreview = state.gameState === 'song_select';
+  if (!state.roomId || (!isSongSelectPreview && (!state.hostSongStartUs || !state.clock.synced))) {
     setDeviceMusicStatus(state.hostSongStartUs ? 'Device music waiting for clock sync.' : 'Device music waiting for song clock.', 'state-buffering');
     return;
   }
@@ -1315,21 +3999,73 @@ async function startDeviceMusic(message = {}) {
   }
 
   const requestedSeq = state.songSeq;
-  const streamOffsetSec = Math.max(0, desiredDeviceMusicPositionSec() - 0.25);
+  const key = deviceMusicTargetKey();
+  if (state.deviceMusicAudio && Number(state.deviceMusicSongId) === songId) {
+    const previousKey = state.deviceMusicKey;
+    state.deviceMusicSongSeq = requestedSeq;
+    state.deviceMusicKey = key;
+    if (previousKey !== key) state.deviceMusicInitialSeekPending = true;
+    forceDeviceMusicSeekToGame(state.deviceMusicAudio);
+    if (currentGameAudioPositionSec() == null) {
+      setDeviceMusicStatus('Device music ready. Waiting for game preview.', 'state-buffering');
+    } else {
+      playDeviceMusicAudio('reuse');
+    }
+    return;
+  }
+
   stopDeviceMusic('Device music downloading...');
   state.deviceMusicSongSeq = requestedSeq;
-  state.deviceMusicStreamOffsetSec = streamOffsetSec;
-  setDeviceMusicStatus('Device music downloading...', 'state-buffering');
+  state.deviceMusicSongId = songId;
+  state.deviceMusicKey = key;
+  state.deviceMusicFileLabel = deviceMusicSongLabel(song, songId);
+  state.deviceMusicDownloadLoadedBytes = 0;
+  state.deviceMusicDownloadTotalBytes = null;
+  state.deviceMusicMediaInfo = null;
+  if (extensionAttempt === 0 && !extensionFallbacksOverride) state.deviceMusicExtensionFallbacks = null;
+  const fallbackExtensions = extensionFallbacksOverride
+    || state.deviceMusicExtensionFallbacks
+    || deviceMusicFallbackExtensions({ extension: deviceMusicSongExtension(song) });
+  state.deviceMusicExtensionFallbacks = fallbackExtensions;
+  const startsWithOriginalFile = Boolean(deviceMusicSongExtension(song));
+  const fakeExtensionIndex = startsWithOriginalFile ? extensionAttempt - 1 : extensionAttempt;
+  const fakeExtension = fakeExtensionIndex >= 0 ? (fallbackExtensions[fakeExtensionIndex] || '') : '';
+  setDeviceMusicStatus(recoveryAttempt > 0
+    ? `Device music retrying decoder (${recoveryAttempt}/${deviceMusicDecoderMaxRetries})...`
+    : fakeExtension
+      ? `Device music retrying as .${fakeExtension}...`
+    : 'Device music loading stream...', 'state-buffering');
 
-  const audioUrl = `/api/preview?roomId=${encodeURIComponent(state.roomId)}&songId=${songId}&songSeq=${requestedSeq}&stream=1&startSec=${encodeURIComponent(streamOffsetSec.toFixed(3))}&timeoutMs=8000&nonce=${Date.now()}`;
-  const audio = new Audio(audioUrl);
+  const audioRoute = `/api/game-audio${fakeExtension ? `.${fakeExtension}` : ''}`;
+  const audioUrl = `${audioRoute}?roomId=${encodeURIComponent(state.roomId)}&songId=${songId}&songSeq=${requestedSeq}&timeoutMs=20000&retry=${recoveryAttempt}&extRetry=${extensionAttempt}&formatHint=${encodeURIComponent(fakeExtension)}&nonce=${Date.now()}`;
+  probeDeviceMusicMedia(audioUrl, state.deviceMusicFileLabel).then((info) => {
+    if (!info || state.deviceMusicKey !== key || state.deviceMusicSongSeq !== requestedSeq) return;
+    state.deviceMusicExtensionFallbacks = deviceMusicFallbackExtensions(info);
+    const typeText = [info.codec, info.detail && info.detail !== info.codec ? info.detail : '', info.servedType ? `served ${info.servedType}` : '']
+      .filter(Boolean)
+      .join('; ');
+    if (typeText) {
+      state.deviceMusicFileLabel = `${deviceMusicSongLabel(song, songId, info.fileName || '')} - ${typeText}`;
+      updateDeviceMusicDiagnostics();
+    }
+  });
+  const audio = new Audio();
   audio.preload = 'auto';
   state.deviceMusicAudio = audio;
   state.deviceMusicObjectUrl = null;
+  state.deviceMusicSongId = songId;
+  state.deviceMusicInitialLeadUntilMs = performance.now() + 4_000;
+  state.deviceMusicInitialSeekPending = true;
   resetDeviceMusicPositionAnchor(audio);
-  setDeviceMusicStatus('Device music buffering...', 'state-buffering');
+  setDeviceMusicStatus('Device music stream loading. Preparing playback.', 'state-buffering');
 
-  audio.addEventListener('loadstart', () => setDeviceMusicStatus('Device music loading...', 'state-buffering'));
+  audio.addEventListener('loadstart', () => setDeviceMusicStatus('Device music stream loading decoder.', 'state-buffering'));
+  audio.addEventListener('progress', () => {
+    updateDeviceMusicDiagnostics();
+    if (state.deviceMusicAudio === audio && audio.paused) {
+      setDeviceMusicStatus(`Device music buffering ${deviceMusicDownloadLabel()}.`, 'state-buffering');
+    }
+  });
   audio.addEventListener('loadedmetadata', () => {
     forceDeviceMusicSeekToGame(audio);
     updateDeviceMusicDiagnostics();
@@ -1337,11 +4073,15 @@ async function startDeviceMusic(message = {}) {
   audio.addEventListener('seeked', () => resetDeviceMusicPositionAnchor(audio));
   audio.addEventListener('waiting', () => {
     resetDeviceMusicPositionAnchor(audio);
-    setDeviceMusicStatus('Device music buffering...', 'state-buffering');
+    setDeviceMusicStatus(deviceMusicDownloadComplete()
+      ? 'Device music playing. Synced to game clock.'
+      : 'Device music buffering...', deviceMusicDownloadComplete() ? 'state-playing' : 'state-buffering');
   });
   audio.addEventListener('stalled', () => {
     resetDeviceMusicPositionAnchor(audio);
-    setDeviceMusicStatus('Device music stalled while buffering.', 'state-buffering');
+    setDeviceMusicStatus(deviceMusicDownloadComplete()
+      ? 'Device music playing. Synced to game clock.'
+      : 'Device music stalled while buffering.', deviceMusicDownloadComplete() ? 'state-playing' : 'state-buffering');
   });
   audio.addEventListener('playing', () => {
     resetDeviceMusicPositionAnchor(audio);
@@ -1349,15 +4089,100 @@ async function startDeviceMusic(message = {}) {
   });
   audio.addEventListener('pause', () => {
     resetDeviceMusicPositionAnchor(audio);
-    if (state.deviceMusicAudio === audio && state.gameState === 'paused') {
+    if (state.deviceMusicAudio !== audio) return;
+    if (state.gameState === 'singing' && state.settings.playMusicOnDevice) {
+      window.setTimeout(() => keepDeviceMusicPlaying('pause recovery'), 0);
+    } else if (state.gameState === 'paused') {
       setDeviceMusicStatus('Device music paused.');
     }
   });
   audio.addEventListener('ended', () => {
-    if (state.deviceMusicAudio === audio) setDeviceMusicStatus('Device music ended.');
+    if (state.deviceMusicAudio !== audio) return;
+    if (state.gameState === 'singing' && state.settings.playMusicOnDevice) {
+      keepDeviceMusicPlaying('ended recovery');
+    } else {
+      setDeviceMusicStatus('Device music ended.');
+    }
   });
 
   let playStarted = false;
+  let decoderTimer = null;
+  const clearLocalTimers = () => {
+    if (decoderTimer) {
+      clearTimeout(decoderTimer);
+      decoderTimer = null;
+    }
+  };
+  const recoverDecoder = (reason = 'metadata timeout') => {
+    if (state.deviceMusicAudio !== audio) return false;
+    if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) return false;
+    clearLocalTimers();
+    if (retryWithNextExtension()) return true;
+    if (recoveryAttempt >= deviceMusicDecoderMaxRetries) {
+      stopDeviceMusic(`Device music failed to load decoder after ${deviceMusicDecoderMaxRetries} retries.`);
+      return false;
+    }
+    setDeviceMusicStatus(`Device music decoder stuck (${reason}); retrying...`, 'state-buffering');
+    try {
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+    } catch {}
+    if (state.deviceMusicSyncTimer) {
+      clearInterval(state.deviceMusicSyncTimer);
+      state.deviceMusicSyncTimer = null;
+    }
+    state.deviceMusicAudio = null;
+    state.deviceMusicObjectUrl = null;
+    state.deviceMusicBlocked = false;
+    state.deviceMusicInitialSeekPending = true;
+    state.deviceMusicPositionAnchorSec = null;
+    state.deviceMusicPositionAnchorClientUs = null;
+    if (state.deviceMusicRecoveryTimer) clearTimeout(state.deviceMusicRecoveryTimer);
+    state.deviceMusicRecoveryTimer = setTimeout(() => {
+      state.deviceMusicRecoveryTimer = null;
+      if (!state.settings.playMusicOnDevice) return;
+      if (state.deviceMusicKey !== key || state.deviceMusicSongSeq !== requestedSeq) return;
+      startDeviceMusic(Object.keys(message || {}).length ? message : state.currentSongMessage || {}, recoveryAttempt + 1, extensionAttempt, fallbackExtensions);
+    }, 250);
+    return true;
+  };
+  const retryWithNextExtension = (code = null) => {
+    const extensions = state.deviceMusicExtensionFallbacks || fallbackExtensions;
+    const nextExtensionIndex = fakeExtensionIndex + 1;
+    const nextExtension = extensions[nextExtensionIndex];
+    if (!nextExtension) return false;
+    clearLocalTimers();
+    setDeviceMusicStatus(`Device music unsupported${code ? ` (media error ${code})` : ''}; retrying as .${nextExtension}...`, 'state-buffering');
+    try {
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+    } catch {}
+    if (state.deviceMusicSyncTimer) {
+      clearInterval(state.deviceMusicSyncTimer);
+      state.deviceMusicSyncTimer = null;
+    }
+    state.deviceMusicAudio = null;
+    state.deviceMusicObjectUrl = null;
+    state.deviceMusicBlocked = false;
+    state.deviceMusicInitialSeekPending = true;
+    state.deviceMusicPositionAnchorSec = null;
+    state.deviceMusicPositionAnchorClientUs = null;
+    if (state.deviceMusicRecoveryTimer) clearTimeout(state.deviceMusicRecoveryTimer);
+    state.deviceMusicRecoveryTimer = setTimeout(() => {
+      state.deviceMusicRecoveryTimer = null;
+      if (!state.settings.playMusicOnDevice) return;
+      if (state.deviceMusicKey !== key || state.deviceMusicSongSeq !== requestedSeq) return;
+      startDeviceMusic(
+        Object.keys(message || {}).length ? message : state.currentSongMessage || {},
+        recoveryAttempt,
+        startsWithOriginalFile ? nextExtensionIndex + 1 : nextExtensionIndex,
+        extensions
+      );
+    }, 250);
+    return true;
+  };
   const playWhenReady = async () => {
     if (playStarted) return;
     if (state.deviceMusicAudio !== audio) return;
@@ -1365,9 +4190,11 @@ async function startDeviceMusic(message = {}) {
       setDeviceMusicStatus('Device music waiting for metadata.', 'state-buffering');
       return;
     }
-    const positionSec = currentSongPositionSec();
+    const positionSec = currentGameAudioPositionSec();
     if (positionSec == null) {
-      setDeviceMusicStatus('Device music waiting for clock sync.', 'state-buffering');
+      setDeviceMusicStatus(state.gameState === 'song_select'
+        ? 'Device music waiting for preview clock.'
+        : 'Device music waiting for clock sync.', 'state-buffering');
       scheduleDeviceMusicRetry(message, 500);
       return;
     }
@@ -1377,32 +4204,52 @@ async function startDeviceMusic(message = {}) {
       playStarted = true;
       playDeviceMusicAudio('ready');
     };
-    if (positionSec < 0.02) {
-      if (state.deviceMusicTimer) clearTimeout(state.deviceMusicTimer);
-      state.deviceMusicTimer = setTimeout(() => play().catch((error) => {
-        setDeviceMusicStatus('Device music starting...', 'state-buffering');
-        state.deviceMusicBlocked = true;
-      }), Math.max(0, -positionSec * 1000));
-    } else {
-      await play();
-    }
+    await play();
   };
-  audio.addEventListener('canplay', () => {
-    playWhenReady().catch((error) => {
+  decoderTimer = setTimeout(() => {
+    if (state.deviceMusicAudio !== audio || audio.readyState >= HTMLMediaElement.HAVE_METADATA) return;
+    const code = audio.error?.code;
+    if (code === 4) {
+      if (retryWithNextExtension(code)) return;
+      stopDeviceMusic(mediaUnsupportedMessage(code));
+      return;
+    }
+    recoverDecoder(code ? `media error ${code}` : 'metadata timeout');
+  }, deviceMusicDecoderTimeoutMs);
+  const tryPlayWhenReady = () => {
+    if (decoderTimer && audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      clearLocalTimers();
+    }
+    playWhenReady().catch(() => {
       setDeviceMusicStatus('Device music starting...', 'state-buffering');
       state.deviceMusicBlocked = true;
     });
+  };
+  audio.addEventListener('loadedmetadata', tryPlayWhenReady);
+  audio.addEventListener('canplay', () => {
+    tryPlayWhenReady();
   });
   audio.addEventListener('error', () => {
     if (state.deviceMusicAudio === audio) {
-      stopDeviceMusic('Device music failed to load this song.');
+      const code = audio.error?.code;
+      if (code === 4) {
+        if (retryWithNextExtension(code)) return;
+        stopDeviceMusic(mediaUnsupportedMessage(code));
+        return;
+      }
+      if (!recoverDecoder(code ? `media error ${code}` : 'media error')) {
+        stopDeviceMusic(`Device music failed to decode this song${code ? ` (media error ${code})` : ''}.`);
+      }
     }
   });
-  audio.load();
-  playWhenReady().catch((error) => {
-    setDeviceMusicStatus('Device music starting...', 'state-buffering');
-    state.deviceMusicBlocked = true;
+  audio.addEventListener('emptied', () => {
+    if (state.deviceMusicAudio === audio && audio.readyState < HTMLMediaElement.HAVE_METADATA) {
+      setDeviceMusicStatus('Device music decoder reset.', 'state-buffering');
+    }
   });
+  audio.src = audioUrl;
+  audio.load();
+  tryPlayWhenReady();
 }
 
 function reconcileDeviceMusic() {
@@ -1411,12 +4258,31 @@ function reconcileDeviceMusic() {
     setDeviceMusicStatus('Device music enabled. Waiting for game.', 'state-buffering');
     return;
   }
-  if (!['singing', 'paused'].includes(state.gameState)) {
-    if (state.deviceMusicAudio && !state.deviceMusicAudio.paused) {
-      pauseDeviceMusicBuffered('Device music stopped.');
+  if (state.gameState === 'song_select') {
+    const key = deviceMusicTargetKey();
+    if (key === 'select:-1') {
+      if (state.deviceMusicAudio || state.deviceMusicAbortController || String(state.deviceMusicKey || '').startsWith('select:')) {
+        stopDeviceMusic('Device music waiting for selected song.');
+      }
+      setDeviceMusicStatus('Device music enabled. Waiting for selected song.', 'state-buffering');
+      return;
     }
+    if ((!state.deviceMusicAudio && !state.deviceMusicAbortController) || state.deviceMusicKey !== key) {
+      maybeStartDeviceMusic(state.songSelect || {});
+      return;
+    }
+    if (currentSelectPreviewPositionSec() == null) {
+      setDeviceMusicStatus(state.deviceMusicAbortController
+        ? `Device music downloading ${deviceMusicDownloadLabel()}.`
+        : 'Device music downloaded. Waiting for game preview.', 'state-buffering');
+      return;
+    }
+    if (stopDeviceMusicAtGameEnd()) return;
+    if (state.deviceMusicAudio.paused) playDeviceMusicAudio('song select');
     return;
   }
+
+  if (!['singing', 'paused'].includes(state.gameState)) return;
   if (state.currentSongMessage) updateSongClockFromMessage(state.currentSongMessage, 'current song');
   if (state.scoreSnapshot) updateSongClockFromMessage(state.scoreSnapshot, 'score.snapshot');
 
@@ -1439,14 +4305,12 @@ function reconcileDeviceMusic() {
     return;
   }
 
-  if (!state.deviceMusicAudio || state.deviceMusicSongSeq !== state.songSeq) {
+  if (!state.deviceMusicAudio || state.deviceMusicKey !== deviceMusicTargetKey()) {
     maybeStartDeviceMusic(state.currentSongMessage || {});
     return;
   }
 
-  if (state.gameState === 'singing' && state.deviceMusicAudio.paused) {
-    playDeviceMusicAudio('reconcile');
-  }
+  keepDeviceMusicPlaying('reconcile');
 }
 
 function activateDeviceMusic(reason = '') {
@@ -1460,16 +4324,23 @@ function activateDeviceMusic(reason = '') {
 }
 
 function renderSongSelectState() {
+  const renderStartMs = performance.now();
   const data = state.songSelect || {};
-  const progress = state.songLibraryProgress || data.libraryProgress || null;
-  const library = Array.isArray(data.library) && data.library.length
-    ? data.library
-    : (Array.isArray(data.results) ? data.results : []);
+  if (searchFieldInput && document.activeElement !== searchFieldInput) {
+    searchFieldInput.value = normalizeSongSearchField(state.songSearchField);
+  }
+  if (searchInput && document.activeElement !== searchInput && searchInput.value !== String(state.songFilterText || '')) {
+    searchInput.value = String(state.songFilterText || '');
+  }
+  const progress = activeSongLibraryProgress(data);
+  const library = Array.isArray(data.library) ? data.library : [];
+  const previewResults = Array.isArray(data.results) ? data.results : [];
   const results = visibleSongResults();
   const playlists = Array.isArray(data.playlists) ? data.playlists : [];
-  let shownPlaylist = state.songPlaylistIndex == null ? null : playlistByIndex(state.songPlaylistIndex);
-  if (state.songPlaylistIndex != null && !shownPlaylist) {
+  let shownPlaylist = selectedPlaylist();
+  if (state.songPlaylistIndex != null && !shownPlaylist && playlists.length) {
     state.songPlaylistIndex = null;
+    state.songPlaylistKey = '';
     shownPlaylist = null;
   }
   const currentPlaylistIndex = Number(data.curPlaylist);
@@ -1478,9 +4349,7 @@ function renderSongSelectState() {
     : null;
   const activePlaylist = shownPlaylist || currentPlaylist || null;
   const activePlaylistIndex = activePlaylist ? Number(activePlaylist.index) : -1;
-  const playlistItems = activePlaylist && Array.isArray(activePlaylist.items)
-    ? activePlaylist.items
-    : (Array.isArray(data.playlistItems) ? data.playlistItems : []);
+  const playlistItems = playlistItemsForActivePlaylist(activePlaylist, data);
   const targetPlaylistIndex = activePlaylistIndex;
   const loadedPlaylistSongIds = new Set(playlistItems.map((entry) => Number(entry.songId)));
   const hasLoadedPlaylist = activePlaylistIndex >= 0;
@@ -1490,24 +4359,63 @@ function renderSongSelectState() {
   const pageResults = results.slice(page.start, page.end);
   const scanStatus = progress?.status || '';
   const scanMessage = progress?.message || '';
+  const scanProgressInfo = songLibraryProgressInfo(progress, Boolean(searchableCount));
+  const scanPercentText = scanProgressInfo.visible ? ` ${scanProgressInfo.label}` : '';
   const scanCounts = progress
     ? `${Number(progress.indexedSongs || 0)} indexed, ${Number(progress.scannedFiles || 0)} files, ${Number(progress.scannedDirs || 0)} folders`
     : '';
+  if (!searchableCount && scanStatus === 'ready' && !state.songLibraryTransfer && !state.songFullListLastRequestMs) {
+    ensureCatalogRequested('ready-without-catalog');
+  }
+  const fullListRequestAgeSec = state.songFullListLastRequestMs
+    ? Math.max(0, Math.floor((performance.now() - Number(state.songFullListLastRequestMs || 0)) / 1000))
+    : null;
+  const fullListRequestText = fullListRequestAgeSec == null
+    ? 'requesting the song catalog'
+    : `requested song catalog ${fullListRequestAgeSec}s ago (attempt ${state.songFullListRequestCount || 1})`;
+  if (!searchableCount && scanStatus === 'ready' && !state.songLibraryTransfer) {
+    scheduleFullSongListRequest('ready-without-catalog');
+  }
+  renderSongLibraryProgress(progress, Boolean(searchableCount));
   addResultsButton.disabled = !results.length;
+  if (likeVisibleSongsButton) likeVisibleSongsButton.disabled = !results.length;
+  if (likeVisibleSongsButton) likeVisibleSongsButton.title = 'Like all matched songs, not just this page';
+  if (downloadSongsCsvButton) downloadSongsCsvButton.disabled = !results.length;
+  if (downloadSongsCsvButton) downloadSongsCsvButton.title = 'Export all matched songs, not just this page';
+  addResultsButton.title = 'Add all matched songs, not just this page';
   if (showAllSongsButton) {
-    showAllSongsButton.classList.toggle('hidden', !shownPlaylist);
-    showAllSongsButton.textContent = shownPlaylist ? `All Songs` : 'All Songs';
+    showAllSongsButton.classList.toggle('hidden', !shownPlaylist && !state.showLikedSongsOnly);
+    showAllSongsButton.textContent = 'All Songs';
+  }
+  if (showLikedSongsButton) {
+    showLikedSongsButton.textContent = state.showLikedSongsOnly ? '\u2665 Liked' : '\u2665 Liked';
+    showLikedSongsButton.classList.toggle('active-filter', state.showLikedSongsOnly);
+  }
+  if (clearSearchButton) {
+    const searchActive = Boolean(String(state.songFilterText || '').trim()) || normalizeSongSearchField(state.songSearchField) !== 'all';
+    clearSearchButton.disabled = !searchActive;
+    clearSearchButton.classList.toggle('active-filter', searchActive);
   }
   songCountLabel.textContent = searchableCount
     ? `${results.length ? `${page.start + 1}-${page.end}` : '0'} shown / ${results.length} matched / ${searchableCount} indexed`
-    : (scanStatus === 'scanning' ? 'Scanning...' : (state.songStateRequested ? '--' : '--'));
+    : (scanStatus === 'scanning'
+      ? `Scanning${scanPercentText}...`
+      : (['receiving', 'requesting', 'requesting_full', 'catalog_accepted', 'catalog_forwarded', 'catalog_timeout'].includes(scanStatus)
+        ? `Receiving song catalog${scanPercentText}...`
+      : (scanStatus === 'ready' && Number(progress?.indexedSongs || 0) > 0
+        ? `${Number(progress.indexedSongs || 0)} indexed; ${fullListRequestText}`
+        : (state.songStateRequested ? '--' : '--'))));
   songLibraryLabel.textContent = searchableCount
-    ? (shownPlaylist
+    ? (state.showLikedSongsOnly
+      ? `Showing liked songs; ${results.length} matching songs.`
+      : shownPlaylist
       ? `Showing playlist "${shownPlaylist.name || playlistNameByIndex(shownPlaylist.index)}"; ${results.length} matching songs.`
       : `${searchableCount} songs indexed from ${data.source === 'bridge-scan' ? 'the bridge scan' : 'USDX'}; ${previewableCount} available for phone preview.`)
+    : (previewResults.length
+        ? `Received ${previewResults.length} preview songs; ${fullListRequestText}.`
     : (progress
-      ? `${scanStatus || 'scan'}${scanMessage ? `: ${scanMessage}` : ''}${scanCounts ? ` (${scanCounts})` : ''}`
-      : (state.songStateRequested ? 'Requesting song data...' : 'No song data yet.'));
+      ? `${scanStatus || 'scan'}${scanPercentText ? ` ${scanProgressInfo.label}` : ''}${scanMessage ? `: ${scanMessage}` : ''}${scanCounts ? ` (${scanCounts})` : ''}`
+      : (state.songStateRequested ? 'Requesting song data...' : 'No song data yet.')));
   playlistCountLabel.textContent = `${playlists.length}`;
   playlistItemCountLabel.textContent = activePlaylistIndex >= 0
     ? `${playlistItems.length} shown`
@@ -1519,7 +4427,15 @@ function renderSongSelectState() {
     item.className = 'empty-player';
     item.textContent = library.length
       ? `No matches for "${state.songFilterText}"`
-      : (progress ? 'Song scan is still running.' : 'No songs to show yet.');
+      : (previewResults.length
+        ? `Waiting for the song catalog before searching (${fullListRequestText}).`
+      : (['receiving', 'requesting', 'requesting_full', 'catalog_accepted', 'catalog_forwarded', 'catalog_timeout'].includes(scanStatus)
+        ? `Receiving song catalog${scanPercentText ? ` (${scanProgressInfo.label})` : ''}.`
+      : (scanStatus === 'scanning'
+        ? `Song scan is still running${scanPercentText ? ` (${scanProgressInfo.label})` : ''}.`
+        : (scanStatus === 'ready'
+          ? `Song index is ready; ${fullListRequestText}.`
+          : (progress ? 'Song scan has not produced songs yet.' : 'No songs to show yet.')))));
     songResultList.append(item);
   } else {
     for (const song of pageResults) {
@@ -1532,7 +4448,13 @@ function renderSongSelectState() {
       const previewBox = document.createElement('div');
       const songId = Number(song.songId);
       title.textContent = song.title || '(untitled)';
-      meta.textContent = [song.artist, song.year || ''].filter(Boolean).join(' - ');
+      const activeSearchField = songSearchQuery().field;
+      const extraMeta = activeSearchField === 'creator' && song.creator
+        ? `creator: ${song.creator}`
+        : (activeSearchField === 'tags' && song.tags
+          ? `tags: ${song.tags}`
+          : '');
+      meta.textContent = [song.artist, song.year || '', extraMeta].filter(Boolean).join(' - ');
       label.append(title, meta);
       actions.className = 'inline-actions';
 
@@ -1567,7 +4489,20 @@ function renderSongSelectState() {
         });
       }
 
-      actions.append(previewBox, playlistAction);
+      const like = document.createElement('button');
+      const liked = playerLikedSong(songId);
+      like.type = 'button';
+      like.className = 'heart-button';
+      like.textContent = liked ? '\u2665' : '\u2661';
+      like.title = liked ? 'Liked' : 'Like song';
+      like.setAttribute('aria-label', liked ? 'Liked' : 'Like song');
+      like.addEventListener('click', () => sendPartyLikeSong({
+        songId,
+        title: song.title || '',
+        artist: song.artist || ''
+      }, like));
+
+      actions.append(previewBox, playlistAction, like);
       item.append(label, actions);
       songResultList.append(item);
     }
@@ -1579,10 +4514,7 @@ function renderSongSelectState() {
     item.className = 'empty-player';
     item.textContent = 'No playlists found';
     playlistList.append(item);
-    return;
-  }
-
-  for (const playlist of playlists) {
+  } else for (const playlist of playlists) {
     const item = document.createElement('li');
     if (playlist.current) item.className = 'active';
     const label = document.createElement('div');
@@ -1596,103 +4528,63 @@ function renderSongSelectState() {
 
     const show = document.createElement('button');
     show.type = 'button';
-    show.textContent = state.songPlaylistIndex === playlist.index ? 'Showing' : 'Show';
-    show.disabled = state.songPlaylistIndex === playlist.index;
-    show.addEventListener('click', () => showPlaylistSongs(playlist.index));
+    show.textContent = state.songPlaylistIndex === playlist.index ? 'Reload' : 'Show';
+    show.addEventListener('click', () => showPlaylistSongs(playlist, show));
 
     const del = document.createElement('button');
     del.type = 'button';
     del.textContent = 'Delete';
-    del.addEventListener('click', () => sendControl('playlist.delete', { playlistIndex: playlist.index }, del));
+    del.addEventListener('click', () => {
+      const name = playlist.name || `Playlist ${playlist.index + 1}`;
+      if (!window.confirm(`Delete playlist "${name}"?`)) return;
+      sendControl('playlist.delete', { playlistIndex: playlist.index }, del);
+    });
 
-    actions.append(show, del);
+    const order = document.createElement('button');
+    order.type = 'button';
+    order.textContent = playlist.fixedOrder ? 'Random' : 'Ordered';
+    order.title = playlist.fixedOrder ? 'Allow random playlist order' : 'Use fixed playlist order';
+    order.addEventListener('click', () => {
+      sendControl('playlist.toggleFixedOrder', { playlistIndex: playlist.index }, order);
+    });
+
+    actions.append(show, order, del);
     item.append(label, actions);
     playlistList.append(item);
   }
 
   playlistItemList.replaceChildren();
-  if (activePlaylistIndex < 0) {
-    const item = document.createElement('li');
-    item.className = 'empty-player';
-    item.textContent = 'Show a playlist to see its songs';
-    playlistItemList.append(item);
-  } else if (!playlistItems.length) {
-    const item = document.createElement('li');
-    item.className = 'empty-player';
-    item.textContent = 'This playlist is empty';
-    playlistItemList.append(item);
-  } else {
-    for (const entry of playlistItems) {
-      const item = document.createElement('li');
-      const label = document.createElement('div');
-      const title = document.createElement('strong');
-      const meta = document.createElement('span');
-      const actions = document.createElement('div');
-      title.textContent = entry.title || '(untitled)';
-      meta.textContent = [entry.artist, `#${Number(entry.itemIndex) + 1}`].filter(Boolean).join(' - ');
-      label.append(title, meta);
-      actions.className = 'inline-actions';
-
-      const preview = document.createElement('button');
-      const slider = document.createElement('input');
-      const previewBox = document.createElement('div');
-      preview.type = 'button';
-      preview.textContent = 'Preview';
-      slider.type = 'range';
-      slider.min = '0';
-      slider.max = '0';
-      slider.value = '0';
-      slider.className = 'preview-slider hidden';
-      preview.addEventListener('click', () => startPhonePreview(entry, preview, slider));
-      previewBox.className = 'preview-control';
-      previewBox.append(preview, slider);
-
-      const up = document.createElement('button');
-      up.type = 'button';
-      up.textContent = 'Up';
-      up.disabled = Number(entry.itemIndex) <= 0;
-      up.addEventListener('click', () => sendControl('playlist.moveItemUp', {
-        playlistIndex: activePlaylistIndex,
-        itemIndex: entry.itemIndex
-      }, up));
-
-      const down = document.createElement('button');
-      down.type = 'button';
-      down.textContent = 'Down';
-      down.disabled = Number(entry.itemIndex) >= playlistItems.length - 1;
-      down.addEventListener('click', () => sendControl('playlist.moveItemDown', {
-        playlistIndex: activePlaylistIndex,
-        itemIndex: entry.itemIndex
-      }, down));
-
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.textContent = 'Remove';
-      remove.addEventListener('click', () => sendControl('playlist.removeItem', {
-        playlistIndex: activePlaylistIndex,
-        itemIndex: entry.itemIndex
-      }, remove));
-
-      actions.append(previewBox, up, down, remove);
-      item.append(label, actions);
-      playlistItemList.append(item);
-    }
-  }
+  const playlistInfo = document.createElement('li');
+  playlistInfo.className = 'empty-player';
+  playlistInfo.textContent = activePlaylistIndex >= 0
+    ? `${playlistItems.length} playlist songs are shown in the paginated song results above.`
+    : 'Show a playlist to page through its songs in the song results.';
+  playlistItemList.append(playlistInfo);
   renderPlaylistOverlay();
+  state.lastSearchRenderCostMs = Math.max(1, performance.now() - renderStartMs);
 }
 
 function renderSlotButtons() {
   if (!slotButtons) return;
-  slotButtons.replaceChildren();
   const players = Array.isArray(state.players) ? state.players : [];
   const maxPlayers = Math.max(1, Math.min(12, Number(state.maxPlayers || 6)));
+  const signature = [
+    maxPlayers,
+    Number(state.slot || 0),
+    state.playerId || '',
+    playersUiSignature(players)
+  ].join('|');
+  if (!shouldRenderSignature('slotButtons', signature)) return;
+
+  slotButtons.replaceChildren();
   const lobbyButton = document.createElement('button');
   lobbyButton.type = 'button';
   lobbyButton.textContent = 'Lobby';
   lobbyButton.className = 'slot-button mic-lobby';
   if (Number(state.slot) <= 0) lobbyButton.classList.add('active-slot');
   lobbyButton.addEventListener('click', () => {
-    markFireAndForgetButton(lobbyButton, send({ type: 'player.requestSlot', slot: 0 }));
+    if (!micRoomsUnlocked()) return;
+    sendSlotProfile(0, lobbyButton);
   });
   slotButtons.append(lobbyButton);
   for (let slot = 1; slot <= maxPlayers; slot += 1) {
@@ -1704,21 +4596,28 @@ function renderSlotButtons() {
     if (Number(state.slot) === slot) button.classList.add('active-slot');
     button.disabled = Boolean(occupant && occupant.playerId !== state.playerId);
     button.addEventListener('click', () => {
-      markFireAndForgetButton(button, send({ type: 'player.requestSlot', slot }));
+      if (!micRoomsUnlocked()) return;
+      sendSlotProfile(slot, button);
     });
     slotButtons.append(button);
   }
 }
 
 function setTab(name) {
-  const tabName = ['mic', 'songs', 'control', 'settings'].includes(name) ? name : 'mic';
+  const tabName = ['mic', 'songs', 'party', 'control', 'settings'].includes(name) ? name : 'mic';
   for (const button of document.querySelectorAll('.tab')) {
     button.classList.toggle('active', button.dataset.tab === tabName);
   }
-  for (const panel of ['mic', 'songs', 'control', 'settings']) {
+  for (const panel of ['mic', 'songs', 'party', 'control', 'settings']) {
     $(`${panel}Panel`).classList.toggle('hidden', panel !== tabName);
   }
   localStorage.setItem(tabKey, tabName);
+  if (tabName === 'songs') {
+    ensureCatalogRequested('songs-tab');
+    renderSongSelectState();
+  } else if (tabName === 'party') {
+    renderPartyState();
+  }
 }
 
 function clientNowUs() {
@@ -1726,7 +4625,7 @@ function clientNowUs() {
 }
 
 function hostNowEstimateUs(clientUs = clientNowUs()) {
-  return Math.round(clientUs + state.clock.offsetUs + state.settings.playerDelayMs * 1000);
+  return Math.round(clientUs + state.clock.offsetUs);
 }
 
 function hostClockEstimateUs(clientUs = clientNowUs()) {
@@ -1740,6 +4639,7 @@ function resetClockSync() {
   state.clock.confidence = 0;
   state.clock.synced = false;
   state.clock.sent.clear();
+  state.clock.samples = [];
   rttValue.textContent = '--';
   offsetValue.textContent = '--';
 }
@@ -1747,6 +4647,27 @@ function resetClockSync() {
 function audioContextTimeToClientUs(audioContextUs) {
   if (state.audioContextPerfBaseUs == null) return clientNowUs();
   return Math.round(state.audioContextPerfBaseUs + audioContextUs);
+}
+
+function pitchFrameClientAudioUs(frame) {
+  const receivedUs = clientNowUs();
+  const audioContextUs = Number(frame?.clientAudioUs);
+  if (!Number.isFinite(audioContextUs)) return receivedUs;
+
+  const mappedUs = audioContextTimeToClientUs(audioContextUs);
+  if (!Number.isFinite(mappedUs)) return receivedUs;
+
+  const inputLatencyUs = Math.max(0, Math.min(pitchReportedInputLatencyMaxUs, Number(state.micInputLatencyUs || 0)));
+  const adjustedUs = mappedUs - inputLatencyUs;
+  const lagUs = receivedUs - adjustedUs;
+  if (lagUs < -pitchWorkletTimestampMaxFutureUs || lagUs > pitchWorkletTimestampMaxStaleUs) {
+    return receivedUs;
+  }
+
+  state.pitchTimestampLagUs = state.pitchTimestampLagUs == null
+    ? lagUs
+    : Math.round(state.pitchTimestampLagUs * 0.9 + lagUs * 0.1);
+  return adjustedUs;
 }
 
 function songTimeUs(tHostUs) {
@@ -1776,11 +4697,25 @@ function handleClockPong(msg) {
   const offsetUs = Math.round(((hostReceiveUs - clientSendUs) + (hostSendUs - receivedAtClientUs)) / 2);
   const previousRtt = state.clock.rttUs;
   const wasSynced = state.clock.synced;
-  state.clock.rttUs = previousRtt == null ? rttUs : Math.round(previousRtt * 0.75 + rttUs * 0.25);
-  if (!wasSynced || Math.abs(offsetUs - state.clock.offsetUs) > 5_000_000) {
-    state.clock.offsetUs = offsetUs;
+  state.clock.samples.push({ offsetUs, rttUs, receivedAtClientUs });
+  if (state.clock.samples.length > clockSampleWindowSize) state.clock.samples.shift();
+
+  const bestRttUs = Math.min(...state.clock.samples.map((sample) => sample.rttUs));
+  const usableSamples = state.clock.samples.filter((sample) => sample.rttUs <= bestRttUs + 5_000);
+  let weightTotal = 0;
+  let weightedOffsetUs = 0;
+  for (const sample of usableSamples) {
+    const weight = 1 / Math.max(1, sample.rttUs);
+    weightTotal += weight;
+    weightedOffsetUs += sample.offsetUs * weight;
+  }
+  const filteredOffsetUs = Math.round(weightTotal > 0 ? weightedOffsetUs / weightTotal : offsetUs);
+
+  state.clock.rttUs = previousRtt == null ? rttUs : Math.round(previousRtt * 0.85 + rttUs * 0.15);
+  if (!wasSynced || Math.abs(filteredOffsetUs - state.clock.offsetUs) > 5_000_000) {
+    state.clock.offsetUs = filteredOffsetUs;
   } else {
-    state.clock.offsetUs = Math.round(state.clock.offsetUs * 0.85 + offsetUs * 0.15);
+    state.clock.offsetUs = Math.round(state.clock.offsetUs * 0.97 + filteredOffsetUs * 0.03);
   }
   state.clock.jitterUs = previousRtt == null ? 0 : Math.round(Math.abs(rttUs - previousRtt));
   state.clock.confidence = Math.max(0, Math.min(1, 1 - state.clock.rttUs / 500_000));
@@ -1792,7 +4727,28 @@ function handleClockPong(msg) {
   }
 }
 
-function handleMessage(message) {
+function showPartyTurnNotification(message) {
+  const text = message.text || message.message || 'It is your turn.';
+  const targeted = message.playerId === state.playerId || Number(message.slot || 0) === Number(state.slot);
+  if (!targeted) return;
+  if (partyTurnTitle) partyTurnTitle.textContent = 'Your turn';
+  if (partyTurnText) partyTurnText.textContent = text;
+  if (partyTurnOverlay) {
+    partyTurnOverlay.classList.remove('hidden');
+    partyTurnOverlay.setAttribute('aria-hidden', 'false');
+  }
+  if ('vibrate' in navigator) navigator.vibrate?.([180, 80, 180]);
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification('USDX Party', { body: text });
+  }
+}
+
+async function handleMessage(message) {
+  if (String(message.type || '').startsWith('p2p.')) {
+    handleP2pSignal(message);
+    return;
+  }
+
   if (message.type === 'client.joined') {
     Object.assign(state, {
       roomId: message.roomId,
@@ -1802,35 +4758,84 @@ function handleMessage(message) {
       slot: message.slot,
       role: message.role,
       maxPlayers: Number(message.maxPlayers || state.maxPlayers || 6),
-      name: nameInput.value || state.name || ''
+      name: message.name || nameInput.value || state.name || ''
     });
-    joinScreen.classList.add('hidden');
-    appScreen.classList.remove('hidden');
+    state.renderSignatures = {};
+    applyOwnProfileFromMessage(message);
+    state.p2p.enabled = Boolean(message.p2p?.enabled);
+    state.p2p.iceServers = Array.isArray(message.p2p?.iceServers) ? message.p2p.iceServers : [];
+    rememberLastMicSlot(state.slot);
+    setRoomScreenVisible(true);
     updateIdentity();
     updateGameStateView();
     saveSession();
+    if (String(message.webApp || '').toLowerCase() === 'catalog') {
+      window.location.replace(`/${encodeURIComponent(message.displayCode || state.displayCode || '')}`);
+      return;
+    }
     startClientHeartbeat();
     send({ type: 'client.ready' });
+    ensureCachedAvatarOnServer();
     sendClockPing();
-    requestSongState();
     persistSettings();
+    startP2p();
     logLine(message.resumed ? `rejoined room ${message.displayCode}` : `joined room ${message.displayCode}`);
+    window.setTimeout(async () => {
+      if (await hydrateCachedCatalog(message.resumed ? 'resume' : 'join')) return;
+      ensureCatalogRequested('client-joined');
+    }, 0);
     return;
   }
 
   if (message.type === 'host.disconnected') {
+    closeP2p(false);
     leaveClosedRoom('Game disconnected.');
+    return;
+  }
+
+  if (message.type === 'error' && message.code === 'player.slot_rate_limited') {
+    if (state.pendingPreviousSlot != null) state.slot = state.pendingPreviousSlot;
+    state.pendingSlot = null;
+    state.pendingPreviousSlot = null;
+    state.pendingSlotUntilMs = 0;
+    state.authoritativeSlot = null;
+    state.authoritativeSlotUntilMs = 0;
+    updateIdentity();
+    updateGameStateView();
+    const retryAfter = Math.ceil(Number(message.retryAfterMs || slotSwitchCooldownMs) / 1000);
+    if (micStatus) micStatus.textContent = `Wait ${retryAfter}s before switching mic rooms again.`;
+    return;
+  }
+
+  if (message.type === 'error' && ['player.slot_taken', 'player.bad_slot'].includes(message.code)) {
+    if (state.pendingPreviousSlot != null) state.slot = state.pendingPreviousSlot;
+    state.pendingSlot = null;
+    state.pendingPreviousSlot = null;
+    state.pendingSlotUntilMs = 0;
+    state.authoritativeSlot = null;
+    state.authoritativeSlotUntilMs = 0;
+    updateIdentity();
+    updateGameStateView();
+    if (micStatus) micStatus.textContent = message.code === 'player.slot_taken' ? 'That mic room is already occupied.' : 'That mic room is not available.';
     return;
   }
 
   if (message.type === 'player.assigned' && message.playerId === state.playerId) {
     state.slot = message.slot;
     state.role = message.role;
+    state.pendingSlot = null;
+    state.pendingPreviousSlot = null;
+    state.pendingSlotUntilMs = 0;
+    state.authoritativeSlot = Number(message.slot);
+    state.authoritativeSlotUntilMs = performance.now() + 4000;
+    applyOwnProfileFromMessage(message);
+    rememberLastMicSlot(state.slot);
     const existing = state.players.find((player) => player.playerId === state.playerId);
     if (existing) {
       existing.slot = message.slot;
       existing.role = message.role;
       existing.connected = true;
+      mergeProfileIntoPlayer(existing, message);
     }
     updateIdentity();
     updateGameStateView();
@@ -1843,7 +4848,31 @@ function handleMessage(message) {
       existing.slot = message.slot;
       existing.role = message.role || existing.role;
       existing.connected = true;
+      mergeProfileIntoPlayer(existing, message);
+    } else {
+      state.players.push(mergeProfileIntoPlayer({
+        playerId: message.playerId,
+        slot: message.slot,
+        role: message.role || 'singer',
+        connected: true
+      }, message));
     }
+    updateGameStateView();
+    return;
+  }
+
+  if (message.type === 'player.profile.updated') {
+    const existing = state.players.find((player) => player.playerId === message.playerId);
+    if (existing) mergeProfileIntoPlayer(existing, message);
+    if (message.playerId === state.playerId) applyOwnProfileFromMessage(message);
+    updateGameStateView();
+    return;
+  }
+
+  if (message.type === 'avatar.uploaded') {
+    applyOwnProfileFromMessage(message);
+    const existing = state.players.find((player) => player.playerId === state.playerId);
+    if (existing) mergeProfileIntoPlayer(existing, message);
     updateGameStateView();
     return;
   }
@@ -1856,31 +4885,91 @@ function handleMessage(message) {
       nameInput.value = message.name;
       nameChangeInput.value = message.name;
       localStorage.setItem(nameKey, message.name);
+      saveProfile();
       saveSession();
     }
     updateGameStateView();
     return;
   }
 
+  if (message.type === 'player.left' || message.type === 'player.disconnected') {
+    state.players = state.players.filter((player) => player.playerId !== message.playerId);
+    if (message.playerId === state.playerId) {
+      leaveClosedRoom(message.type === 'player.left' ? 'You left the room.' : 'Disconnected from room.');
+      return;
+    }
+    updateGameStateView();
+    return;
+  }
+
   if (message.type === 'game.state') {
+    const incomingSeq = Number(message.seq || 0);
+    if (Number.isFinite(incomingSeq) && incomingSeq > 0) {
+      if (state.lastGameStateSeq && incomingSeq < state.lastGameStateSeq) {
+        return;
+      }
+      state.lastGameStateSeq = incomingSeq;
+    }
     const previousGameState = state.gameState;
-    state.songSeq = Number(message.songSeq || state.songSeq || 0);
-    state.gameState = message.state || state.gameState;
+    let incomingGameState = message.state || state.gameState;
+    const staleSingingOverSongSelect = state.gameState === 'song_select'
+      && performance.now() < Number(state.songSelectStateUntilMs || 0)
+      && ['singing', 'paused'].includes(incomingGameState);
+    if (staleSingingOverSongSelect) incomingGameState = 'song_select';
+    const nextSongSeq = staleSingingOverSongSelect
+      ? Number(state.songSeq || 0)
+      : Number(message.songSeq || state.songSeq || 0);
+    const sameActiveSong = ['singing', 'paused'].includes(previousGameState)
+      && !['singing', 'paused', 'song_ended'].includes(incomingGameState)
+      && Number(state.songSeq || 0) > 0
+      && (!Number.isFinite(nextSongSeq) || nextSongSeq <= 0 || nextSongSeq === Number(state.songSeq || 0));
+    if (Number.isFinite(nextSongSeq) && nextSongSeq > 0) {
+      if (state.songSeq && nextSongSeq !== state.songSeq) {
+        clearPitchQueue('Microphone queue reset for new song.');
+      }
+      state.songSeq = nextSongSeq;
+    }
+    state.gameState = sameActiveSong ? previousGameState : incomingGameState;
     state.maxPlayers = Number(message.maxPlayers || state.maxPlayers || 6);
     if (Array.isArray(message.players)) {
-      state.players = message.players;
+      state.players = message.players.map((player) => mergeProfileIntoPlayer({ ...player }, player));
       const self = state.players.find((player) => player.playerId === state.playerId);
       if (self) {
+        const now = performance.now();
+        const protectedSlot = state.pendingSlot != null && now < Number(state.pendingSlotUntilMs || 0)
+          ? state.pendingSlot
+          : (state.authoritativeSlot != null && now < Number(state.authoritativeSlotUntilMs || 0)
+            ? state.authoritativeSlot
+            : null);
+        if (protectedSlot != null && Number(self.slot) !== Number(protectedSlot)) {
+          self.slot = protectedSlot;
+        } else {
+          state.pendingSlot = null;
+          state.pendingSlotUntilMs = 0;
+          if (state.authoritativeSlot != null && Number(self.slot) === Number(state.authoritativeSlot)) {
+            state.authoritativeSlotUntilMs = Math.max(Number(state.authoritativeSlotUntilMs || 0), now + 1000);
+          } else {
+            state.authoritativeSlot = null;
+            state.authoritativeSlotUntilMs = 0;
+          }
+        }
         state.slot = self.slot;
         state.role = self.role;
+        applyOwnProfileFromMessage(self);
         updateIdentity();
       }
     }
     if (['singing', 'paused'].includes(previousGameState) && !['singing', 'paused'].includes(state.gameState)) {
       state.hostSongStartUs = null;
       state.mediaStartUs = 0;
+      state.songDurationSec = null;
+      resetSongMediaClock();
+      clearPitchQueue('Microphone queue reset outside song.');
       state.currentSongMessage = null;
+      state.currentLyricsMessage = null;
       pauseDeviceMusicBuffered('Device music stopped.');
+    } else if (sameActiveSong) {
+      keepDeviceMusicPlaying('state correction');
     }
     updateGameStateView();
     logLine(`state ${message.state || 'unknown'} seq ${message.seq || '-'}`);
@@ -1889,12 +4978,99 @@ function handleMessage(message) {
 
   if (message.type === 'song.select.state') {
     state.songStateRequested = false;
-    state.songSelect = message;
-    if (message.libraryProgress) state.songLibraryProgress = message.libraryProgress;
-    renderSongSelectState();
-    if (state.hostSongStartUs && state.settings.playMusicOnDevice && !state.deviceMusicAudio) {
-      maybeStartDeviceMusic(state.currentSongMessage || message);
+    state.songSelectStateUntilMs = performance.now() + 5000;
+    const previousGameState = state.gameState;
+    const renderNeeded = songSelectStateNeedsRender(state.songSelect, message);
+    state.songSelect = await mergeSongSelectState(state.songSelect, message);
+    if (state.gameState !== 'song_select') {
+      state.gameState = 'song_select';
+      updateGameStateView();
     }
+    if (['singing', 'paused'].includes(previousGameState)) {
+      state.hostSongStartUs = null;
+      state.mediaStartUs = 0;
+      state.songDurationSec = null;
+      resetSongMediaClock();
+      clearPitchQueue('Microphone queue reset at song selection.');
+      state.currentSongMessage = null;
+      state.currentLyricsMessage = null;
+    }
+    const previewSongId = Number(message.previewSongId);
+    const selectedSongId = Number(state.songSelect?.selectedSongId);
+    const previewPositionSec = Number(message.previewPositionSec);
+    const selectedPreviewActive = message.previewActive
+      && Number.isInteger(previewSongId)
+      && previewSongId >= 0
+      && previewSongId === selectedSongId
+      && Number.isFinite(previewPositionSec);
+    if (selectedPreviewActive) {
+      state.selectPreviewSongId = previewSongId;
+      state.selectPreviewAnchorSec = Math.max(0, previewPositionSec);
+      state.selectPreviewAnchorClientUs = hostTimestampToClientUs(message.hostStateUs);
+      state.selectPreviewAnchorExpiresMs = performance.now() + 2500;
+    } else {
+      const keepPreviousPreview = Number(state.selectPreviewSongId) === selectedSongId
+        && performance.now() <= Number(state.selectPreviewAnchorExpiresMs || 0);
+      if (!keepPreviousPreview) {
+        state.selectPreviewSongId = null;
+        state.selectPreviewAnchorSec = null;
+        state.selectPreviewAnchorClientUs = null;
+        state.selectPreviewAnchorExpiresMs = 0;
+      }
+    }
+    if (message.libraryProgress && !state.songLibraryTransfer && !state.songFullListLastRequestMs) {
+      state.songLibraryProgress = message.libraryProgress;
+    }
+    if (renderNeeded) renderSongSelectState();
+    if (state.settings.playMusicOnDevice && (state.gameState === 'song_select' || currentSelectPreviewPositionSec() != null)) {
+      maybeStartDeviceMusic(message);
+    }
+    return;
+  }
+
+  if (message.type === 'catalog.manifest') {
+    await applyCatalogManifest(message);
+    return;
+  }
+
+  if (message.type === 'catalog.request.accepted') {
+    if (message.requestId && state.songCatalogRequestId && message.requestId !== state.songCatalogRequestId) return;
+    state.songLibraryProgress = {
+      ...(state.songLibraryProgress || {}),
+      status: message.hostConnected ? 'catalog_accepted' : 'host_disconnected',
+      message: message.hostConnected
+        ? 'Server accepted catalog request; waiting for bridge transfer.'
+        : 'Server accepted catalog request, but the bridge is disconnected.'
+    };
+    logLine(`catalog request accepted ${message.requestId || '-'} host ${message.hostConnected ? 'connected' : 'disconnected'}`);
+    renderSongSelectState();
+    return;
+  }
+
+  if (message.type === 'catalog.transfer.start') {
+    startCatalogTransfer(message);
+    return;
+  }
+
+  if (message.type === 'catalog.transfer.chunk') {
+    appendCatalogTransferChunk(message);
+    return;
+  }
+
+  if (message.type === 'catalog.transfer.end') {
+    await finishCatalogTransfer(message);
+    return;
+  }
+
+  if (message.type === 'catalog.error') {
+    state.songLibraryTransfer = null;
+    state.songCatalogInFlight = false;
+    state.songLibraryProgress = {
+      ...(state.songLibraryProgress || {}),
+      status: 'error',
+      message: message.message || message.code || 'Catalog unavailable'
+    };
+    renderSongSelectState();
     return;
   }
 
@@ -1914,6 +5090,26 @@ function handleMessage(message) {
     return;
   }
 
+  if (message.type === 'party.state') {
+    state.party = {
+      ...state.party,
+      ...message
+    };
+    syncLocalLikedSongsFromParty();
+    scheduleSongSelectRender();
+    renderPartyState();
+    return;
+  }
+
+  if (message.type === 'party.notification') {
+    const text = message.text || message.message || 'It is your turn.';
+    state.party = { ...state.party, notice: text };
+    if (partyNotice) partyNotice.textContent = text;
+    showPartyTurnNotification(message);
+    renderPartyState();
+    return;
+  }
+
   if (message.type === 'score.snapshot') {
     state.scoreSnapshot = message;
     updateSongClockFromMessage(message, 'score.snapshot');
@@ -1925,12 +5121,32 @@ function handleMessage(message) {
     return;
   }
 
+  if (message.type === 'song.position') {
+    updateSongClockFromMessage(message, 'song.position');
+    if (state.deviceMusicAudio && state.settings.playMusicOnDevice) {
+      forceDeviceMusicSeekToGame(state.deviceMusicAudio);
+    }
+    updateSongProgressView();
+    return;
+  }
+
+  if (message.type === 'song.lyrics') {
+    if (!['singing', 'paused'].includes(state.gameState)) return;
+    const songSeq = Number(message.songSeq || state.songSeq || 0);
+    if (Number.isFinite(songSeq) && songSeq > 0) state.songSeq = songSeq;
+    state.currentLyricsMessage = message;
+    updateSongClockFromMessage(message, 'song.lyrics');
+    updateLyricSyncPoints(message);
+    renderRemoteLyrics();
+    return;
+  }
+
   if (message.type === 'song.started') {
-    state.songSeq = Number(message.songSeq || 0);
-    state.hostSongStartUs = Number(message.hostSongStartUs || 0);
-    state.mediaStartUs = Number(message.mediaStartUs || 0);
     state.currentSongMessage = message;
+    state.currentLyricsMessage = null;
+    state.songSelectStateUntilMs = 0;
     state.gameState = 'singing';
+    updateSongClockFromMessage(message, 'song.started');
     updateGameStateView();
     sendClockPing();
     maybeStartDeviceMusic(message);
@@ -1940,6 +5156,8 @@ function handleMessage(message) {
 
   if (message.type === 'song.paused') {
     state.gameState = 'paused';
+    updateSongClockFromMessage(message, 'song.paused');
+    clearPitchQueue('Microphone queue reset while paused.');
     pauseDeviceMusicBuffered('Device music paused.');
     updateGameStateView();
     logLine('song paused');
@@ -1947,12 +5165,10 @@ function handleMessage(message) {
   }
 
   if (message.type === 'song.resumed') {
-    if (Number.isFinite(Number(message.hostSongStartUs)) && Number(message.hostSongStartUs) > 0) {
-      state.hostSongStartUs = Number(message.hostSongStartUs);
-      state.mediaStartUs = Number(message.mediaStartUs || state.mediaStartUs || 0);
-    }
     state.currentSongMessage = { ...(state.currentSongMessage || {}), ...message };
     state.gameState = 'singing';
+    updateSongClockFromMessage(message, 'song.resumed');
+    clearPitchQueue('Microphone queue reset after resume.');
     if (state.settings.playMusicOnDevice) {
       if (state.deviceMusicAudio) {
         playDeviceMusicAudio('resume');
@@ -1968,7 +5184,11 @@ function handleMessage(message) {
   if (message.type === 'song.ended') {
     state.hostSongStartUs = null;
     state.mediaStartUs = 0;
+    state.songDurationSec = null;
+    resetSongMediaClock();
+    clearPitchQueue('Microphone queue reset after song ended.');
     state.currentSongMessage = null;
+    state.currentLyricsMessage = null;
     state.gameState = 'song_ended';
     pauseDeviceMusicBuffered('Device music stopped.');
     updateGameStateView();
@@ -1984,14 +5204,24 @@ function handleMessage(message) {
   if (message.type === 'ack') {
     finishCommandFeedback(message.commandId, Boolean(message.accepted));
     controlStatus.textContent = message.accepted ? 'Accepted' : `Rejected: ${message.reason || 'unknown'}`;
+    clientLog('control.ack', {
+      commandId: message.commandId,
+      accepted: Boolean(message.accepted),
+      reason: message.reason || ''
+    });
     return;
   }
 
   if (message.type === 'error') {
     const text = message.reason || message.code || 'error';
-    if (['join.bad_code', 'room.closed', 'host_disconnected'].includes(message.code)) {
-      leaveClosedRoom(text);
-      codeInput.value = '';
+    if (
+      ['join.bad_code', 'room.closed'].includes(message.code) ||
+      ['host_disconnected', 'expired', 'heartbeat_timeout'].includes(message.reason)
+    ) {
+      const roomClosedText = message.reason === 'host_disconnected' || message.reason === 'expired'
+        ? 'Game timed out.'
+        : text;
+      leaveClosedRoom(roomClosedText);
       return;
     }
     if (message.code === 'player.kicked') {
@@ -1999,8 +5229,7 @@ function handleMessage(message) {
       state.playerId = null;
       state.playerToken = null;
       state.roomId = null;
-      joinScreen.classList.remove('hidden');
-      appScreen.classList.add('hidden');
+      setRoomScreenVisible(false);
       joinError.textContent = text;
     }
     if (state.playerId) logLine(`error ${text}`);
@@ -2008,32 +5237,55 @@ function handleMessage(message) {
   }
 }
 
-function connectAndJoin(displayCode, name, resume = null, controllerPassword = '') {
+function connectAndJoin(displayCode, name, resume = null) {
   joinError.textContent = '';
+  state.name = String(name || state.name || '').trim();
+  saveProfile();
   saveJoinDraft(displayCode, name);
   resetClockSync();
+  const preferredSlot = Number(resume?.slot || 0);
   const ws = new WebSocket(wsUrl('/ws/client'));
   state.ws = ws;
   connectionState.textContent = 'connecting';
   ws.addEventListener('open', () => {
-    connectionState.textContent = 'connected';
+    renderConnectionState();
     ws.send(JSON.stringify({
       type: 'client.join',
       protocol,
       displayCode,
-      name,
+      ...currentProfile(name),
       playerId: resume?.playerId,
       playerToken: resume?.playerToken,
-      controllerPassword
+      songLibraryHash: cachedSongLibraryHash(),
+      preferredSlot: Number.isInteger(preferredSlot) && preferredSlot > 0 ? preferredSlot : undefined,
+      settings: {
+        settingsVersion,
+        targetDriftMs: state.settings.targetDriftMs,
+        micDelayMs: state.settings.micDelayMs,
+        playerDelayMs: state.settings.micDelayMs
+      }
     }));
   });
   ws.addEventListener('message', (event) => {
     const message = JSON.parse(event.data);
-    handleMessage(message);
+    handleMessage(message).catch((error) => {
+      clientLog('message.error', { type: message?.type || '', error: error?.message || String(error) });
+    });
   });
   ws.addEventListener('close', () => {
+    if (state.ws !== ws) return;
+    if (state.pageUnloading) {
+      saveSessionForReload();
+      return;
+    }
+    closeP2p(false);
+    state.ws = null;
     stopClientHeartbeat();
-    connectionState.textContent = 'disconnected';
+    renderConnectionState();
+    if (!appScreen.classList.contains('hidden')) {
+      leaveClosedRoom('Game connection timed out.');
+      return;
+    }
     logLine('socket closed');
   });
   ws.addEventListener('error', () => {
@@ -2043,15 +5295,48 @@ function connectAndJoin(displayCode, name, resume = null, controllerPassword = '
 }
 
 async function startMic() {
-  activateDeviceMusic('mic button');
-  if (state.audioContext) return;
+  if (state.audioContext) {
+    try {
+      await state.audioContext.resume();
+    } catch {
+      // Keep the existing status below.
+    }
+    if (state.audioContext.state === 'running') {
+      micButton.textContent = 'Mic Running';
+      micButton.disabled = true;
+      micStatus.textContent = state.micStream
+        ? 'Microphone running.'
+        : 'Audio is running; waiting for microphone input.';
+    } else {
+      micButton.textContent = 'Start Mic';
+      micButton.disabled = false;
+      micStatus.textContent = 'Microphone is ready; tap Start Mic again to unlock audio.';
+    }
+    renderMicEntryFlow();
+    updateGameStateView();
+    return;
+  }
   if (state.settings.controlOnly) {
     micStatus.textContent = 'Control-only mode is enabled in Settings.';
     return;
   }
   micButton.disabled = true;
+  let audioContext = null;
+  let stream = null;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    audioContext = new AudioContextClass();
+    state.audioContext = audioContext;
+    renderMicEntryFlow();
+    sampleRateValue.textContent = `${audioContext.sampleRate} Hz`;
+
+    try {
+      await audioContext.resume();
+    } catch {
+      // Some browsers still require the final resume after getUserMedia.
+    }
+
+    stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
         echoCancellation: state.settings.echoCancellation,
@@ -2063,77 +5348,342 @@ async function startMic() {
     state.micStream = stream;
     const track = stream.getAudioTracks()[0];
     const settings = track.getSettings ? track.getSettings() : {};
+    const reportedInputLatencySec = Number(settings.latency);
+    state.micInputLatencyUs = Number.isFinite(reportedInputLatencySec) && reportedInputLatencySec > 0
+      ? Math.min(pitchReportedInputLatencyMaxUs, Math.round(reportedInputLatencySec * 1_000_000))
+      : 0;
+    state.pitchTimestampLagUs = null;
     channelValue.textContent = settings.channelCount || 'unknown';
     micStatus.textContent = `Input: ${track.label || 'microphone'}`;
 
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    const audioContext = new AudioContextClass();
-    state.audioContext = audioContext;
     // AudioWorklet `currentTime` is relative to the AudioContext, while clock
     // sync uses performance.now(). Keep an explicit local monotonic mapping.
     state.audioContextPerfBaseUs = clientNowUs() - Math.round(audioContext.currentTime * 1_000_000);
-    sampleRateValue.textContent = `${audioContext.sampleRate} Hz`;
-    await audioContext.audioWorklet.addModule('/pitch-worklet.js');
+    await audioContext.audioWorklet.addModule(`/pitch-worklet.js?v=${encodeURIComponent(appVersion)}`);
     const source = audioContext.createMediaStreamSource(stream);
     const worklet = new AudioWorkletNode(audioContext, 'usdx-pitch-processor');
+    const silentSink = audioContext.createGain();
+    silentSink.gain.value = 0;
     state.worklet = worklet;
+    state.audioSink = silentSink;
     worklet.port.onmessage = (event) => handlePitchFrame(event.data);
     source.connect(worklet);
+    worklet.connect(silentSink);
+    silentSink.connect(audioContext.destination);
+    if (audioContext.state !== 'running') {
+      await audioContext.resume();
+    }
     processingValue.textContent = 'AudioWorklet';
-    micButton.textContent = 'Mic Running';
-    micButton.disabled = true;
-    micStatus.textContent = `Input: ${track.label || 'microphone'}; echoCancellation=${settings.echoCancellation ?? 'n/a'}, noiseSuppression=${settings.noiseSuppression ?? 'n/a'}, autoGainControl=${settings.autoGainControl ?? 'n/a'}`;
-    activateDeviceMusic('mic started');
+    if (audioContext.state === 'running') {
+      micButton.textContent = 'Mic Running';
+      micButton.disabled = true;
+      micStatus.textContent = `Input: ${track.label || 'microphone'}; echoCancellation=${settings.echoCancellation ?? 'n/a'}, noiseSuppression=${settings.noiseSuppression ?? 'n/a'}, autoGainControl=${settings.autoGainControl ?? 'n/a'}`;
+    } else {
+      micButton.textContent = 'Start Mic';
+      micButton.disabled = false;
+      micStatus.textContent = 'Microphone is ready; tap Start Mic again to unlock audio.';
+    }
+    renderMicEntryFlow();
+    updateGameStateView();
   } catch (error) {
+    if (stream) stream.getTracks().forEach((track) => track.stop());
+    if (audioContext) {
+      try {
+        await audioContext.close();
+      } catch {
+        // Ignore close failures while unwinding startup.
+      }
+    }
+    state.audioContext = null;
+    state.audioContextPerfBaseUs = null;
+    state.micInputLatencyUs = 0;
+    state.pitchTimestampLagUs = null;
+    state.micStream = null;
+    state.worklet = null;
+    state.audioSink = null;
     micStatus.textContent = error.message || 'Microphone failed';
     micButton.disabled = false;
+    renderMicEntryFlow();
   }
 }
 
-function handlePitchFrame(frame) {
-  const meterFloorDb = -66;
-  const meterCeilingDb = -6;
-  const level = Math.max(0, Math.min(1, (frame.rmsDb - meterFloorDb) / (meterCeilingDb - meterFloorDb)));
-  volumeFill.style.width = `${Math.round(level * 100)}%`;
-  pitchValue.textContent = frame.voiced ? `${frame.f0Hz.toFixed(1)} Hz` : '--';
-  confidenceValue.textContent = frame.confidence.toFixed(2);
-  voicedValue.textContent = frame.voiced ? 'yes' : 'no';
-  renderLockLevel(level, frame.voiced ? `${frame.f0Hz.toFixed(1)} Hz - ${frame.confidence.toFixed(2)}` : 'Unvoiced');
+const pitchVoteWindowUs = 40000;
+const pitchMinConfidence = 0.45;
+const pitchMinRmsDb = -62;
+const pitchUiUpdateMs = 100;
 
-  const clientAudioUs = audioContextTimeToClientUs(frame.clientAudioUs);
-  const tHostUs = hostNowEstimateUs(clientAudioUs);
-  const frameSongTimeUs = songTimeUs(tHostUs);
-  if (frameSongTimeUs === null) return;
-  state.pitchBatch.push({
-    songTimeUs: frameSongTimeUs,
-    durUs: frame.durUs,
-    f0Cents: Number(frame.f0Cents || 0),
-    rmsDbTenths: Math.round(frame.rmsDb * 10),
-    confidenceByte: Math.max(0, Math.min(255, Math.round(frame.confidence * 255))),
-    voiced: frame.voiced ? 1 : 0
+function pitchFrameToneAbs(frame) {
+  const cents = Number(frame.f0Cents || 0);
+  if (cents > 0) return Math.round((cents - 6900) / 100) + 33;
+  const hz = Number(frame.f0Hz || 0);
+  return hz > 0 ? Math.round(12 * Math.log2(hz / 440)) + 33 : -1;
+}
+
+function finalizePitchVoteBucket() {
+  const bucket = state.pitchVoteBucket;
+  if (!bucket || !bucket.frames.length) return;
+
+  const votes = new Map();
+  for (const frame of bucket.frames) {
+    if (!frame.voiced || frame.confidence < pitchMinConfidence || frame.rmsDb < pitchMinRmsDb) continue;
+    const toneAbs = pitchFrameToneAbs(frame);
+    if (toneAbs < 0) continue;
+    const key = String(toneAbs);
+    const levelWeight = Math.max(0.15, Math.min(1, (frame.rmsDb - pitchMinRmsDb) / 36));
+    const weight = Math.max(0.01, frame.confidence * levelWeight);
+    let vote = votes.get(key);
+    if (!vote) {
+      vote = {
+        toneAbs,
+        count: 0,
+        weight: 0,
+        f0Hz: 0,
+        f0Cents: 0,
+        rmsDb: 0,
+        confidence: 0
+      };
+      votes.set(key, vote);
+    }
+    vote.count += 1;
+    vote.weight += weight;
+    vote.f0Hz += Number(frame.f0Hz || 0) * weight;
+    vote.f0Cents += Number(frame.f0Cents || 0) * weight;
+    vote.rmsDb += Number(frame.rmsDb || -120) * weight;
+    vote.confidence += Number(frame.confidence || 0) * weight;
+  }
+
+  let best = null;
+  for (const vote of votes.values()) {
+    if (!best ||
+      vote.weight > best.weight ||
+      (Math.abs(vote.weight - best.weight) < 0.001 && state.pitchLastVotedTone && vote.toneAbs === state.pitchLastVotedTone.toneAbs)) {
+      best = vote;
+    }
+  }
+  if (best) {
+    state.pitchLastVotedTone = {
+      toneAbs: best.toneAbs,
+      f0Hz: best.f0Hz / best.weight,
+      f0Cents: best.f0Cents / best.weight,
+      rmsDb: best.rmsDb / best.weight,
+      confidence: best.confidence / best.weight
+    };
+  } else {
+    return;
+  }
+
+  state.pitchQueue.push({
+    seq: state.pitchSeq++,
+    clientAudioUs: bucket.startUs,
+    durUs: pitchVoteWindowUs,
+    f0Hz: best.f0Hz / best.weight,
+    f0Cents: best.f0Cents / best.weight,
+    rmsDb: best.rmsDb / best.weight,
+    confidence: best.confidence / best.weight,
+    voiced: true
   });
 }
 
+function enqueuePitchVoteFrame(frame, clientAudioUs) {
+  const bucketStartUs = Math.floor(clientAudioUs / pitchVoteWindowUs) * pitchVoteWindowUs;
+  if (state.pitchVoteBucket && bucketStartUs !== state.pitchVoteBucket.startUs) {
+    finalizePitchVoteBucket();
+    state.pitchVoteBucket = null;
+  }
+  if (!state.pitchVoteBucket) {
+    state.pitchVoteBucket = {
+      startUs: bucketStartUs,
+      frames: []
+    };
+  }
+  state.pitchVoteBucket.frames.push({
+    f0Hz: Number(frame.f0Hz || 0),
+    f0Cents: Number(frame.f0Cents || 0),
+    rmsDb: Number(frame.rmsDb || -120),
+    confidence: Number(frame.confidence || 0),
+    voiced: Boolean(frame.voiced)
+  });
+}
+
+function flushStalePitchVoteBucket() {
+  const bucket = state.pitchVoteBucket;
+  if (!bucket) return;
+  if (clientNowUs() - bucket.startUs < pitchVoteWindowUs * 2) return;
+  finalizePitchVoteBucket();
+  state.pitchVoteBucket = null;
+}
+
+function handlePitchFrame(frame) {
+  state.pitchFramesCaptured += 1;
+  const nowMs = performance.now();
+  if (nowMs - state.pitchLastUiMs >= pitchUiUpdateMs) {
+    state.pitchLastUiMs = nowMs;
+    const meterFloorDb = -66;
+    const meterCeilingDb = -6;
+    const level = Math.max(0, Math.min(1, (frame.rmsDb - meterFloorDb) / (meterCeilingDb - meterFloorDb)));
+    volumeFill.style.width = `${Math.round(level * 100)}%`;
+    pitchValue.textContent = frame.voiced ? `${frame.f0Hz.toFixed(1)} Hz` : '--';
+    confidenceValue.textContent = frame.confidence.toFixed(2);
+    voicedValue.textContent = frame.voiced ? 'voiced' : 'noise';
+    if (!lockOverlay.classList.contains('hidden')) {
+      renderLockLevel(level, frame.voiced ? `${frame.f0Hz.toFixed(1)} Hz - ${frame.confidence.toFixed(2)}` : `-- - ${frame.confidence.toFixed(2)}`);
+    }
+  }
+
+  if (!hasActiveSongClock()) {
+    if (state.pitchQueue.length || state.pitchVoteBucket) clearPitchQueue();
+    updateMicTransportStatus(false);
+    return;
+  }
+
+  const clientAudioUs = pitchFrameClientAudioUs(frame);
+  enqueuePitchVoteFrame(frame, clientAudioUs);
+  if (state.pitchQueue.length > 3000) {
+    const dropped = state.pitchQueue.length - 3000;
+    state.pitchQueue.splice(0, dropped);
+    state.pitchLastDropped += dropped;
+    state.pitchFramesDroppedStale += dropped;
+    micStatus.textContent = `Microphone queue overflow; dropped ${state.pitchLastDropped} frames.`;
+  }
+  if (performance.now() - state.pitchLastFlushMs >= (state.p2p.connected ? 10 : 100)) {
+    flushPitchBatch();
+  }
+  updateMicTransportStatus(false);
+}
+
 function flushPitchBatch() {
-  if (!state.pitchBatch.length) return;
-  const pending = state.pitchBatch.splice(0, 32);
-  const baseSongTimeUs = pending[0].songTimeUs;
-  const frameDurUs = pending[0].durUs;
+  const nowMs = performance.now();
+  const relayMode = !state.p2p.connected;
+  const minFlushMs = relayMode ? 100 : 10;
+  if (nowMs - state.pitchLastFlushMs < minFlushMs) return;
+  state.pitchLastFlushMs = nowMs;
+  flushStalePitchVoteBucket();
+  applyLyricSyncPoint();
+  if (!state.pitchQueue.length || !state.songSeq) return;
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+
+  const pending = [];
+  let consumed = 0;
+  const nowMediaPositionSec = rawSongPositionSec();
+  if (nowMediaPositionSec == null) {
+    updateMicTransportStatus(false);
+    return;
+  }
+  for (let index = 0; index < state.pitchQueue.length; index += 1) {
+    const frame = state.pitchQueue[index];
+    if (pending.length >= 48) break;
+    const mediaPositionSec = rawSongPositionSec(frame.clientAudioUs);
+    if (mediaPositionSec == null) {
+      consumed = index + 1;
+      continue;
+    }
+    if (mediaPositionSec < 0) {
+      consumed = index + 1;
+      continue;
+    }
+    if (nowMediaPositionSec - mediaPositionSec > maxPitchQueueAgeSec) {
+      consumed = index + 1;
+      continue;
+    }
+    if (mediaPositionSec - nowMediaPositionSec > 0.75) break;
+    const songTimeUsValue = Math.round(mediaPositionSec * 1_000_000);
+    if (songTimeUsValue < 0) {
+      consumed = index + 1;
+      continue;
+    }
+    pending.push({ ...frame, songTimeUs: songTimeUsValue });
+    consumed = index + 1;
+  }
+  if (!pending.length) {
+    if (consumed > 0) {
+      state.pitchQueue.splice(0, consumed);
+      state.pitchFramesDroppedStale += consumed;
+    }
+    updateMicTransportStatus(false);
+    return;
+  }
+
+  const baseSongTimeUs = Math.round(pending[0].songTimeUs);
+  const frameDurUs = Math.round(pending[0].durUs || 0);
   const frames = pending.map((frame) => [
-    Math.round(frame.songTimeUs - baseSongTimeUs),
-    frame.f0Cents,
-    frame.rmsDbTenths,
-    frame.confidenceByte,
-    frame.voiced
+    Math.max(0, Math.round(frame.songTimeUs) - baseSongTimeUs),
+    Math.round(frame.f0Cents || 0)
   ]);
-  send({
+  const sent = send({
     type: 'pitch.batch',
-    compact: 1,
     songSeq: state.songSeq,
+    slot: state.slot,
+    playerSlot: state.slot,
+    compact: true,
+    batchSeq: pending[0].seq,
     baseSongTimeUs,
     frameDurUs,
     frames
   });
+  if (sent) {
+    state.pitchQueue.splice(0, consumed);
+    if (consumed > pending.length) state.pitchFramesDroppedStale += consumed - pending.length;
+    state.pitchFramesSent += pending.length;
+    state.pitchLastSentMs = performance.now();
+    updateMicTransportStatus(false);
+  }
+}
+
+function loadImageFromUrl(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Image could not be read'));
+    image.src = url;
+  });
+}
+
+async function downscaleAvatarFile(file) {
+  if (!file || !String(file.type || '').startsWith('image/')) throw new Error('Please choose an image file.');
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = await loadImageFromUrl(objectUrl);
+    const scale = Math.min(1, avatarCanvasMaxDimension / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height));
+    const width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+    const height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(image, 0, 0, width, height);
+    let quality = 0.86;
+    let dataUrl = canvas.toDataURL('image/jpeg', quality);
+    while (dataUrl.length * 0.75 > avatarUploadTargetBytes && quality > 0.54) {
+      quality -= 0.08;
+      dataUrl = canvas.toDataURL('image/jpeg', quality);
+    }
+    return dataUrl;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function uploadAvatarFile(file, sourceInput = null) {
+  try {
+    const dataUrl = await downscaleAvatarFile(file);
+    state.avatarId = '';
+    state.avatarFile = '';
+    state.avatarUrl = null;
+    state.avatarDataUrl = dataUrl;
+    saveProfile();
+    if (avatarPreview) {
+      avatarPreview.src = dataUrl;
+      avatarPreview.classList.remove('hidden');
+    }
+    const ok = send({ type: 'avatar.upload', dataUrl });
+    if (!ok && partyNotice) partyNotice.textContent = 'Avatar upload needs an active room.';
+  } catch (error) {
+    if (partyNotice) partyNotice.textContent = error.message || 'Avatar upload failed.';
+  } finally {
+    if (sourceInput) sourceInput.value = '';
+  }
 }
 
 joinForm.addEventListener('submit', (event) => {
@@ -2141,8 +5691,7 @@ joinForm.addEventListener('submit', (event) => {
   const displayCode = codeInput.value.toUpperCase().replace(/[^A-Z2-9]/g, '');
   const name = nameInput.value.trim();
   saveJoinDraft(displayCode, name);
-  clearSession();
-  connectAndJoin(displayCode, name, null, controllerPasswordInput.value);
+  connectAndJoin(displayCode, name, null);
 });
 
 codeInput.addEventListener('input', () => {
@@ -2154,30 +5703,74 @@ nameInput.addEventListener('input', () => {
   saveJoinDraft(codeInput.value, nameInput.value);
 });
 
+for (const input of [codeInput, nameInput]) {
+  input.addEventListener('focus', () => keepJoinFieldAboveKeyboard(input));
+}
+
 changeRoomButton.addEventListener('click', showJoinScreenForRoomChange);
 
-for (const button of document.querySelectorAll('[data-command]')) {
-  button.addEventListener('click', () => {
-    sendControl(button.dataset.command, {}, button);
-  });
+function runControlButton(button, pointerType = 'unknown') {
+  const command = button.id === 'pauseRestartButton'
+    ? (pauseRestartButton.dataset.command || (state.gameState === 'paused' ? 'game.resume' : 'game.pause'))
+    : button.dataset.command;
+  clientLog('control.tap', { command, pointerType });
+  sendControl(command, {}, button);
 }
+
+controlPanel?.addEventListener('pointerup', (event) => {
+  const button = event.target.closest?.('[data-command], #pauseRestartButton');
+  if (!button || !controlPanel.contains(button) || button.disabled) return;
+  event.preventDefault();
+  event.stopPropagation();
+  button.dataset.lastPointerControlAt = String(Date.now());
+  runControlButton(button, event.pointerType || 'unknown');
+});
+
+controlPanel?.addEventListener('click', (event) => {
+  const button = event.target.closest?.('[data-command], #pauseRestartButton');
+  if (!button || !controlPanel.contains(button) || button.disabled) return;
+  const recentPointer = Date.now() - Number(button.dataset.lastPointerControlAt || 0) < 800;
+  if (recentPointer) return;
+  event.preventDefault();
+  event.stopPropagation();
+  runControlButton(button, 'click-fallback');
+});
+
+pauseRestartButton?.addEventListener('click', (event) => {
+  if (event?.pointerType) return;
+  if (Date.now() - Number(pauseRestartButton.dataset.lastPointerControlAt || 0) < 800) return;
+  runControlButton(pauseRestartButton, 'click-fallback');
+});
 
 searchForm.addEventListener('submit', (event) => {
   event.preventDefault();
   state.songFilterText = searchInput.value.trim();
+  state.songSearchField = normalizeSongSearchField(searchFieldInput?.value);
   resetSongPage();
   markFireAndForgetButton(event.submitter, true);
-  requestSongState();
+  if (songLibraryLabel && !Array.isArray(state.songSelect?.library)) songLibraryLabel.textContent = 'Requesting song data...';
+  requestCatalog({ reason: 'search-submit' });
   renderSongSelectState();
 });
 
 searchInput.addEventListener('input', () => {
   state.songFilterText = searchInput.value.trim();
   resetSongPage();
-  renderSongSelectState();
+  if (!state.songSelect?.library && !state.songCatalogInFlight) ensureCatalogRequested('search-input');
+  scheduleSongSelectRender();
 });
 
+searchFieldInput?.addEventListener('change', () => {
+  state.songSearchField = normalizeSongSearchField(searchFieldInput.value);
+  resetSongPage();
+  scheduleSongSelectRender();
+});
+
+clearSearchButton?.addEventListener('click', clearSongSearch);
 showAllSongsButton?.addEventListener('click', showAllSongs);
+downloadSongsCsvButton?.addEventListener('click', downloadSongsCsv);
+likeVisibleSongsButton?.addEventListener('click', () => sendPartyLikeMatchedSongs(likeVisibleSongsButton));
+showLikedSongsButton?.addEventListener('click', showLikedSongs);
 
 controlTextForm.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -2213,7 +5806,9 @@ playlistCreateForm.addEventListener('submit', (event) => {
   const name = playlistNameInput.value.trim();
   if (!name) return;
   sendControl('playlist.create', { text: name }, event.submitter);
+  if (songLibraryLabel) songLibraryLabel.textContent = `Creating playlist "${name}"...`;
   playlistNameInput.value = '';
+  window.setTimeout(() => requestCatalog({ reason: 'playlist-created' }), 700);
 });
 
 for (const button of document.querySelectorAll('.tab')) {
@@ -2221,6 +5816,13 @@ for (const button of document.querySelectorAll('.tab')) {
 }
 
 micButton.addEventListener('click', startMic);
+micRoomList?.addEventListener('click', (event) => {
+  if (!micRoomsUnlocked()) return;
+  const button = event.target.closest?.('.mic-room[data-slot]');
+  if (!button || !micRoomList.contains(button) || button.disabled) return;
+  event.preventDefault();
+  sendSlotProfile(Number(button.dataset.slot), button);
+});
 
 for (const [input, key] of [
   [noiseSuppressionInput, 'noiseSuppression'],
@@ -2241,29 +5843,33 @@ for (const [input, key] of [
   });
 }
 
-function handleDeviceMusicUserActivation() {
-  activateDeviceMusic('user activation');
+function setTargetDriftMs(value) {
+  state.settings.targetDriftMs = clampDelayMs(value);
+  persistSettings();
+  if (state.deviceMusicAudio) {
+    syncDeviceMusicAudio(state.deviceMusicAudio, false);
+  }
+  updateDeviceMusicDiagnostics();
 }
 
-document.addEventListener('pointerdown', handleDeviceMusicUserActivation, { capture: true, passive: true });
-document.addEventListener('touchstart', handleDeviceMusicUserActivation, { capture: true, passive: true });
-document.addEventListener('keydown', handleDeviceMusicUserActivation, { capture: true });
-
-function setDelayMs(value) {
-  state.settings.playerDelayMs = clampDelayMs(value);
+function setMicDelayMs(value) {
+  state.settings.micDelayMs = clampDelayMs(value);
   persistSettings();
 }
 
-delayInput.addEventListener('change', () => setDelayMs(delayInput.value));
-delayMinusButton.addEventListener('click', () => setDelayMs(state.settings.playerDelayMs - 10));
-delayPlusButton.addEventListener('click', () => setDelayMs(state.settings.playerDelayMs + 10));
-controllerRoleForm.addEventListener('submit', (event) => {
+targetDriftInput.addEventListener('input', () => setTargetDriftMs(targetDriftInput.value));
+targetDriftInput.addEventListener('change', () => setTargetDriftMs(targetDriftInput.value));
+targetDriftMinusButton.addEventListener('click', () => setTargetDriftMs(state.settings.targetDriftMs - 10));
+targetDriftPlusButton.addEventListener('click', () => setTargetDriftMs(state.settings.targetDriftMs + 10));
+micDelayInput.addEventListener('input', () => setMicDelayMs(micDelayInput.value));
+micDelayInput.addEventListener('change', () => setMicDelayMs(micDelayInput.value));
+micDelayMinusButton.addEventListener('click', () => setMicDelayMs(state.settings.micDelayMs - 10));
+micDelayPlusButton.addEventListener('click', () => setMicDelayMs(state.settings.micDelayMs + 10));
+controllerRoleForm?.addEventListener('submit', (event) => {
   event.preventDefault();
-  sendRoleMessage('player.requestController', {
-    controllerPassword: controllerRolePasswordInput.value
-  }, event.submitter);
+  sendRoleMessage('player.requestController', {}, event.submitter);
 });
-releaseControllerButton.addEventListener('click', () => {
+releaseControllerButton?.addEventListener('click', () => {
   sendRoleMessage('player.releaseController', {}, releaseControllerButton);
 });
 capacityInput.addEventListener('input', () => {
@@ -2278,6 +5884,27 @@ toggleDebugButton.addEventListener('click', () => {
   eventLog.classList.toggle('hidden');
 });
 document.addEventListener('visibilitychange', applyWakeLock);
+window.addEventListener('pagehide', () => {
+  state.pageUnloading = true;
+  saveSessionForReload();
+});
+window.addEventListener('beforeunload', () => {
+  state.pageUnloading = true;
+  saveSessionForReload();
+});
+window.addEventListener('error', (event) => {
+  clientLog('client.error', {
+    message: event.message || '',
+    source: event.filename || '',
+    line: event.lineno || 0,
+    column: event.colno || 0
+  });
+});
+window.addEventListener('unhandledrejection', (event) => {
+  clientLog('client.rejection', {
+    message: event.reason?.message || String(event.reason || '')
+  });
+});
 
 function openLockScreen() {
   if (appScreen.classList.contains('hidden')) return;
@@ -2337,20 +5964,20 @@ function playlistCountdownSeconds() {
   return Math.max(1, Math.min(120, Math.round(Number(playlistCountdownInput.value || 15))));
 }
 
-playlistAutomationToggleButton.addEventListener('click', () => {
+playlistAutomationToggleButton?.addEventListener('click', () => {
   sendControl('playlist.automation.set', {
     enabled: !state.playlistAutomation.enabled,
     countdownSeconds: playlistCountdownSeconds()
   }, playlistAutomationToggleButton);
 });
 
-playlistCountdownStartButton.addEventListener('click', () => {
+playlistCountdownStartButton?.addEventListener('click', () => {
   sendControl('playlist.countdown.start', {
     countdownSeconds: playlistCountdownSeconds()
   }, playlistCountdownStartButton);
 });
 
-playlistNextButton.addEventListener('click', () => {
+playlistNextButton?.addEventListener('click', () => {
   sendControl('playlist.next', {
     countdownSeconds: playlistCountdownSeconds()
   }, playlistNextButton);
@@ -2360,16 +5987,125 @@ nameChangeForm.addEventListener('submit', (event) => {
   event.preventDefault();
   const name = nameChangeInput.value.trim();
   if (!name) return;
-  localStorage.setItem(nameKey, name);
-  send({ type: 'player.rename', name });
+  state.name = name;
+  nameInput.value = name;
+  sendProfileUpdate();
 });
 
+difficultyModeInput?.addEventListener('change', () => {
+  state.difficultyMode = sanitizeDifficultyMode(difficultyModeInput.value);
+  state.difficulty = sanitizeDifficulty(state.difficulty, state.difficultyMode);
+  sendProfileUpdate();
+});
+
+difficultyInput?.addEventListener('change', () => {
+  state.difficulty = sanitizeDifficulty(difficultyInput.value, 'free');
+  sendProfileUpdate();
+});
+
+avatarFileInput?.addEventListener('change', () => {
+  uploadAvatarFile(avatarFileInput.files?.[0], avatarFileInput);
+});
+
+avatarCameraInput?.addEventListener('change', () => {
+  uploadAvatarFile(avatarCameraInput.files?.[0], avatarCameraInput);
+});
+
+avatarResetButton?.addEventListener('click', () => {
+  state.avatarId = '';
+  state.avatarFile = '';
+  state.avatarUrl = null;
+  state.avatarDataUrl = '';
+  saveProfile();
+  renderProfileControls();
+  send({ type: 'avatar.reset' });
+});
+
+partyTurnAckButton?.addEventListener('click', () => {
+  partyTurnOverlay?.classList.add('hidden');
+  partyTurnOverlay?.setAttribute('aria-hidden', 'true');
+});
+
+partyTurnOverlay?.addEventListener('click', (event) => {
+  if (event.target !== partyTurnOverlay) return;
+  partyTurnOverlay.classList.add('hidden');
+  partyTurnOverlay.setAttribute('aria-hidden', 'true');
+});
+
+function currentPartyArgs() {
+  const selectedPlaylist = state.songPlaylistIndex != null
+    ? Number(state.songPlaylistIndex)
+    : Number(state.songSelect?.curPlaylist ?? -1);
+  return {
+    minPlayers: Math.max(2, Math.min(12, Math.round(Number(partyMinPlayersInput.value || 2)))),
+    endless: Boolean(partyEndlessInput.checked),
+    countdownSeconds: Math.max(1, Math.min(120, Math.round(Number(partyCountdownInput?.value || 15)))),
+    source: partySourceInput?.value === 'playlist' ? 'playlist' : 'all',
+    playlistIndex: Number.isInteger(selectedPlaylist) ? selectedPlaylist : -1,
+    mode: 'matchmaking'
+  };
+}
+
+function markPartySettingsDirty() {
+  state.partySettingsDirty = true;
+}
+
+function applyPartyArgsLocally(args) {
+  state.party = {
+    ...state.party,
+    ...args
+  };
+  state.partySettingsDirty = false;
+  state.partySettingsPendingUntilMs = Date.now() + 2500;
+  renderPartyState();
+}
+
+function sendPartyControl(command, args = currentPartyArgs(), sourceButton = null, label = '') {
+  const commandId = sendControl(command, args, sourceButton);
+  if (partyNotice) partyNotice.textContent = label || `Sent ${command}`;
+  return commandId;
+}
+
+function sendPartySettingsControl(command, sourceButton, label) {
+  const args = currentPartyArgs();
+  applyPartyArgsLocally(args);
+  return sendPartyControl(command, args, sourceButton, label);
+}
+
+for (const input of [partyMinPlayersInput, partyEndlessInput, partyCountdownInput, partySourceInput]) {
+  input?.addEventListener('input', markPartySettingsDirty);
+  input?.addEventListener('change', markPartySettingsDirty);
+}
+
+partyStartButton?.addEventListener('click', () => {
+  sendPartySettingsControl('party.startMatchmaking', partyStartButton, 'Starting party mode...');
+});
+partyFindMatchButton?.addEventListener('click', () => {
+  sendPartySettingsControl('party.startMatchmaking', partyFindMatchButton, 'Finding a match...');
+});
+partySkipButton?.addEventListener('click', () => sendPartyControl('party.skip', {}, partySkipButton, 'Skipping party song...'));
+partyStopButton?.addEventListener('click', () => sendPartyControl('party.stop', {}, partyStopButton, 'Stopping party mode...'));
+partySaveButton?.addEventListener('click', () => {
+  sendPartySettingsControl('party.configure', partySaveButton, 'Saving party settings...');
+});
+partyResetLeaderboardButton?.addEventListener('click', () => sendPartyControl('party.resetLeaderboard', {}, partyResetLeaderboardButton, 'Resetting leaderboard...'));
+
 setInterval(sendClockPing, 1000);
-setInterval(flushPitchBatch, 40);
+setInterval(flushPitchBatch, 10);
+setInterval(renderRemoteLyrics, 100);
 setInterval(updateSongProgressView, 500);
 setInterval(updateDeviceMusicDiagnostics, 500);
 setInterval(reconcileDeviceMusic, 1000);
+setInterval(renderPartyState, 1000);
+setInterval(() => {
+  if (state.songFullListLastRequestMs && (!Array.isArray(state.songSelect?.library) || !state.songSelect.library.length)) {
+    renderSongSelectState();
+  }
+}, 1000);
 
+loadPersistentLikedSongs();
+loadProfile();
+resolveStoredAvatar();
 loadSettings();
 renderSettings();
 setTab(localStorage.getItem(tabKey) || 'mic');
