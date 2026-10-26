@@ -1,3 +1,5 @@
+import {loadSongs} from './song-query.js';
+import {createApiRequests} from './api-requests.js';
 import { NativePcmSender } from './native-pcm.js?v=1';
 import { createAudioInput, startSyntheticPcm } from './audio-input.js?v=3';
 const protocol = 1;
@@ -2913,7 +2915,27 @@ async function requestSongState(options = {}) {
   return ok;
 }
 
+const apiRequests = createApiRequests({send, nextId: () => state.commandId++});
+async function requestNativeSongs() {
+  if (state.songCatalogInFlight) return false;
+  state.songCatalogInFlight = true;
+  const roomId = state.roomId;
+  try {
+    const result = await loadSongs(apiRequests.request);
+    if (state.roomId !== roomId) return false;
+    state.songLibraryTransfer = {libraryHash:result.snapshotId, chunks:result.songs};
+    await finishSongLibraryTransfer({libraryHash:result.snapshotId, total:result.songs.length});
+    return true;
+  } catch (error) {
+    if (state.roomId === roomId) {
+      state.songLibraryProgress = {status:'error',message:`Song loading failed: ${error.message}`};
+      renderSongSelectState();
+    }
+    return false;
+  } finally { state.songCatalogInFlight = false; }
+}
 async function requestCatalog(options = {}) {
+  if (state.songSelect?.apiCapabilities?.includes('song.list')) return requestNativeSongs();
   if (state.songLibraryTransfer && !options.forceFull) return false;
   const now = performance.now();
   if (state.songCatalogInFlight && !options.forceFull) return false;
@@ -5245,10 +5267,19 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'song.select.state') {
+    const nativeSongsBecameAvailable = message.apiCapabilities?.includes('song.list') &&
+      !state.songSelect?.apiCapabilities?.includes('song.list');
     state.songStateRequested = false;
     const previousGameState = state.gameState;
     const renderNeeded = songSelectStateNeedsRender(state.songSelect, message);
     state.songSelect = await mergeSongSelectState(state.songSelect, message);
+    if (nativeSongsBecameAvailable) {
+      if (state.songCatalogRequestTimer) window.clearTimeout(state.songCatalogRequestTimer);
+      state.songCatalogRequestTimer = null;
+      state.songCatalogInFlight = false;
+      state.songLibraryTransfer = null;
+      requestNativeSongs();
+    }
     // Catalog snapshots are also delivered while singing or viewing results.
     if (message.screenActive === false) {
       if (renderNeeded) renderSongSelectState();
@@ -5492,6 +5523,7 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'ack') {
+    if (apiRequests.accept(message)) return;
     finishCommandFeedback(message.commandId, Boolean(message.accepted));
     controlStatus.textContent = message.accepted ? 'Accepted' : `Rejected: ${message.reason || 'unknown'}`;
     clientLog('control.ack', {
@@ -5569,6 +5601,7 @@ function connectAndJoin(displayCode, name, resume = null) {
     });
   });
   ws.addEventListener('close', () => {
+    apiRequests.disconnect();
     if (state.ws !== ws) return;
     if (state.pageUnloading) {
       saveSessionForReload();
