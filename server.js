@@ -1728,6 +1728,25 @@ async function handleClientMessage(conn, msg) {
     return;
   }
 
+  if (msg.type === 'audio.pcm') {
+    // Optional native PCM experiment. Never forward audio to unrelated rooms.
+    const pcm = typeof msg.pcm === 'string' ? msg.pcm : '';
+    if (!room.capabilities.includes('rawPcmV1') || player.slot !== 1 ||
+        pcm.length !== 1308 || !/^[A-Za-z0-9+/]+=$/.test(pcm)) {
+      conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'audio.invalid' });
+      return;
+    }
+    const packet = Buffer.from(pcm, 'base64');
+    if (packet.length !== 980 || packet.toString('ascii', 0, 4) !== 'UAP1' ||
+        packet.readUInt32LE(8) !== 48000 || packet.readUInt32LE(12) !== 480) {
+      conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'audio.invalid' });
+      return;
+    }
+    room.host?.sendJson({ type: 'audio.pcm', protocol: protocolVersion,
+      roomId: room.roomId, playerId: player.playerId, slot: player.slot, pcm });
+    return;
+  }
+
   if (['p2p.offer', 'p2p.ice', 'p2p.close', 'p2p.state'].includes(msg.type)) {
     forwardP2pFromClient(room, player, msg);
     return;
@@ -2518,7 +2537,7 @@ function sendDebugPage(res) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>USDX Remote Debug</title>
+  <title>UltraStar Relay Debug</title>
   <style>
     body { font-family: system-ui, sans-serif; margin: 24px; background: #f8f9fa; color: #202124; }
     table { width: 100%; border-collapse: collapse; background: #fff; }
@@ -2528,7 +2547,7 @@ function sendDebugPage(res) {
   </style>
 </head>
 <body>
-  <h1>USDX Remote Debug</h1>
+  <h1>UltraStar Relay Debug</h1>
   <p>Local-only snapshot. Tokens and pitch data are not included.</p>
   <table>
     <thead><tr><th>Code</th><th>App</th><th>Host</th><th>Players</th><th>Controller</th><th>State</th><th>Playlist</th><th>Expires</th></tr></thead>
