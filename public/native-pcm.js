@@ -44,12 +44,18 @@ export class NativePcmSender {
     }
     if (message?.type !== 'audio.pcm.ack' || !this.active()) return;
     const time = this.pending.get(message.sequence);
-    if (time !== undefined && this.now() - time < 250) {
+    if (time !== undefined) {
       this.pending.delete(message.sequence);
-      this.audioRoundTrips.push(this.now()-time);
-      if(this.audioRoundTrips.length>128) this.audioRoundTrips.shift();
-      this.lastAck = this.now();
-      this.lastAckRoute = message.route === 'direct' ? 'direct' : 'server';
+      const elapsed = this.now() - time;
+      // Keep slow samples for diagnostics without letting stale ACKs disable fallback.
+      if (elapsed >= 0 && elapsed < 2000) {
+        this.audioRoundTrips.push(elapsed);
+        if(this.audioRoundTrips.length>128) this.audioRoundTrips.shift();
+      }
+      if (elapsed >= 0 && elapsed < 250) {
+        this.lastAck = this.now();
+        this.lastAckRoute = message.route === 'direct' ? 'direct' : 'server';
+      }
     }
   }
   submit(packet) {
@@ -60,7 +66,7 @@ export class NativePcmSender {
       try {
         dc.send(packet);
         this.pending.set(new DataView(packet).getUint32(4, true), this.now());
-        if (this.pending.size > 100) this.pending.delete(this.pending.keys().next().value);
+        if (this.pending.size > 256) this.pending.delete(this.pending.keys().next().value);
         ++this.sent;
         direct = true;
       } catch { this.lastAck = -Infinity; }

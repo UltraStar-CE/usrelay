@@ -68,3 +68,19 @@ test('receiver-confirmed TURN audio stops duplicate fallback but still displays 
   now=300;
   assert.equal(pcm.usingServer(),false);
 });
+
+test('slow game drain remains in timing statistics without confirming a stale direct route',()=>{
+ let now=0,relayed=0;
+ const pcm=new NativePcmSender({now:()=>now,active:()=>true,channel:()=>({readyState:'open',bufferedAmount:0,send(){}}),relay:()=>{relayed++;return true;}});
+ const packet=sequence=>{const p=new ArrayBuffer(980);new DataView(p).setUint32(4,sequence,true);return p;};
+ pcm.submit(packet(1));now=600;
+ pcm.acknowledge({type:'audio.pcm.ack',sequence:1,route:'direct'});
+ pcm.acknowledge({type:'audio.pcm.ack',sequence:1,route:'direct'});
+ assert.equal(pcm.confirmed(),false);
+ assert.equal(pcm.timings().audioToGameRoundTripMs.p95,600);
+ assert.equal(pcm.timings().audioToGameRoundTripMs.count,1);
+ pcm.submit(packet(2));assert.equal(relayed,2);
+ now=610;pcm.acknowledge({type:'audio.pcm.ack',sequence:2,route:'direct'});
+ assert.equal(pcm.confirmed(),true);
+ assert.equal(pcm.timings().audioToGameRoundTripMs.p95,600);
+});
