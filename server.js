@@ -2003,7 +2003,7 @@ async function handleClientMessage(conn, msg) {
       'menu.up', 'menu.down', 'menu.left', 'menu.right', 'menu.select', 'menu.back',
       'game.pause', 'game.resume', 'song.skipIntro', 'song.restart',
       'song.menu', 'song.playlistMenu', 'song.jumpTo', 'song.random',
-      'song.select', 'song.start', 'song.skip',
+      'song.select', 'song.start', 'song.skip', 'song.list',
       'preview.start', 'preview.stop',
       'search.setText',
       'playlist.load', 'playlist.create', 'playlist.delete',
