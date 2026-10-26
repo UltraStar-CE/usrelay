@@ -2,25 +2,59 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
+const catalogPublicDir = path.join(publicDir, 'catalog');
+const avatarDir = path.join(__dirname, 'avatars');
 const protocolVersion = 1;
 const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const roomTtlMs = Number(process.env.USDX_ROOM_TTL_MS || 6 * 60 * 60 * 1000);
-const playerResumeTtlMs = Number(process.env.USDX_PLAYER_RESUME_TTL_MS || 5 * 1000);
+const playerResumeTtlMs = Number(process.env.USDX_PLAYER_RESUME_TTL_MS || 2 * 60 * 1000);
 const playerHeartbeatTimeoutMs = Number(process.env.USDX_PLAYER_HEARTBEAT_TIMEOUT_MS || 6500);
-const hostResumeTtlMs = Number(process.env.USDX_HOST_RESUME_TTL_MS || 0);
+const hostResumeTtlMs = Number(process.env.USDX_HOST_RESUME_TTL_MS || 2 * 60 * 1000);
 const hostHeartbeatTimeoutMs = Number(process.env.USDX_HOST_HEARTBEAT_TIMEOUT_MS || 6500);
 const bindHost = process.env.USDX_BIND || '0.0.0.0';
 const port = Number(process.env.USDX_PORT || 8080);
-const maxPayloadBytes = 16 * 1024 * 1024;
+const defaultIceServers = 'stun:stun.l.google.com:19302';
+const maxPayloadBytes = Number(process.env.USDX_MAX_WS_PAYLOAD_BYTES || 64 * 1024 * 1024);
+const maxAvatarUploadBytes = Number(process.env.USDX_MAX_AVATAR_UPLOAD_BYTES || 700 * 1024);
+const maxAvatarDimension = Number(process.env.USDX_MAX_AVATAR_DIMENSION || 1024);
+const slotSwitchCooldownMs = Number(process.env.USDX_SLOT_SWITCH_COOLDOWN_MS || 200);
+const allPlayersAreControllers = true;
+const websocketCompressionThresholdBytes = 512;
+const websocketDeflateTail = Buffer.from([0x00, 0x00, 0xff, 0xff]);
+const debugToken = String(process.env.USDX_DEBUG_TOKEN || '');
+const clientLogLimit = Number(process.env.USDX_CLIENT_LOG_LIMIT || 1000);
 
 const roomsById = new Map();
 const roomsByCode = new Map();
 const joinAttempts = new Map();
 const previewRequests = new Map();
+const pitchRelayStats = new Map();
+const clientLogs = [];
+
+const webAppAliases = new Map([
+  ['', 'default'],
+  ['default', 'default'],
+  ['classic', 'default'],
+  ['remote', 'default'],
+  ['catalog', 'catalog']
+]);
+const webAppNames = new Set(['default', 'catalog']);
+
+function resolveWebApp(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  const name = webAppAliases.get(raw);
+  return {
+    ok: Boolean(name && webAppNames.has(name)),
+    specified: raw.length > 0,
+    requested: raw,
+    name: name || ''
+  };
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -33,6 +67,45 @@ function log(event, fields = {}) {
   console.log(JSON.stringify(safe));
 }
 
+function safeHeaderValue(value, maxChars = 200) {
+  const raw = String(value || '').slice(0, maxChars);
+  if (!raw) return '';
+  const validUnicode = Array.from(raw, (char) => {
+    const code = char.codePointAt(0);
+    return code >= 0xd800 && code <= 0xdfff ? '?' : char;
+  }).join('');
+  return encodeURIComponent(validUnicode);
+}
+
+function sanitizeClientLogBody(value) {
+  if (!value || typeof value !== 'object') return null;
+  const event = String(value.event || value.type || 'client').replace(/[^\w:.-]/g, '').slice(0, 48) || 'client';
+  const data = value.data && typeof value.data === 'object' ? value.data : {};
+  const safeData = {};
+  for (const [key, raw] of Object.entries(data).slice(0, 24)) {
+    if (['playerToken', 'hostToken', 'avatarDataUrl', 'dataUrl'].includes(key)) continue;
+    const valueType = typeof raw;
+    if (raw == null || valueType === 'boolean' || valueType === 'number') safeData[key] = raw;
+    else safeData[key] = String(raw).slice(0, 300);
+  }
+  return { event, data: safeData };
+}
+
+function addClientLog(req, body) {
+  const safe = sanitizeClientLogBody(body);
+  if (!safe) return false;
+  const entry = {
+    at: nowIso(),
+    ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '',
+    userAgent: String(req.headers['user-agent'] || '').slice(0, 240),
+    ...safe
+  };
+  clientLogs.push(entry);
+  while (clientLogs.length > clientLogLimit) clientLogs.shift();
+  log('client.log', { event: entry.event, ...entry.data });
+  return true;
+}
+
 function randomId(prefix) {
   return `${prefix}_${crypto.randomBytes(16).toString('base64url')}`;
 }
@@ -43,6 +116,16 @@ function randomCode() {
     code += alphabet[crypto.randomInt(alphabet.length)];
   }
   return code;
+}
+
+function parseByteRange(header) {
+  const match = String(header || '').match(/^bytes=(\d+)-(\d*)$/);
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = match[2] ? Number(match[2]) : null;
+  if (!Number.isSafeInteger(start) || start < 0) return null;
+  if (end != null && (!Number.isSafeInteger(end) || end < start)) return null;
+  return { start, end };
 }
 
 function allocateCode() {
@@ -58,8 +141,93 @@ function sanitizeName(value) {
   return text.slice(0, 24) || 'Singer';
 }
 
+function sanitizeDifficultyMode(value) {
+  const mode = String(value || '').toLowerCase();
+  return ['easy', 'medium', 'hard', 'free'].includes(mode) ? mode : 'free';
+}
+
+function sanitizeDifficulty(value, mode = 'free') {
+  const fixed = { easy: 0, medium: 1, hard: 2 };
+  if (Object.prototype.hasOwnProperty.call(fixed, mode)) return fixed[mode];
+  const number = Math.round(Number(value));
+  if (!Number.isFinite(number)) return 1;
+  return Math.max(0, Math.min(2, number));
+}
+
+function publicDifficultyLabel(value) {
+  return ['easy', 'medium', 'hard'][sanitizeDifficulty(value)] || 'medium';
+}
+
+function sanitizeAvatarId(value) {
+  return String(value || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+}
+
+function sanitizeAvatarFile(value) {
+  const base = path.basename(String(value || ''));
+  if (!/^upload_[A-Za-z0-9_-]{12,64}\.(png|jpg|jpeg)$/i.test(base)) return '';
+  return base;
+}
+
+function avatarUrlForFile(fileName) {
+  const safe = sanitizeAvatarFile(fileName);
+  return safe ? `/avatars/${safe}` : null;
+}
+
+function avatarFileForId(avatarId) {
+  const safeId = sanitizeAvatarId(avatarId);
+  if (!safeId) return '';
+  for (const ext of ['jpg', 'jpeg', 'png']) {
+    const fileName = `upload_${safeId}.${ext}`;
+    if (fs.existsSync(path.join(avatarDir, fileName))) return fileName;
+  }
+  return '';
+}
+
+function avatarInfoForId(avatarId) {
+  const avatarFile = avatarFileForId(avatarId);
+  if (!avatarFile) return null;
+  const filePath = path.join(avatarDir, avatarFile);
+  const stat = fs.statSync(filePath);
+  return {
+    avatarId: sanitizeAvatarId(avatarId),
+    avatarFile,
+    avatarUrl: avatarUrlForFile(avatarFile),
+    contentType: contentType(filePath),
+    bytes: stat.size
+  };
+}
+
+function profileFromMessage(msg, fallback = {}) {
+  const mode = sanitizeDifficultyMode(msg.difficultyMode ?? fallback.difficultyMode);
+  const difficulty = sanitizeDifficulty(msg.difficulty ?? fallback.difficulty, mode);
+  const avatarId = sanitizeAvatarId(msg.avatarId ?? fallback.avatarId);
+  const avatarFile = sanitizeAvatarFile(msg.avatarFile ?? fallback.avatarFile) || avatarFileForId(avatarId);
+  return {
+    name: sanitizeName(msg.name ?? fallback.name),
+    difficultyMode: mode,
+    difficulty,
+    difficultyLabel: publicDifficultyLabel(difficulty),
+    avatarId,
+    avatarFile,
+    avatarUrl: avatarUrlForFile(avatarFile)
+  };
+}
+
 function sanitizeCode(value) {
   return String(value || '').toUpperCase().replace(/[^A-Z2-9]/g, '').slice(0, 4);
+}
+
+function clampDelayMs(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(-500, Math.min(500, Math.round(number / 10) * 10));
+}
+
+function micDelayFromSettings(settings, fallback = 0) {
+  if (!settings || typeof settings !== 'object') return clampDelayMs(fallback);
+  if (Object.prototype.hasOwnProperty.call(settings, 'micDelayMs')) return clampDelayMs(settings.micDelayMs);
+  if (Object.prototype.hasOwnProperty.call(settings, 'playerDelayMs')) return clampDelayMs(settings.playerDelayMs);
+  return clampDelayMs(fallback);
 }
 
 function safeJsonParse(text) {
@@ -68,6 +236,123 @@ function safeJsonParse(text) {
   } catch {
     return null;
   }
+}
+
+function decodeAvatarDataUrl(dataUrl) {
+  const match = String(dataUrl || '').match(/^data:image\/(png|jpe?g);base64,([A-Za-z0-9+/=\s]+)$/i);
+  if (!match) throw new Error('avatar.bad_data_url');
+  const kind = match[1].toLowerCase().startsWith('jp') ? 'jpg' : 'png';
+  const buffer = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
+  if (!buffer.length || buffer.length > maxAvatarUploadBytes) throw new Error('avatar.too_large');
+  const dimensions = imageDimensions(buffer, kind);
+  if (!dimensions.width || !dimensions.height) throw new Error('avatar.bad_image');
+  if (dimensions.width > maxAvatarDimension || dimensions.height > maxAvatarDimension) {
+    throw new Error('avatar.too_large_dimensions');
+  }
+  return { kind, buffer, ...dimensions };
+}
+
+function imageDimensions(buffer, kind) {
+  if (kind === 'png') {
+    if (buffer.length < 24 || buffer.toString('ascii', 1, 4) !== 'PNG') throw new Error('avatar.bad_png');
+    return {
+      width: buffer.readUInt32BE(16),
+      height: buffer.readUInt32BE(20)
+    };
+  }
+  let offset = 2;
+  if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) throw new Error('avatar.bad_jpeg');
+  while (offset + 9 < buffer.length) {
+    if (buffer[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    const marker = buffer[offset + 1];
+    offset += 2;
+    if (marker === 0xd9 || marker === 0xda) break;
+    if (offset + 2 > buffer.length) break;
+    const size = buffer.readUInt16BE(offset);
+    if (size < 2 || offset + size > buffer.length) break;
+    if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) ||
+        (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+      return {
+        height: buffer.readUInt16BE(offset + 3),
+        width: buffer.readUInt16BE(offset + 5)
+      };
+    }
+    offset += size;
+  }
+  throw new Error('avatar.bad_jpeg_dimensions');
+}
+
+async function storeAvatar(dataUrl, requestedAvatarId = '') {
+  const decoded = decodeAvatarDataUrl(dataUrl);
+  await fs.promises.mkdir(avatarDir, { recursive: true });
+  const requestedId = sanitizeAvatarId(requestedAvatarId);
+  const existingFile = avatarFileForId(requestedId);
+  if (existingFile) {
+    const stat = await fs.promises.stat(path.join(avatarDir, existingFile));
+    return {
+      avatarId: requestedId,
+      avatarFile: existingFile,
+      avatarUrl: avatarUrlForFile(existingFile),
+      avatarBytes: stat.size,
+      avatarWidth: decoded.width,
+      avatarHeight: decoded.height,
+      avatarDataBase64: decoded.buffer.toString('base64')
+    };
+  }
+  const avatarId = requestedId || crypto.randomBytes(18).toString('base64url');
+  const avatarFile = `upload_${avatarId}.${decoded.kind}`;
+  const target = path.join(avatarDir, avatarFile);
+  await fs.promises.writeFile(target, decoded.buffer, { flag: 'wx' });
+  return {
+    avatarId,
+    avatarFile,
+    avatarUrl: avatarUrlForFile(avatarFile),
+    avatarBytes: decoded.buffer.length,
+    avatarWidth: decoded.width,
+    avatarHeight: decoded.height,
+    avatarDataBase64: decoded.buffer.toString('base64')
+  };
+}
+
+function parseIceServers(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return [];
+  const parsed = safeJsonParse(raw);
+  if (Array.isArray(parsed)) return parsed.filter(Boolean);
+  if (parsed && typeof parsed === 'object') return [parsed];
+  return raw
+    .split(',')
+    .map((url) => url.trim())
+    .filter(Boolean)
+    .map((urls) => ({ urls }));
+}
+
+const iceServers = parseIceServers(process.env.USDX_ICE_SERVERS || defaultIceServers);
+
+function wantsPerMessageDeflate(req) {
+  return String(req.headers['sec-websocket-extensions'] || '')
+    .toLowerCase()
+    .split(',')
+    .some((extension) => extension.trim().startsWith('permessage-deflate'));
+}
+
+function compressWebSocketPayload(payload) {
+  const compressed = zlib.deflateRawSync(payload, {
+    level: 1,
+    flush: zlib.constants.Z_SYNC_FLUSH,
+    finishFlush: zlib.constants.Z_SYNC_FLUSH
+  });
+  if (compressed.length < websocketDeflateTail.length) return compressed;
+  return compressed.subarray(0, compressed.length - websocketDeflateTail.length);
+}
+
+function decompressWebSocketPayload(payload) {
+  return zlib.inflateRawSync(Buffer.concat([payload, websocketDeflateTail]), {
+    finishFlush: zlib.constants.Z_SYNC_FLUSH
+  });
 }
 
 function hostMonoUs() {
@@ -82,17 +367,39 @@ function publicRoom(room) {
     expiresAt: room.expiresAt,
     hostConnected: Boolean(room.host),
     maxPlayers: room.maxPlayers,
-    players: [...room.players.values()].map((player) => ({
+    gamePlayerCount: activeGamePlayerCount(room),
+    players: [...room.players.values()].filter((player) => isLivePlayer(player)).map((player) => ({
       playerId: player.playerId,
       name: player.name,
+      difficultyMode: player.difficultyMode || 'free',
+      difficulty: sanitizeDifficulty(player.difficulty, player.difficultyMode),
+      difficultyLabel: publicDifficultyLabel(player.difficulty),
+      avatarId: player.avatarId || '',
+      avatarFile: player.avatarFile || '',
+      avatarUrl: avatarUrlForFile(player.avatarFile),
       slot: player.slot,
       role: player.role,
-      connected: Boolean(player.conn && !player.conn.closed)
+      micDelayMs: player.micDelayMs || 0,
+      connected: Boolean(player.conn && !player.conn.closed),
+      pitch: publicPitchStats(room, player)
     })),
     controllerPlayerId: room.controllerPlayerId,
     gameState: room.gameState,
+    webApp: room.webApp || 'default',
     playlistAutomation: playlistAutomationPayload(room)
   };
+}
+
+function publicP2pConfig(room) {
+  return {
+    enabled: Boolean(room?.capabilities?.includes('p2pDataChannel')),
+    iceServers
+  };
+}
+
+function publicPitchStats(room, player) {
+  const stats = pitchRelayStats.get(`${room.roomId}:${player.playerId}`);
+  return stats ? { ...stats } : { batches: 0, frames: 0 };
 }
 
 function playlistAutomationPayload(room) {
@@ -116,7 +423,7 @@ function playlistAutomationPayload(room) {
   };
 }
 
-function createRoom(hostConn, hello) {
+function createRoom(hostConn, hello, webApp) {
   const roomId = randomId('room');
   const displayCode = allocateCode();
   const hostToken = randomId('host');
@@ -131,7 +438,8 @@ function createRoom(hostConn, hello) {
     capabilities: Array.isArray(hello.capabilities) ? hello.capabilities : [],
     gameVersion: String(hello.gameVersion || ''),
     bridgeVersion: String(hello.bridgeVersion || ''),
-    controllerPassword: String(hello.controllerPassword || process.env.USDX_CONTROLLER_PASSWORD || ''),
+    webApp: webApp?.name || 'default',
+    webAppRequested: webApp?.requested || '',
     players: new Map(),
     controllerPlayerId: null,
     gameState: {
@@ -142,6 +450,7 @@ function createRoom(hostConn, hello) {
       songSeq: 0,
       players: [],
       controllerPlayerId: null,
+      gamePlayerCount: 1,
       playlistSize: 0
     },
     playlistAutomation: {
@@ -155,8 +464,10 @@ function createRoom(hostConn, hello) {
       updatedAt: nowIso()
     },
     lastSongStarted: null,
+    lastSongLyrics: null,
     lastSongSelectState: null,
     lastSongLibraryProgress: null,
+    catalogRequests: new Map(),
     hostDisconnectTimer: null,
     hostDisconnectedAtMs: null,
     lastSeenMs: Date.now()
@@ -173,9 +484,10 @@ function createRoom(hostConn, hello) {
     roomId,
     displayCode,
     hostToken,
-    expiresAt: room.expiresAt
+    expiresAt: room.expiresAt,
+    p2p: publicP2pConfig(room)
   });
-  log('room.created', { roomId, displayCode, maxPlayers: room.maxPlayers });
+  log('room.created', { roomId, displayCode, maxPlayers: room.maxPlayers, webApp: room.webApp || 'default' });
   return room;
 }
 
@@ -218,13 +530,17 @@ function roomHostHeartbeatExpired(room, now = Date.now()) {
   return lastSeen > 0 && now - lastSeen >= hostHeartbeatTimeoutMs;
 }
 
+function roomHostDisconnected(room) {
+  return !room || !room.host || room.host.closed;
+}
+
 function playerHeartbeatExpired(player, now = Date.now()) {
   if (!player || !player.conn || player.conn.closed) return false;
   const lastSeen = Number(player.lastSeenMs || 0);
   return lastSeen > 0 && now - lastSeen >= playerHeartbeatTimeoutMs;
 }
 
-function resumeRoom(hostConn, hello) {
+function resumeRoom(hostConn, hello, webApp) {
   const roomId = String(hello.roomId || '');
   const hostToken = String(hello.hostToken || '');
   if (!roomId || !hostToken) return null;
@@ -240,8 +556,9 @@ function resumeRoom(hostConn, hello) {
   room.capabilities = Array.isArray(hello.capabilities) ? hello.capabilities : room.capabilities;
   room.gameVersion = String(hello.gameVersion || room.gameVersion || '');
   room.bridgeVersion = String(hello.bridgeVersion || room.bridgeVersion || '');
-  if (hello.controllerPassword !== undefined) {
-    room.controllerPassword = String(hello.controllerPassword || process.env.USDX_CONTROLLER_PASSWORD || '');
+  if (webApp?.specified || !room.webApp) {
+    room.webApp = webApp?.name || 'default';
+    room.webAppRequested = webApp?.requested || '';
   }
   hostConn.sendJson({
     type: 'room.resumed',
@@ -249,23 +566,15 @@ function resumeRoom(hostConn, hello) {
     roomId: room.roomId,
     displayCode: room.displayCode,
     hostToken: room.hostToken,
-    expiresAt: room.expiresAt
+    expiresAt: room.expiresAt,
+    p2p: publicP2pConfig(room)
   });
   for (const player of room.players.values()) {
-    hostConn.sendJson({
-      type: 'player.joined',
-      protocol: protocolVersion,
-      roomId: room.roomId,
-      playerId: player.playerId,
-      name: player.name,
-      slot: player.slot,
-      role: player.role,
-      resumed: true
-    });
+    hostConn.sendJson(playerAssignedMessage(room, player, { type: 'player.joined', resumed: true }));
   }
   updateRoomGameState(room);
   broadcastPlaylistAutomation(room);
-  log('room.resumed', { roomId: room.roomId, displayCode: room.displayCode, players: room.players.size });
+  log('room.resumed', { roomId: room.roomId, displayCode: room.displayCode, players: room.players.size, webApp: room.webApp || 'default' });
   return room;
 }
 
@@ -344,6 +653,9 @@ function removeRoom(room, reason) {
   }
   roomsById.delete(room.roomId);
   roomsByCode.delete(room.displayCode);
+  for (const key of pitchRelayStats.keys()) {
+    if (key.startsWith(`${room.roomId}:`)) pitchRelayStats.delete(key);
+  }
   for (const player of room.players.values()) {
     player.conn?.sendJson({ type: 'error', protocol: protocolVersion, code: 'room.closed', reason });
     player.conn?.close();
@@ -351,12 +663,38 @@ function removeRoom(room, reason) {
   for (const [requestId, request] of previewRequests) {
     if (request.room === room) endPreviewRequest(requestId, 410, 'room closed');
   }
-  room.host?.close();
+  const host = room.host;
+  room.host = null;
+  host?.close();
   log('room.removed', { roomId: room.roomId, displayCode: room.displayCode, reason });
+}
+
+function markHostDisconnected(room, reason = 'disconnect') {
+  if (!room || !roomsById.has(room.roomId)) return;
+  if (!room.host || room.host.closed) {
+    room.hostDisconnectedAtMs ||= Date.now();
+    scheduleHostDisconnectExpiry(room);
+    return;
+  }
+  const host = room.host;
+  room.host = null;
+  room.hostDisconnectedAtMs = Date.now();
+  room.lastSeenMs = Date.now();
+  broadcastRoom(room, {
+    type: 'host.disconnected',
+    protocol: protocolVersion,
+    roomId: room.roomId,
+    reason,
+    closesInMs: hostResumeTtlMs
+  });
+  scheduleHostDisconnectExpiry(room);
+  host.close();
+  log('host.disconnected', { roomId: room.roomId, displayCode: room.displayCode, reason });
 }
 
 function nextSlot(room) {
   const used = new Set([...room.players.values()]
+    .filter((player) => isLivePlayer(player))
     .map((player) => Number(player.slot))
     .filter((slot) => slot > 0));
   for (let slot = 1; slot <= room.maxPlayers; slot += 1) {
@@ -366,6 +704,7 @@ function nextSlot(room) {
 }
 
 function hasController(room) {
+  if (allPlayersAreControllers) return false;
   for (const player of room.players.values()) {
     if (player.role === 'controller') return true;
   }
@@ -373,18 +712,44 @@ function hasController(room) {
 }
 
 function refreshControllerPlayerId(room) {
-  if (room.controllerPlayerId && room.players.get(room.controllerPlayerId)?.role === 'controller') return;
-  const next = [...room.players.values()].find((candidate) => candidate.role === 'controller') || null;
+  if (allPlayersAreControllers) {
+    const next = [...room.players.values()].find((candidate) => isLivePlayer(candidate)) || null;
+    room.controllerPlayerId = next?.playerId || null;
+    return;
+  }
+  if (room.controllerPlayerId && room.players.get(room.controllerPlayerId)?.role === 'controller' && isLivePlayer(room.players.get(room.controllerPlayerId))) return;
+  const next = [...room.players.values()].find((candidate) => candidate.role === 'controller' && isLivePlayer(candidate)) || null;
   room.controllerPlayerId = next?.playerId || null;
 }
 
+function enforceControllerRole(player) {
+  if (allPlayersAreControllers && player) player.role = 'controller';
+  return player;
+}
+
+function enforceRoomControllerRoles(room) {
+  if (!allPlayersAreControllers || !room) return;
+  for (const player of room.players.values()) enforceControllerRole(player);
+  refreshControllerPlayerId(room);
+}
+
+function isLivePlayer(player) {
+  return Boolean(player?.conn && !player.conn.closed);
+}
+
 function highestOccupiedSlot(room) {
-  let highest = 1;
+  let highest = 0;
   for (const player of room.players.values()) {
     const slot = Number(player.slot);
-    if (slot > 0) highest = Math.max(highest, slot);
+    if (isLivePlayer(player) && slot > 0) highest = Math.max(highest, slot);
   }
   return highest;
+}
+
+function activeGamePlayerCount(room) {
+  const highest = highestOccupiedSlot(room);
+  if (highest <= 0) return 1;
+  return highest === 5 ? 6 : highest;
 }
 
 function findResumePlayer(room, msg) {
@@ -405,30 +770,46 @@ function rateLimitJoin(ip) {
   return recent.length <= 30;
 }
 
-function updateRoomGameState(room) {
+function updateRoomGameState(room, options = {}) {
+  enforceRoomControllerRoles(room);
   room.gameState = {
     ...room.gameState,
     protocol: protocolVersion,
     seq: (Number(room.gameState?.seq) || 0) + 1,
-    players: [...room.players.values()].map((player) => publicPlayer(player)),
+    players: [...room.players.values()].filter((player) => isLivePlayer(player)).map((player) => publicPlayer(player)),
     maxPlayers: room.maxPlayers,
+    gamePlayerCount: activeGamePlayerCount(room),
     controllerPlayerId: room.controllerPlayerId
   };
+  if (options.broadcast !== true) return;
   broadcastRoom(room, room.gameState);
 }
 
 function publicPlayer(player) {
+  enforceControllerRole(player);
   return {
     slot: player.slot,
     playerId: player.playerId,
     name: player.name,
+    difficultyMode: player.difficultyMode || 'free',
+    difficulty: sanitizeDifficulty(player.difficulty, player.difficultyMode),
+    difficultyLabel: publicDifficultyLabel(player.difficulty),
+    avatarId: player.avatarId || '',
+    avatarFile: player.avatarFile || '',
+    avatarUrl: avatarUrlForFile(player.avatarFile),
     connected: Boolean(player.conn && !player.conn.closed),
     singing: Number(player.slot) > 0 && (player.role === 'singer' || player.role === 'controller'),
-    role: player.role
+    role: player.role,
+    micDelayMs: player.micDelayMs || 0
   };
 }
 
 function mergeHostPlayersWithRoomSlots(room, hostPlayers) {
+  if (room?.players?.size) {
+    return Array.from(room.players.values())
+      .filter((player) => isLivePlayer(player))
+      .map((player) => publicPlayer(player));
+  }
   if (!Array.isArray(hostPlayers) || !hostPlayers.length) {
     return Array.from(room.players.values()).map((player) => publicPlayer(player));
   }
@@ -482,6 +863,7 @@ function removePlayerFromRoom(room, target, reason) {
 
 function setPlayerRole(room, player, role) {
   if (!room || !player || !['singer', 'controller'].includes(role)) return false;
+  if (allPlayersAreControllers) role = 'controller';
   player.role = role;
   if (role === 'controller' && !room.controllerPlayerId) room.controllerPlayerId = player.playerId;
   if (role !== 'controller' && room.controllerPlayerId === player.playerId) room.controllerPlayerId = null;
@@ -491,12 +873,110 @@ function setPlayerRole(room, player, role) {
     protocol: protocolVersion,
     roomId: room.roomId,
     playerId: player.playerId,
+    name: player.name,
     slot: player.slot,
-    role: player.role
+    role: player.role,
+    difficultyMode: player.difficultyMode || 'free',
+    difficulty: sanitizeDifficulty(player.difficulty, player.difficultyMode),
+    avatarId: player.avatarId || '',
+    avatarFile: player.avatarFile || '',
+    avatarUrl: avatarUrlForFile(player.avatarFile),
+    micDelayMs: player.micDelayMs || 0
   };
   broadcastRoom(room, assigned);
   updateRoomGameState(room);
   return true;
+}
+
+function slotSwitchRateLimited(player, requestedSlot) {
+  if (!player || Number(player.slot || 0) === Number(requestedSlot || 0)) return false;
+  const now = Date.now();
+  const last = Number(player.lastSlotSwitchMs || 0);
+  if (last > 0 && now - last < slotSwitchCooldownMs) {
+    return Math.max(1, slotSwitchCooldownMs - (now - last));
+  }
+  return false;
+}
+
+function markSlotSwitch(player, requestedSlot) {
+  if (player && Number(player.slot || 0) !== Number(requestedSlot || 0)) {
+    player.lastSlotSwitchMs = Date.now();
+  }
+}
+
+function playerAssignedMessage(room, player, extra = {}) {
+  enforceControllerRole(player);
+  return {
+    type: 'player.assigned',
+    protocol: protocolVersion,
+    roomId: room.roomId,
+    playerId: player.playerId,
+    name: player.name,
+    slot: player.slot,
+    role: player.role,
+    difficultyMode: player.difficultyMode || 'free',
+    difficulty: sanitizeDifficulty(player.difficulty, player.difficultyMode),
+    difficultyLabel: publicDifficultyLabel(player.difficulty),
+    avatarId: player.avatarId || '',
+    avatarFile: player.avatarFile || '',
+    avatarUrl: avatarUrlForFile(player.avatarFile),
+    micDelayMs: player.micDelayMs || 0,
+    ...extra
+  };
+}
+
+function playerProfileMessage(room, player, extra = {}) {
+  enforceControllerRole(player);
+  return {
+    type: 'player.profile.updated',
+    protocol: protocolVersion,
+    roomId: room.roomId,
+    playerId: player.playerId,
+    name: player.name,
+    difficultyMode: player.difficultyMode || 'free',
+    difficulty: sanitizeDifficulty(player.difficulty, player.difficultyMode),
+    difficultyLabel: publicDifficultyLabel(player.difficulty),
+    avatarId: player.avatarId || '',
+    avatarFile: player.avatarFile || '',
+    avatarUrl: avatarUrlForFile(player.avatarFile),
+    ...extra
+  };
+}
+
+function remotePlayersSnapshotMessage(room) {
+  enforceRoomControllerRoles(room);
+  return {
+    type: 'remote.players.snapshot',
+    protocol: protocolVersion,
+    roomId: room.roomId,
+    gamePlayerCount: activeGamePlayerCount(room),
+    players: [...room.players.values()].filter((player) => isLivePlayer(player)).map((player) => ({
+      playerId: player.playerId,
+      name: player.name,
+      slot: player.slot,
+      role: player.role,
+      connected: isLivePlayer(player),
+      difficultyMode: player.difficultyMode || 'free',
+      difficulty: sanitizeDifficulty(player.difficulty, player.difficultyMode),
+      difficultyLabel: publicDifficultyLabel(player.difficulty),
+      avatarId: player.avatarId || '',
+      avatarFile: player.avatarFile || '',
+      avatarUrl: avatarUrlForFile(player.avatarFile),
+      micDelayMs: player.micDelayMs || 0
+    }))
+  };
+}
+
+function sendRemotePlayersSnapshotToHost(room) {
+  room.host?.sendJson(remotePlayersSnapshotMessage(room));
+}
+
+function applyPlayerProfile(player, profile) {
+  player.name = profile.name;
+  player.difficultyMode = profile.difficultyMode;
+  player.difficulty = profile.difficulty;
+  player.avatarId = profile.avatarId;
+  player.avatarFile = profile.avatarFile;
 }
 
 function broadcastRoom(room, message) {
@@ -506,11 +986,262 @@ function broadcastRoom(room, message) {
   }
 }
 
+function broadcastPlayers(room, message) {
+  for (const player of room.players.values()) {
+    player.conn?.sendJson(message);
+  }
+}
+
+function forwardP2pFromClient(room, player, msg) {
+  if (!room.host || room.host.closed) {
+    player.conn?.sendJson({
+      type: 'p2p.error',
+      protocol: protocolVersion,
+      code: 'host_disconnected'
+    });
+    return true;
+  }
+  room.host.sendJson({
+    ...msg,
+    protocol: protocolVersion,
+    roomId: room.roomId,
+    playerId: player.playerId,
+    playerToken: undefined,
+    slot: player.slot,
+    role: player.role
+  });
+  return true;
+}
+
+function forwardP2pFromHost(room, msg) {
+  const player = room.players.get(String(msg.playerId || ''));
+  if (!player || !player.conn || player.conn.closed) return true;
+  player.conn.sendJson({
+    ...msg,
+    protocol: protocolVersion,
+    roomId: room.roomId,
+    playerId: player.playerId,
+    hostToken: undefined
+  });
+  return true;
+}
+
+function songSelectForPlayer(message, player = null) {
+  const copy = {
+    ...message,
+    hostToken: undefined,
+    playerId: player?.playerId || message.playerId || null
+  };
+  const libraryHash = String(copy.libraryHash || copy.songLibraryHash || '');
+  const playerHash = String(player?.songLibraryHash || '');
+  if (Array.isArray(copy.library) && libraryHash && playerHash && libraryHash === playerHash) {
+    delete copy.library;
+    copy.libraryCached = true;
+  }
+  return copy;
+}
+
+function sendSongSelectSnapshot(conn, room, player = conn.player) {
+  if (room.lastCatalogManifest) conn.sendJson({ ...room.lastCatalogManifest, playerId: player?.playerId || null });
+  if (room.lastSongSelectState) conn.sendJson(songSelectForPlayer(room.lastSongSelectState, player));
+  if (room.lastSongLibraryProgress) conn.sendJson(room.lastSongLibraryProgress);
+}
+
+function requestSongStateFromHost(conn, room, player, options = {}) {
+  if (!room.host || room.host.closed) {
+    conn.sendJson({
+      type: 'song.library.progress',
+      protocol: protocolVersion,
+      roomId: room.roomId,
+      status: 'host_disconnected',
+      indexedSongs: 0,
+      scannedFiles: 0,
+      scannedDirs: 0,
+      roots: [],
+      message: 'Game bridge is not connected.'
+    });
+    return false;
+  }
+  conn.sendJson({
+    type: 'song.library.progress',
+    protocol: protocolVersion,
+    roomId: room.roomId,
+    status: 'requesting',
+    indexedSongs: Number(room.lastSongLibraryProgress?.indexedSongs || room.lastSongSelectState?.totalSongs || room.lastSongSelectState?.visibleSongs || 0),
+    scannedFiles: Number(room.lastSongLibraryProgress?.scannedFiles || 0),
+    scannedDirs: Number(room.lastSongLibraryProgress?.scannedDirs || 0),
+    transferReceived: 0,
+    transferTotal: Number(room.lastSongLibraryProgress?.indexedSongs || room.lastSongSelectState?.totalSongs || room.lastSongSelectState?.visibleSongs || 0),
+    message: 'Server requested song state from bridge.'
+  });
+  room.host.sendJson({
+    type: 'song.state.request',
+    protocol: protocolVersion,
+    roomId: room.roomId,
+    playerId: player.playerId,
+    songLibraryHash: options.songLibraryHash || ''
+  });
+  log('song.state.request.forwarded', {
+    roomId: room.roomId,
+    playerId: player.playerId,
+    hasAnyState: Boolean(room.lastSongSelectState),
+    playerHash: String(player.songLibraryHash || '').slice(0, 12),
+    requestedHash: String(options.songLibraryHash || '').slice(0, 12)
+  });
+  return true;
+}
+
+function broadcastSongSelectState(room, message) {
+  for (const player of room.players.values()) {
+    player.conn?.sendJson(songSelectForPlayer(message, player));
+  }
+}
+
+function catalogTargetPlayer(room, msg) {
+  const explicit = room.players.get(String(msg.playerId || ''));
+  if (explicit) return explicit;
+  const requestId = String(msg.requestId || '');
+  const mappedPlayerId = requestId ? room.catalogRequests?.get(requestId) : '';
+  return mappedPlayerId ? room.players.get(mappedPlayerId) : null;
+}
+
+function forwardCatalogFromHost(room, msg) {
+  const player = catalogTargetPlayer(room, msg);
+  const message = {
+    ...msg,
+    protocol: protocolVersion,
+    roomId: room.roomId,
+    hostToken: undefined
+  };
+  if (player?.conn && !player.conn.closed) {
+    player.conn.sendJson({ ...message, playerId: player.playerId });
+    if (msg.type === 'catalog.manifest') player.songLibraryHash = String(msg.catalogId || player.songLibraryHash || '');
+    if (['catalog.manifest', 'catalog.transfer.end', 'catalog.error'].includes(msg.type)) {
+      room.catalogRequests?.delete(String(msg.requestId || ''));
+    }
+    if (msg.type === 'catalog.transfer.start' || msg.type === 'catalog.transfer.end' || msg.type === 'catalog.manifest') {
+      log('catalog.forwarded', {
+        roomId: room.roomId,
+        playerId: player.playerId,
+        type: msg.type,
+        catalogId: String(msg.catalogId || '').slice(0, 12),
+        total: Number(msg.totalSongs || msg.total || 0)
+      });
+    }
+  } else {
+    if (msg.requestId && ['catalog.manifest', 'catalog.transfer.start', 'catalog.transfer.chunk', 'catalog.transfer.end', 'catalog.error'].includes(msg.type)) {
+      log('catalog.drop_unmatched', {
+        roomId: room.roomId,
+        type: msg.type,
+        requestId: String(msg.requestId || ''),
+        playerId: String(msg.playerId || '')
+      });
+      if (['catalog.manifest', 'catalog.transfer.end', 'catalog.error'].includes(msg.type)) {
+        room.catalogRequests?.delete(String(msg.requestId || ''));
+      }
+      return true;
+    }
+    for (const candidate of room.players.values()) {
+      candidate.conn?.sendJson(message);
+    }
+    if (msg.type === 'catalog.transfer.start' || msg.type === 'catalog.transfer.end' || msg.type === 'catalog.manifest') {
+      log('catalog.broadcast', {
+        roomId: room.roomId,
+        type: msg.type,
+        catalogId: String(msg.catalogId || '').slice(0, 12),
+        total: Number(msg.totalSongs || msg.total || 0),
+        players: room.players.size
+      });
+    }
+  }
+  return true;
+}
+
+function requestCatalogFromHost(conn, room, player, options = {}) {
+  const knownCatalogId = String(options.knownCatalogId || options.songLibraryHash || '');
+  if (knownCatalogId) player.songLibraryHash = knownCatalogId;
+  if (!room.host || room.host.closed) {
+    conn.sendJson({
+      type: 'catalog.error',
+      protocol: protocolVersion,
+      roomId: room.roomId,
+      code: 'host_disconnected',
+      message: 'Game bridge is not connected.'
+    });
+    return false;
+  }
+  if (!room.capabilities.includes('songCatalog')) {
+    conn.sendJson({
+      type: 'catalog.error',
+      protocol: protocolVersion,
+      roomId: room.roomId,
+      playerId: player.playerId,
+      requestId: String(options.requestId || ''),
+      code: 'bridge_catalog_unsupported',
+      message: 'Connected bridge does not advertise songCatalog. Restart the updated bridge.'
+    });
+    log('catalog.request.rejected', {
+      roomId: room.roomId,
+      playerId: player.playerId,
+      requestId: String(options.requestId || ''),
+      reason: 'bridge_catalog_unsupported',
+      capabilities: room.capabilities.join(',')
+    });
+    return false;
+  }
+  conn.sendJson({
+    type: 'song.library.progress',
+    protocol: protocolVersion,
+    roomId: room.roomId,
+    status: options.forceTransfer ? 'requesting_full' : 'requesting',
+    indexedSongs: Number(room.lastCatalogManifest?.totalSongs || room.lastSongLibraryProgress?.indexedSongs || room.lastSongSelectState?.totalSongs || 0),
+    transferReceived: 0,
+    transferTotal: Number(room.lastCatalogManifest?.totalSongs || room.lastSongLibraryProgress?.indexedSongs || room.lastSongSelectState?.totalSongs || 0),
+    message: options.forceTransfer ? 'Server requested song catalog from bridge.' : 'Server requested song catalog manifest from bridge.'
+  });
+  const requestId = String(options.requestId || '');
+  if (requestId) room.catalogRequests?.set(requestId, player.playerId);
+  room.host.sendJson({
+    type: 'catalog.request',
+    protocol: protocolVersion,
+    roomId: room.roomId,
+    playerId: player.playerId,
+    requestId,
+    knownCatalogId,
+    catalogId: options.catalogId || '',
+    forceTransfer: Boolean(options.forceTransfer)
+  });
+  conn.sendJson({
+    type: 'song.library.progress',
+    protocol: protocolVersion,
+    roomId: room.roomId,
+    status: 'catalog_forwarded',
+    indexedSongs: Number(room.lastCatalogManifest?.totalSongs || room.lastSongLibraryProgress?.indexedSongs || room.lastSongSelectState?.totalSongs || 0),
+    transferReceived: 0,
+    transferTotal: Number(room.lastCatalogManifest?.totalSongs || room.lastSongLibraryProgress?.indexedSongs || room.lastSongSelectState?.totalSongs || 0),
+    message: 'Server forwarded catalog request to bridge.'
+  });
+  log('catalog.request.forwarded', {
+    roomId: room.roomId,
+    playerId: player.playerId,
+    requestId: String(options.requestId || ''),
+    knownCatalogId: knownCatalogId.slice(0, 12),
+    catalogId: String(options.catalogId || '').slice(0, 12),
+    forceTransfer: Boolean(options.forceTransfer)
+  });
+  return true;
+}
+
+function sendSongRuntimeSnapshot(conn, room) {
+  if (room.lastSongStarted) conn.sendJson(room.lastSongStarted);
+  if (room.lastSongLyrics) conn.sendJson(room.lastSongLyrics);
+}
+
 function endPreviewRequest(requestId, status = 504, message = 'preview unavailable') {
   const request = previewRequests.get(requestId);
   if (!request) return;
   previewRequests.delete(requestId);
-  clearTimeout(request.timer);
+  if (request.timer) clearTimeout(request.timer);
   if (!request.started) {
     request.res.writeHead(status, {
       'content-type': 'text/plain; charset=utf-8',
@@ -524,14 +1255,49 @@ function cancelPreviewRequest(requestId, reason = 'cancelled') {
   const request = previewRequests.get(requestId);
   if (!request) return;
   previewRequests.delete(requestId);
-  clearTimeout(request.timer);
-  request.room.host?.sendJson({
-    type: 'song.preview.cancel',
-    protocol: protocolVersion,
-    requestId
-  });
+  if (request.timer) clearTimeout(request.timer);
+  const skipHostCancel = reason === 'client_closed' && request.purpose === 'song-cover';
+  if (!skipHostCancel) {
+    request.room.host?.sendJson({
+      type: 'song.preview.cancel',
+      protocol: protocolVersion,
+      requestId
+    });
+  }
   if (!request.res.destroyed) request.res.end();
-  log('preview.cancelled', { roomId: request.room.roomId, requestId, reason });
+  log('preview.cancelled', { roomId: request.room.roomId, requestId, reason, purpose: request.purpose || '', hostCancel: !skipHostCancel });
+}
+
+function flushPreviewQueue(requestId, request) {
+  if (!request || request.flushing) return;
+  request.flushing = true;
+  try {
+    while (request.queue.length > 0) {
+      const chunk = request.queue[0];
+      const canContinue = request.res.write(chunk);
+      if (!canContinue) return;
+      request.queuedBytes -= chunk.length;
+      request.queue.shift();
+    }
+  } finally {
+    request.flushing = false;
+  }
+}
+
+function writePreviewChunk(requestId, request, chunk) {
+  if (!request || request.res.destroyed) return;
+  if (request.queue.length > 0) {
+    request.queue.push(chunk);
+    request.queuedBytes += chunk.length;
+  } else {
+    const canContinue = request.res.write(chunk);
+    if (canContinue) return;
+    request.queue.push(Buffer.alloc(0));
+  }
+
+  if (request.queuedBytes > 2 * 1024 * 1024) {
+    cancelPreviewRequest(requestId, 'http_backpressure');
+  }
 }
 
 function handlePreviewHostMessage(room, msg) {
@@ -546,17 +1312,33 @@ function handlePreviewHostMessage(room, msg) {
 
   if (msg.type === 'song.preview.meta') {
     request.started = true;
-    request.res.writeHead(200, {
+    if (request.timer) {
+      clearTimeout(request.timer);
+      request.timer = null;
+    }
+    const headers = {
       'content-type': msg.contentType || 'audio/mpeg',
       'cache-control': 'no-store',
-      'x-content-type-options': 'nosniff'
-    });
+      'x-content-type-options': 'nosniff',
+      'accept-ranges': 'bytes'
+    };
+    const contentLength = Number(msg.contentLength);
+    if (Number.isFinite(contentLength) && contentLength > 0) headers['content-length'] = String(Math.round(contentLength));
+    if (msg.contentRange) headers['content-range'] = String(msg.contentRange);
+    if (msg.fileName) headers['x-usdx-audio-file'] = safeHeaderValue(msg.fileName);
+    if (msg.title) headers['x-usdx-song-title'] = safeHeaderValue(msg.title);
+    if (msg.artist) headers['x-usdx-song-artist'] = safeHeaderValue(msg.artist);
+    request.res.writeHead(Number(msg.statusCode) === 206 ? 206 : 200, headers);
     return true;
   }
 
   if (msg.type === 'song.preview.chunk') {
     if (!request.started) {
       request.started = true;
+      if (request.timer) {
+        clearTimeout(request.timer);
+        request.timer = null;
+      }
       request.res.writeHead(200, {
         'content-type': 'audio/mpeg',
         'cache-control': 'no-store',
@@ -564,10 +1346,7 @@ function handlePreviewHostMessage(room, msg) {
       });
     }
     if (typeof msg.data === 'string' && msg.data) {
-      const canContinue = request.res.write(Buffer.from(msg.data, 'base64'));
-      if (!canContinue) {
-        cancelPreviewRequest(requestId, 'http_backpressure');
-      }
+      writePreviewChunk(requestId, request, Buffer.from(msg.data, 'base64'));
     }
     return true;
   }
@@ -591,13 +1370,29 @@ function handleHostMessage(conn, msg) {
       conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'host.already_registered' });
       return;
     }
-    if (resumeRoom(conn, msg)) {
+    const webApp = resolveWebApp(msg.webApp);
+    if (!webApp.ok) {
+      conn.sendJson({
+        type: 'error',
+        protocol: protocolVersion,
+        code: 'web_app.invalid',
+        reason: `Unknown web app "${webApp.requested}". Allowed values: default, catalog.`,
+        allowedWebApps: [...webAppNames]
+      });
+      log('host.hello.rejected', { reason: 'web_app.invalid', requested: webApp.requested });
+      return;
+    }
+    if (resumeRoom(conn, msg, webApp)) {
       return;
     }
     if (msg.roomId || msg.hostToken) {
-      conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'host.resume_failed' });
+      log('host.resume_failed', {
+        roomId: String(msg.roomId || ''),
+        hasHostToken: Boolean(msg.hostToken),
+        webApp: webApp.name || 'default'
+      });
     }
-    createRoom(conn, msg);
+    createRoom(conn, msg, webApp);
     return;
   }
 
@@ -613,6 +1408,16 @@ function handleHostMessage(conn, msg) {
     return;
   }
 
+  if (msg.type === 'host.shutdown' || msg.type === 'room.close') {
+    removeRoom(room, msg.reason || 'host_shutdown');
+    return;
+  }
+
+  if (['p2p.answer', 'p2p.ice', 'p2p.close', 'p2p.state', 'p2p.error'].includes(msg.type)) {
+    forwardP2pFromHost(room, msg);
+    return;
+  }
+
   if (String(msg.type || '').startsWith('song.preview.')) {
     if (handlePreviewHostMessage(room, msg)) return;
   }
@@ -625,7 +1430,10 @@ function handleHostMessage(conn, msg) {
       controllerPlayerId: msg.controllerPlayerId !== undefined && msg.controllerPlayerId !== null
         ? msg.controllerPlayerId
         : room.controllerPlayerId,
-      maxPlayers: room.maxPlayers
+      maxPlayers: room.maxPlayers,
+      gamePlayerCount: Number.isFinite(Number(msg.gamePlayerCount))
+        ? Math.max(1, Math.min(12, Math.round(Number(msg.gamePlayerCount))))
+        : activeGamePlayerCount(room)
     };
     broadcastRoom(room, room.gameState);
     return;
@@ -634,7 +1442,31 @@ function handleHostMessage(conn, msg) {
   if (msg.type === 'player.assigned') {
     const player = room.players.get(msg.playerId);
     if (player) {
-      player.conn?.sendJson({ ...msg, protocol: protocolVersion, slot: player.slot, role: player.role });
+      const requestedSlot = Math.round(Number(msg.slot));
+      if (
+        Number.isInteger(requestedSlot) &&
+        requestedSlot !== Number(player.slot) &&
+        Number(player.lastSlotSwitchMs || 0) > 0 &&
+        Date.now() - Number(player.lastSlotSwitchMs || 0) < 4000
+      ) {
+        log('host assignment ignored after recent slot switch', {
+          roomId: room.roomId,
+          playerId: player.playerId,
+          currentSlot: player.slot,
+          hostSlot: requestedSlot
+        });
+        return;
+      }
+      if (Number.isInteger(requestedSlot) && requestedSlot >= 0 && requestedSlot <= room.maxPlayers) {
+        const occupied = [...room.players.values()].find((candidate) =>
+          requestedSlot > 0 && candidate.playerId !== player.playerId && Number(candidate.slot) === requestedSlot
+        );
+        if (!occupied) player.slot = requestedSlot;
+      }
+      if (['singer', 'controller'].includes(String(msg.role || ''))) player.role = String(msg.role);
+      const assigned = playerAssignedMessage(room, player);
+      player.conn?.sendJson(assigned);
+      broadcastPlayers(room, assigned);
       updateRoomGameState(room);
     }
     return;
@@ -652,12 +1484,23 @@ function handleHostMessage(conn, msg) {
 
   if (msg.type === 'song.started') {
     room.lastSongStarted = { ...msg, protocol: protocolVersion };
+    room.lastSongLyrics = null;
+  } else if (msg.type === 'song.lyrics') {
+    room.lastSongLyrics = { ...msg, protocol: protocolVersion };
   } else if (msg.type === 'song.ended') {
     room.lastSongStarted = null;
+    room.lastSongLyrics = null;
   } else if (msg.type === 'song.select.state') {
     room.lastSongSelectState = { ...msg, protocol: protocolVersion };
   } else if (msg.type === 'song.library.progress') {
     room.lastSongLibraryProgress = { ...msg, protocol: protocolVersion };
+  } else if (msg.type === 'catalog.manifest') {
+    room.lastCatalogManifest = { ...msg, protocol: protocolVersion };
+  }
+
+  if (String(msg.type || '').startsWith('catalog.')) {
+    forwardCatalogFromHost(room, msg);
+    return;
   }
 
   if (msg.type === 'playlist.automation.state') {
@@ -674,7 +1517,17 @@ function handleHostMessage(conn, msg) {
     return;
   }
 
-  if (['song.starting', 'song.started', 'song.paused', 'song.resumed', 'song.ended', 'song.select.state', 'song.library.progress', 'playlist.state', 'playlist.automation.event', 'score.snapshot', 'error'].includes(msg.type)) {
+  if (msg.type === 'song.select.state') {
+    broadcastSongSelectState(room, { ...msg, protocol: protocolVersion });
+    return;
+  }
+
+  if (['song.starting', 'song.started', 'song.paused', 'song.position', 'song.lyrics', 'song.resumed', 'song.ended', 'score.snapshot'].includes(msg.type)) {
+    broadcastPlayers(room, { ...msg, protocol: protocolVersion });
+    return;
+  }
+
+  if (['song.library.progress', 'playlist.state', 'playlist.automation.event', 'party.state', 'party.notification', 'error'].includes(msg.type)) {
     broadcastRoom(room, { ...msg, protocol: protocolVersion });
     return;
   }
@@ -698,7 +1551,7 @@ function handleClientJoin(conn, msg) {
   }
   if (roomHostHeartbeatExpired(room)) {
     log('host.heartbeat_expired', { roomId: room.roomId, displayCode: room.displayCode, lastSeenMs: room.lastSeenMs });
-    removeRoom(room, 'host_disconnected');
+    markHostDisconnected(room, 'heartbeat_expired');
     conn.sendJson({
       type: 'error',
       protocol: protocolVersion,
@@ -717,13 +1570,30 @@ function handleClientJoin(conn, msg) {
     });
     return;
   }
+  if (roomHostDisconnected(room)) {
+    conn.sendJson({
+      type: 'error',
+      protocol: protocolVersion,
+      code: 'room.closed',
+      reason: 'host_disconnected'
+    });
+    conn.close();
+    return;
+  }
 
   const resumed = findResumePlayer(room, msg);
   if (resumed) {
     if (resumed.resumeTimer) clearTimeout(resumed.resumeTimer);
     resumed.resumeTimer = null;
+    if (resumed.conn && resumed.conn !== conn && !resumed.conn.closed) {
+      resumed.conn.player = null;
+      resumed.conn.close();
+    }
+    enforceControllerRole(resumed);
     resumed.conn = conn;
-    resumed.name = sanitizeName(msg.name || resumed.name);
+    applyPlayerProfile(resumed, profileFromMessage(msg, resumed));
+    resumed.micDelayMs = micDelayFromSettings(msg.settings, resumed.micDelayMs);
+    resumed.songLibraryHash = String(msg.songLibraryHash || resumed.songLibraryHash || '');
     resumed.lastSeenMs = Date.now();
     conn.kind = 'client';
     conn.room = room;
@@ -737,57 +1607,59 @@ function handleClientJoin(conn, msg) {
       playerToken: resumed.playerToken,
       slot: resumed.slot,
       role: resumed.role,
+      name: resumed.name,
+      difficultyMode: resumed.difficultyMode || 'free',
+      difficulty: sanitizeDifficulty(resumed.difficulty, resumed.difficultyMode),
+      difficultyLabel: publicDifficultyLabel(resumed.difficulty),
+      avatarId: resumed.avatarId || '',
+      avatarFile: resumed.avatarFile || '',
+      avatarUrl: avatarUrlForFile(resumed.avatarFile),
+      micDelayMs: resumed.micDelayMs || 0,
       maxPlayers: room.maxPlayers,
+      gamePlayerCount: activeGamePlayerCount(room),
       controllerPlayerId: room.controllerPlayerId,
       gameState: room.gameState,
+      webApp: room.webApp || 'default',
+      p2p: publicP2pConfig(room),
       resumed: true
     });
-    if (room.lastSongStarted) {
-      conn.sendJson(room.lastSongStarted);
-    }
-    if (room.lastSongSelectState) {
-      conn.sendJson(room.lastSongSelectState);
-    }
-    if (room.lastSongLibraryProgress) {
-      conn.sendJson(room.lastSongLibraryProgress);
-    }
+    sendSongRuntimeSnapshot(conn, room);
+    sendSongSelectSnapshot(conn, room, resumed);
     conn.sendJson(playlistAutomationPayload(room));
-    room.host?.sendJson({
-      type: 'player.joined',
-      protocol: protocolVersion,
-      roomId: room.roomId,
-      playerId: resumed.playerId,
-      name: resumed.name,
-      slot: resumed.slot,
-      role: resumed.role,
-      resumed: true
-    });
     updateRoomGameState(room);
     log('player.resumed', { roomId: room.roomId, displayCode: room.displayCode, playerId: resumed.playerId, slot: resumed.slot, role: resumed.role });
     return;
   }
 
-  const slot = 0;
+  const requestedSlot = Number(msg.preferredSlot || 0);
+  const preferredSlotAvailable = Number.isInteger(requestedSlot) &&
+    requestedSlot > 0 &&
+    requestedSlot <= room.maxPlayers &&
+    ![...room.players.values()].some((candidate) => isLivePlayer(candidate) && Number(candidate.slot) === requestedSlot);
+  const slot = preferredSlotAvailable ? requestedSlot : 0;
 
   const playerId = randomId('p');
   const playerToken = randomId('player');
-  const wantsController = String(msg.controllerPassword || '').length > 0;
-  if (wantsController && room.controllerPassword && String(msg.controllerPassword) !== room.controllerPassword) {
-    conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'join.bad_controller_password', reason: 'Wrong controller password' });
-    return;
-  }
-  const role = (wantsController && room.controllerPassword) || (!room.controllerPassword && !hasController(room))
+  const role = allPlayersAreControllers
     ? 'controller'
-    : 'singer';
+    : (!hasController(room) ? 'controller' : 'singer');
+  const profile = profileFromMessage(msg, {});
   const player = {
     playerId,
     playerToken,
-    name: sanitizeName(msg.name),
+    name: profile.name,
+    difficultyMode: profile.difficultyMode,
+    difficulty: profile.difficulty,
+    avatarId: profile.avatarId,
+    avatarFile: profile.avatarFile,
+    songLibraryHash: String(msg.songLibraryHash || ''),
     slot,
     role,
+    micDelayMs: micDelayFromSettings(msg.settings),
     conn,
     joinedAt: nowIso(),
     lastSeenMs: Date.now(),
+    lastSlotSwitchMs: 0,
     resumeTimer: null
   };
   if (role === 'controller' && !room.controllerPlayerId) room.controllerPlayerId = playerId;
@@ -805,43 +1677,30 @@ function handleClientJoin(conn, msg) {
     playerToken,
     slot,
     role,
-    maxPlayers: room.maxPlayers,
-    controllerPlayerId: room.controllerPlayerId,
-    gameState: room.gameState
-  });
-  if (room.lastSongStarted) {
-    conn.sendJson(room.lastSongStarted);
-  }
-  if (room.lastSongSelectState) {
-    conn.sendJson(room.lastSongSelectState);
-  }
-  if (room.lastSongLibraryProgress) {
-    conn.sendJson(room.lastSongLibraryProgress);
-  }
-  conn.sendJson(playlistAutomationPayload(room));
-  const joined = {
-    type: 'player.joined',
-    protocol: protocolVersion,
-    roomId: room.roomId,
-    playerId,
     name: player.name,
-    slot,
-    role
-  };
-  room.host?.sendJson(joined);
-  broadcastRoom(room, {
-    type: 'player.assigned',
-    protocol: protocolVersion,
-    roomId: room.roomId,
-    playerId,
-    slot,
-    role
+    difficultyMode: player.difficultyMode,
+    difficulty: player.difficulty,
+    difficultyLabel: publicDifficultyLabel(player.difficulty),
+    avatarId: player.avatarId || '',
+    avatarFile: player.avatarFile || '',
+    avatarUrl: avatarUrlForFile(player.avatarFile),
+    micDelayMs: player.micDelayMs || 0,
+    maxPlayers: room.maxPlayers,
+    gamePlayerCount: activeGamePlayerCount(room),
+    controllerPlayerId: room.controllerPlayerId,
+    gameState: room.gameState,
+    webApp: room.webApp || 'default',
+    p2p: publicP2pConfig(room)
   });
+  sendSongRuntimeSnapshot(conn, room);
+  sendSongSelectSnapshot(conn, room, player);
+  conn.sendJson(playlistAutomationPayload(room));
+  broadcastRoom(room, playerAssignedMessage(room, player));
   updateRoomGameState(room);
   log('player.joined', { roomId: room.roomId, displayCode: room.displayCode, playerId, slot, role });
 }
 
-function handleClientMessage(conn, msg) {
+async function handleClientMessage(conn, msg) {
   if (msg.protocol !== protocolVersion && msg.type !== 'client.join') {
     conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'protocol.unsupported' });
     return;
@@ -869,19 +1728,71 @@ function handleClientMessage(conn, msg) {
     return;
   }
 
-  if (msg.type === 'song.state.request') {
-    if (room.lastSongSelectState) {
-      conn.sendJson(room.lastSongSelectState);
-      if (room.lastSongLibraryProgress) conn.sendJson(room.lastSongLibraryProgress);
-    } else {
-      if (room.lastSongLibraryProgress) conn.sendJson(room.lastSongLibraryProgress);
-      room.host?.sendJson({
-        type: 'song.state.request',
-        protocol: protocolVersion,
-        roomId: room.roomId,
-        playerId: player.playerId
-      });
+  if (['p2p.offer', 'p2p.ice', 'p2p.close', 'p2p.state'].includes(msg.type)) {
+    forwardP2pFromClient(room, player, msg);
+    return;
+  }
+
+  if (msg.type === 'catalog.request') {
+    const knownCatalogId = String(msg.knownCatalogId || msg.songLibraryHash || '');
+    if (knownCatalogId) player.songLibraryHash = knownCatalogId;
+    const requestedCatalogId = String(msg.catalogId || '');
+    const forceTransfer = Boolean(msg.forceTransfer);
+    conn.sendJson({
+      type: 'catalog.request.accepted',
+      protocol: protocolVersion,
+      roomId: room.roomId,
+      playerId: player.playerId,
+      requestId: String(msg.requestId || ''),
+      knownCatalogId,
+      catalogId: requestedCatalogId,
+      forceTransfer,
+      hostConnected: Boolean(room.host && !room.host.closed)
+    });
+    log('catalog.request.received', {
+      roomId: room.roomId,
+      playerId: player.playerId,
+      requestId: String(msg.requestId || ''),
+      knownCatalogId: knownCatalogId.slice(0, 12),
+      catalogId: requestedCatalogId.slice(0, 12),
+      forceTransfer,
+      hostConnected: Boolean(room.host && !room.host.closed)
+    });
+    const manifestMatches = room.lastCatalogManifest
+      && (!requestedCatalogId || String(room.lastCatalogManifest.catalogId || '') === requestedCatalogId);
+    if (!forceTransfer && knownCatalogId && manifestMatches && String(room.lastCatalogManifest.catalogId || '') === knownCatalogId) {
+      conn.sendJson({ ...room.lastCatalogManifest, protocol: protocolVersion, playerId: player.playerId });
+      return;
     }
+    requestCatalogFromHost(conn, room, player, {
+      requestId: String(msg.requestId || ''),
+      knownCatalogId,
+      catalogId: requestedCatalogId,
+      forceTransfer
+    });
+    return;
+  }
+
+  if (msg.type === 'catalog.ready') {
+    player.songLibraryHash = String(msg.catalogId || msg.songLibraryHash || player.songLibraryHash || '');
+    return;
+  }
+
+  if (msg.type === 'song.state.request') {
+    const requestedHash = Object.prototype.hasOwnProperty.call(msg, 'songLibraryHash')
+      ? String(msg.songLibraryHash || '')
+      : '';
+    if (Object.prototype.hasOwnProperty.call(msg, 'songLibraryHash')) {
+      player.songLibraryHash = requestedHash;
+    }
+    if (room.lastSongSelectState) sendSongSelectSnapshot(conn, room, player);
+    else if (room.lastSongLibraryProgress) conn.sendJson(room.lastSongLibraryProgress);
+    requestSongStateFromHost(conn, room, player, { songLibraryHash: requestedHash });
+    return;
+  }
+
+  if (msg.type === 'song.library.cached') {
+    player.songLibraryHash = String(msg.songLibraryHash || player.songLibraryHash || '');
     return;
   }
 
@@ -892,17 +1803,6 @@ function handleClientMessage(conn, msg) {
 
   if (msg.type === 'player.requestController') {
     const commandId = msg.commandId || null;
-    if (room.controllerPassword && String(msg.controllerPassword || '') !== room.controllerPassword) {
-      conn.sendJson({
-        type: 'ack',
-        protocol: protocolVersion,
-        commandId,
-        accepted: false,
-        reason: 'bad_controller_password',
-        gameStateSeq: room.gameState?.seq || 0
-      });
-      return;
-    }
     setPlayerRole(room, player, 'controller');
     conn.sendJson({
       type: 'ack',
@@ -918,7 +1818,7 @@ function handleClientMessage(conn, msg) {
 
   if (msg.type === 'player.releaseController') {
     const commandId = msg.commandId || null;
-    setPlayerRole(room, player, 'singer');
+    setPlayerRole(room, player, allPlayersAreControllers ? 'controller' : 'singer');
     conn.sendJson({
       type: 'ack',
       protocol: protocolVersion,
@@ -933,7 +1833,7 @@ function handleClientMessage(conn, msg) {
 
   if (msg.type === 'player.setRole') {
     const commandId = msg.commandId || null;
-    if (player.role !== 'controller') {
+    if (!allPlayersAreControllers && player.role !== 'controller') {
       conn.sendJson({
         type: 'ack',
         protocol: protocolVersion,
@@ -945,7 +1845,7 @@ function handleClientMessage(conn, msg) {
       return;
     }
     const target = room.players.get(String(msg.targetPlayerId || ''));
-    const role = String(msg.role || '');
+    const role = allPlayersAreControllers ? 'controller' : String(msg.role || '');
     if (!target || !['singer', 'controller'].includes(role)) {
       conn.sendJson({
         type: 'ack',
@@ -970,9 +1870,25 @@ function handleClientMessage(conn, msg) {
     return;
   }
 
+  if (msg.type === 'party.like' || msg.type === 'party.unlike' || msg.type === 'party.likeShown') {
+    if (!room.host || room.host.closed) {
+      conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'host_disconnected' });
+      return;
+    }
+    room.host.sendJson({
+      ...msg,
+      protocol: protocolVersion,
+      roomId: room.roomId,
+      playerId: player.playerId,
+      slot: player.slot,
+      role: player.role
+    });
+    return;
+  }
+
   if (msg.type === 'room.setMaxPlayers') {
     const commandId = msg.commandId || null;
-    if (player.role !== 'controller') {
+    if (!allPlayersAreControllers && player.role !== 'controller') {
       conn.sendJson({
         type: 'ack',
         protocol: protocolVersion,
@@ -1011,7 +1927,9 @@ function handleClientMessage(conn, msg) {
   }
 
   if (msg.type === 'control.command') {
-    if (player.role !== 'controller') {
+    const command = String(msg.command || '');
+    const partyCommand = command.startsWith('party.');
+    if (!allPlayersAreControllers && player.role !== 'controller' && !partyCommand) {
       log('control.rejected', { roomId: room.roomId, playerId: player.playerId, command: msg.command, reason: 'not_controller' });
       conn.sendJson({
         type: 'ack',
@@ -1035,19 +1953,20 @@ function handleClientMessage(conn, msg) {
       });
       return;
     }
-    const command = String(msg.command || '');
     if (![
       'menu.up', 'menu.down', 'menu.left', 'menu.right', 'menu.select', 'menu.back',
       'game.pause', 'game.resume', 'song.skipIntro', 'song.restart',
       'song.menu', 'song.playlistMenu', 'song.jumpTo', 'song.random',
-      'song.select', 'song.start',
+      'song.select', 'song.start', 'song.skip',
       'preview.start', 'preview.stop',
       'search.setText',
       'playlist.load', 'playlist.create', 'playlist.delete',
       'playlist.addSelected', 'playlist.removeSelected', 'playlist.removeItem',
       'playlist.addSongs', 'playlist.removeSong',
       'playlist.moveItemUp', 'playlist.moveItemDown',
+      'playlist.toggleFixedOrder',
       'playlist.automation.set', 'playlist.countdown.start', 'playlist.next',
+      'party.configure', 'party.skip', 'party.stop', 'party.resetLeaderboard', 'party.startMatchmaking',
       'player.kick'
     ].includes(command)) {
       log('control.rejected', { roomId: room.roomId, playerId: player.playerId, command, reason: 'unknown_command' });
@@ -1123,27 +2042,124 @@ function handleClientMessage(conn, msg) {
       conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'player.bad_slot' });
       return;
     }
+    const retryAfterMs = slotSwitchRateLimited(player, requestedSlot);
+    if (retryAfterMs) {
+      conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'player.slot_rate_limited', retryAfterMs });
+      return;
+    }
     const occupied = [...room.players.values()].find((candidate) =>
-      requestedSlot > 0 && candidate.playerId !== player.playerId && candidate.slot === requestedSlot
+      requestedSlot > 0 && candidate.playerId !== player.playerId && isLivePlayer(candidate) && candidate.slot === requestedSlot
     );
     if (occupied) {
       conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'player.slot_taken' });
       return;
     }
 
+    markSlotSwitch(player, requestedSlot);
     player.slot = requestedSlot;
-    const assigned = {
-      type: 'player.assigned',
-      protocol: protocolVersion,
+    const assigned = playerAssignedMessage(room, player);
+    room.host?.sendJson(assigned);
+    sendRemotePlayersSnapshotToHost(room);
+    broadcastPlayers(room, assigned);
+    updateRoomGameState(room, { broadcast: false });
+    log('player.slot_changed', { roomId: room.roomId, playerId: player.playerId, slot: player.slot });
+    return;
+  }
+
+  if (msg.type === 'player.slotProfile.set') {
+    const requestedSlot = Number(msg.slot);
+    if (!Number.isInteger(requestedSlot) || requestedSlot < 0 || requestedSlot > room.maxPlayers) {
+      conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'player.bad_slot' });
+      return;
+    }
+    const retryAfterMs = slotSwitchRateLimited(player, requestedSlot);
+    if (retryAfterMs) {
+      conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'player.slot_rate_limited', retryAfterMs });
+      return;
+    }
+    const occupied = [...room.players.values()].find((candidate) =>
+      requestedSlot > 0 && candidate.playerId !== player.playerId && isLivePlayer(candidate) && candidate.slot === requestedSlot
+    );
+    if (occupied) {
+      conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'player.slot_taken' });
+      return;
+    }
+    applyPlayerProfile(player, profileFromMessage(msg.profile || msg, player));
+    markSlotSwitch(player, requestedSlot);
+    player.slot = requestedSlot;
+    const assigned = playerAssignedMessage(room, player);
+    room.host?.sendJson(assigned);
+    sendRemotePlayersSnapshotToHost(room);
+    broadcastPlayers(room, assigned);
+    updateRoomGameState(room, { broadcast: false });
+    log('player.slot_profile_set', {
       roomId: room.roomId,
       playerId: player.playerId,
       slot: player.slot,
-      role: player.role
-    };
-    room.host?.sendJson(assigned);
-    broadcastRoom(room, assigned);
+      difficulty: player.difficulty,
+      avatar: player.avatarFile || ''
+    });
+    return;
+  }
+
+  if (msg.type === 'player.profile.update') {
+    applyPlayerProfile(player, profileFromMessage(msg.profile || msg, player));
+    const updated = playerProfileMessage(room, player);
+    room.host?.sendJson(updated);
+    broadcastRoom(room, updated);
     updateRoomGameState(room);
-    log('player.slot_changed', { roomId: room.roomId, playerId: player.playerId, slot: player.slot });
+    log('player.profile_updated', { roomId: room.roomId, playerId: player.playerId });
+    return;
+  }
+
+  if (msg.type === 'avatar.upload') {
+    try {
+      const uploaded = await storeAvatar(msg.dataUrl, msg.avatarId);
+      player.avatarId = uploaded.avatarId;
+      player.avatarFile = uploaded.avatarFile;
+      conn.sendJson({
+        type: 'avatar.uploaded',
+        protocol: protocolVersion,
+        roomId: room.roomId,
+        playerId: player.playerId,
+        avatarId: uploaded.avatarId,
+        avatarFile: uploaded.avatarFile,
+        avatarUrl: uploaded.avatarUrl,
+        width: uploaded.avatarWidth,
+        height: uploaded.avatarHeight,
+        bytes: uploaded.avatarBytes
+      });
+      const updated = playerProfileMessage(room, player, {
+        avatarDataBase64: uploaded.avatarDataBase64,
+        avatarBytes: uploaded.avatarBytes,
+        avatarWidth: uploaded.avatarWidth,
+        avatarHeight: uploaded.avatarHeight
+      });
+      room.host?.sendJson(updated);
+      broadcastRoom(room, playerProfileMessage(room, player));
+      updateRoomGameState(room);
+      log('avatar.uploaded', {
+        roomId: room.roomId,
+        playerId: player.playerId,
+        file: uploaded.avatarFile,
+        bytes: uploaded.avatarBytes,
+        width: uploaded.avatarWidth,
+        height: uploaded.avatarHeight
+      });
+    } catch (error) {
+      conn.sendJson({ type: 'error', protocol: protocolVersion, code: error.message || 'avatar.upload_failed' });
+    }
+    return;
+  }
+
+  if (msg.type === 'avatar.reset') {
+    player.avatarId = '';
+    player.avatarFile = '';
+    const updated = playerProfileMessage(room, player);
+    room.host?.sendJson(updated);
+    broadcastRoom(room, updated);
+    updateRoomGameState(room);
+    log('avatar.reset', { roomId: room.roomId, playerId: player.playerId });
     return;
   }
 
@@ -1172,13 +2188,51 @@ function handleClientMessage(conn, msg) {
   }
 
   if (['client.ready', 'settings.update', 'control.command', 'pitch.batch', 'clock.sync.ping'].includes(msg.type)) {
-    room.host?.sendJson({
+    if (msg.type === 'settings.update') {
+      player.micDelayMs = micDelayFromSettings(msg.settings, player.micDelayMs);
+      updateRoomGameState(room);
+    }
+    const forwarded = {
       ...msg,
       protocol: protocolVersion,
       roomId: room.roomId,
       playerId: player.playerId,
       playerToken: undefined
-    });
+    };
+    if (msg.type === 'settings.update') {
+      forwarded.slot = player.slot;
+      forwarded.playerSlot = player.slot;
+      forwarded.role = player.role;
+      const settings = msg.settings && typeof msg.settings === 'object' ? msg.settings : {};
+      forwarded.settings = {
+        ...settings,
+        micDelayMs: player.micDelayMs || 0,
+        playerDelayMs: player.micDelayMs || 0
+      };
+    }
+    if (msg.type === 'pitch.batch') {
+      forwarded.slot = player.slot;
+      forwarded.playerSlot = player.slot;
+      forwarded.role = player.role;
+      const statKey = `${room.roomId}:${player.playerId}`;
+      const stats = pitchRelayStats.get(statKey) || { batches: 0, frames: 0 };
+      const frames = Array.isArray(msg.frames) ? msg.frames : [];
+      stats.batches += 1;
+      stats.frames += frames.length;
+      pitchRelayStats.set(statKey, stats);
+      if (stats.batches === 1 || stats.batches % 100 === 0) {
+        log('pitch.relayed', {
+          roomId: room.roomId,
+          playerId: player.playerId,
+          slot: player.slot,
+          role: player.role,
+          songSeq: msg.songSeq,
+          batches: stats.batches,
+          frames: stats.frames
+        });
+      }
+    }
+    room.host?.sendJson(forwarded);
     return;
   }
 
@@ -1186,13 +2240,14 @@ function handleClientMessage(conn, msg) {
 }
 
 class WebSocketConnection {
-  constructor(socket, req, kind) {
+  constructor(socket, req, kind, options = {}) {
     this.socket = socket;
     this.req = req;
     this.kind = kind;
     this.buffer = Buffer.alloc(0);
     this.closed = false;
     this.closing = false;
+    this.compression = Boolean(options.compression);
 
     socket.on('data', (chunk) => this.onData(chunk));
     socket.on('close', () => this.onClose());
@@ -1200,32 +2255,64 @@ class WebSocketConnection {
   }
 
   sendJson(value) {
-    if (this.closed) return;
-    this.sendText(JSON.stringify(value));
+    if (this.closed) return false;
+    return this.sendText(JSON.stringify(value));
   }
 
   sendText(text) {
-    const payload = Buffer.from(text);
-    let header;
-    if (payload.length < 126) {
-      header = Buffer.from([0x81, payload.length]);
-    } else if (payload.length <= 0xffff) {
-      header = Buffer.alloc(4);
-      header[0] = 0x81;
-      header[1] = 126;
-      header.writeUInt16BE(payload.length, 2);
-    } else {
-      header = Buffer.alloc(10);
-      header[0] = 0x81;
-      header[1] = 127;
-      header.writeBigUInt64BE(BigInt(payload.length), 2);
+    if (this.closed) return false;
+    try {
+      let payload = Buffer.from(text);
+      let firstByte = 0x81;
+      if (this.compression && payload.length >= websocketCompressionThresholdBytes) {
+        payload = compressWebSocketPayload(payload);
+        firstByte = 0xc1;
+      }
+      let header;
+      if (payload.length < 126) {
+        header = Buffer.from([firstByte, payload.length]);
+      } else if (payload.length <= 0xffff) {
+        header = Buffer.alloc(4);
+        header[0] = firstByte;
+        header[1] = 126;
+        header.writeUInt16BE(payload.length, 2);
+      } else {
+        header = Buffer.alloc(10);
+        header[0] = firstByte;
+        header[1] = 127;
+        header.writeBigUInt64BE(BigInt(payload.length), 2);
+      }
+      return this.writeFrame(Buffer.concat([header, payload]));
+    } catch (error) {
+      return this.failWrite(error);
     }
-    this.socket.write(Buffer.concat([header, payload]));
   }
 
   sendPong(payload) {
-    if (this.closed) return;
-    this.socket.write(Buffer.concat([Buffer.from([0x8a, payload.length]), payload]));
+    if (this.closed) return false;
+    return this.writeFrame(Buffer.concat([Buffer.from([0x8a, payload.length]), payload]));
+  }
+
+  writeFrame(frame) {
+    if (this.closed) return false;
+    try {
+      this.socket.write(frame);
+      return true;
+    } catch (error) {
+      return this.failWrite(error);
+    }
+  }
+
+  failWrite(error) {
+    log('websocket.write_failed', {
+      kind: this.kind || 'unknown',
+      error: error?.message || String(error || 'write failed')
+    });
+    this.onClose();
+    try {
+      this.socket.destroy();
+    } catch {}
+    return false;
   }
 
   close() {
@@ -1244,6 +2331,7 @@ class WebSocketConnection {
       const b0 = this.buffer[0];
       const b1 = this.buffer[1];
       const opcode = b0 & 0x0f;
+      const compressed = Boolean(b0 & 0x40);
       const masked = Boolean(b1 & 0x80);
       let length = b1 & 0x7f;
       let offset = 2;
@@ -1288,14 +2376,39 @@ class WebSocketConnection {
         continue;
       }
       if (opcode !== 0x1) continue;
+      if (compressed) {
+        if (!this.compression) {
+          this.close();
+          return;
+        }
+        try {
+          payload = decompressWebSocketPayload(payload);
+        } catch {
+          this.close();
+          return;
+        }
+        if (payload.length > maxPayloadBytes) {
+          this.close();
+          return;
+        }
+      }
 
       const msg = safeJsonParse(payload.toString('utf8'));
       if (!msg || typeof msg.type !== 'string') {
         this.sendJson({ type: 'error', protocol: protocolVersion, code: 'json.invalid' });
         continue;
       }
-      if (this.kind === 'host') handleHostMessage(this, msg);
-      else handleClientMessage(this, msg);
+      if (this.kind === 'host') {
+        try {
+          handleHostMessage(this, msg);
+        } catch (error) {
+          log('host.message_failed', { error: error.message });
+          this.sendJson({ type: 'error', protocol: protocolVersion, code: 'server.error' });
+        }
+      } else handleClientMessage(this, msg).catch((error) => {
+        log('client.message_failed', { error: error.message });
+        this.sendJson({ type: 'error', protocol: protocolVersion, code: 'server.error' });
+      });
     }
   }
 
@@ -1322,6 +2435,11 @@ class WebSocketConnection {
     }
     if (this.kind === 'client' && this.room && this.player) {
       const { room, player } = this;
+      if (!roomsById.has(room.roomId)) return;
+      if (player.conn !== this) {
+        log('player.stale_connection_closed', { roomId: room.roomId, playerId: player.playerId });
+        return;
+      }
       player.conn = null;
       if (player.resumeTimer) clearTimeout(player.resumeTimer);
       player.resumeTimer = setTimeout(() => {
@@ -1339,15 +2457,7 @@ class WebSocketConnection {
         log('player.left', { roomId: room.roomId, playerId: player.playerId });
       }, playerResumeTtlMs);
       player.resumeTimer.unref?.();
-      room.host?.sendJson({
-        type: 'player.disconnected',
-        protocol: protocolVersion,
-        roomId: room.roomId,
-        playerId: player.playerId,
-        reason: 'disconnect'
-      });
-      updateRoomGameState(room);
-      log('player.disconnected', { roomId: room.roomId, playerId: player.playerId });
+      log('player.resume_pending', { roomId: room.roomId, playerId: player.playerId, resumeMs: playerResumeTtlMs });
     }
   }
 }
@@ -1360,6 +2470,9 @@ function contentType(filePath) {
     '.css': 'text/css; charset=utf-8',
     '.json': 'application/json; charset=utf-8',
     '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
     '.ico': 'image/x-icon',
     '.svg': 'image/svg+xml'
   }[ext] || 'application/octet-stream';
@@ -1378,11 +2491,17 @@ function isLocalRequest(req) {
   return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress || '');
 }
 
+function canReadDebug(req, url) {
+  if (isLocalRequest(req)) return true;
+  return Boolean(debugToken && url.searchParams.get('token') === debugToken);
+}
+
 function sendDebugPage(res) {
   const rooms = [...roomsById.values()].map(publicRoom);
   const rows = rooms.map((room) => `
     <tr>
       <td>${room.displayCode}</td>
+      <td>${room.webApp || 'default'}</td>
       <td>${room.hostConnected ? 'yes' : 'no'}</td>
       <td>${room.players.length}/${room.maxPlayers}</td>
       <td>${room.controllerPlayerId || '-'}</td>
@@ -1412,8 +2531,8 @@ function sendDebugPage(res) {
   <h1>USDX Remote Debug</h1>
   <p>Local-only snapshot. Tokens and pitch data are not included.</p>
   <table>
-    <thead><tr><th>Code</th><th>Host</th><th>Players</th><th>Controller</th><th>State</th><th>Playlist</th><th>Expires</th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="7">No active rooms</td></tr>'}</tbody>
+    <thead><tr><th>Code</th><th>App</th><th>Host</th><th>Players</th><th>Controller</th><th>State</th><th>Playlist</th><th>Expires</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="8">No active rooms</td></tr>'}</tbody>
   </table>
   <h2>JSON</h2>
   <pre>${JSON.stringify({ rooms }, null, 2).replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char]))}</pre>
@@ -1423,6 +2542,25 @@ function sendDebugPage(res) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (url.pathname === '/api/client-log' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 8192) req.destroy();
+    });
+    req.on('end', () => {
+      const parsed = safeJsonParse(body);
+      const stored = addClientLog(req, parsed);
+      if (stored) {
+        res.writeHead(204, { 'cache-control': 'no-store' });
+        res.end();
+      } else {
+        sendJson(res, 400, { error: 'bad_log' });
+      }
+    });
+    return;
+  }
+
   if (url.pathname === '/healthz') {
     sendJson(res, 200, {
       ok: true,
@@ -1433,23 +2571,44 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (url.pathname === '/debug' && isLocalRequest(req)) {
+  if (url.pathname === '/debug' && canReadDebug(req, url)) {
     sendDebugPage(res);
     return;
   }
 
-  if (url.pathname === '/debug/rooms' && isLocalRequest(req)) {
+  if (url.pathname === '/debug/rooms' && canReadDebug(req, url)) {
     sendJson(res, 200, { rooms: [...roomsById.values()].map(publicRoom) });
     return;
   }
 
-  if (url.pathname === '/api/preview') {
+  if (url.pathname === '/debug/client-logs' && canReadDebug(req, url)) {
+    const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit') || 200)));
+    sendJson(res, 200, { logs: clientLogs.slice(-limit), count: clientLogs.length, time: nowIso() });
+    return;
+  }
+
+  const mediaRoute = url.pathname.match(/^\/api\/(song-preview|song-cover|game-audio|preview|cover)(?:\.([A-Za-z0-9]+))?$/);
+  if (mediaRoute) {
+    const mediaRouteName = mediaRoute[1];
+    const mediaExtensionHint = String(url.searchParams.get('formatHint') || mediaRoute[2] || '').toLowerCase();
     const roomId = String(url.searchParams.get('roomId') || '');
-    const songId = Math.round(Number(url.searchParams.get('songId')));
+    const rawSongId = url.searchParams.get('songId');
+    const songId = rawSongId !== null && rawSongId !== '' ? Math.round(Number(rawSongId)) : null;
+    const songKey = String(url.searchParams.get('songKey') || '').trim();
+    const artistTitleKey = String(url.searchParams.get('artistTitleKey') || '').trim();
+    const artist = String(url.searchParams.get('artist') || '').trim();
+    const title = String(url.searchParams.get('title') || '').trim();
     const startSec = Math.max(0, Math.min(12 * 60 * 60, Number(url.searchParams.get('startSec') || 0)));
+    const purpose = mediaRouteName === 'song-cover' || mediaRouteName === 'cover'
+      ? 'song-cover'
+      : mediaRouteName === 'game-audio' || url.searchParams.get('stream') === '1'
+      ? 'game-audio'
+      : 'song-preview';
     const previewTimeoutMs = Math.max(3000, Math.min(20_000, Math.round(Number(url.searchParams.get('timeoutMs') || 20_000))));
+    const byteRange = parseByteRange(req.headers.range);
     const room = roomsById.get(roomId);
-    if (!room || !room.host || !Number.isFinite(songId) || songId < 0) {
+    const hasSongIdentity = (Number.isFinite(songId) && songId >= 0) || songKey || artistTitleKey || artist || title;
+    if (!room || !room.host || !hasSongIdentity) {
       res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
       res.end('preview unavailable');
       return;
@@ -1457,32 +2616,100 @@ const server = http.createServer((req, res) => {
 
     const requestId = randomId('preview');
     const timer = setTimeout(() => endPreviewRequest(requestId), previewTimeoutMs);
-    previewRequests.set(requestId, { room, res, timer, started: false });
+    previewRequests.set(requestId, {
+      room,
+      purpose,
+      res,
+      timer,
+      started: false,
+      queue: [],
+      queuedBytes: 0,
+      flushing: false
+    });
+    res.on('drain', () => flushPreviewQueue(requestId, previewRequests.get(requestId)));
+    res.on('close', () => {
+      if (previewRequests.has(requestId)) cancelPreviewRequest(requestId, 'client_closed');
+    });
     room.host.sendJson({
       type: 'song.preview.request',
       protocol: protocolVersion,
       requestId,
-      songId,
-      startSec
-    });
-    req.on('close', () => {
-      cancelPreviewRequest(requestId, 'client_closed');
+      songId: Number.isFinite(songId) && songId >= 0 ? songId : null,
+      songKey,
+      artistTitleKey,
+      artist,
+      title,
+      startSec,
+      purpose,
+      formatHint: mediaExtensionHint,
+      rangeStart: byteRange?.start ?? null,
+      rangeEnd: byteRange?.end ?? null
     });
     return;
   }
 
   if (url.pathname.startsWith('/debug')) {
-    res.writeHead(403);
-    res.end('local debug only');
+    res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(debugToken ? 'debug token required' : 'local debug only');
+    return;
+  }
+
+  if (url.pathname.startsWith('/api/avatar/')) {
+    const avatarId = sanitizeAvatarId(decodeURIComponent(url.pathname.slice('/api/avatar/'.length)));
+    let info = null;
+    try {
+      info = avatarInfoForId(avatarId);
+    } catch {
+      info = null;
+    }
+    if (!info) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'avatar.not_found' }));
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'cache-control': 'no-store'
+    });
+    res.end(JSON.stringify(info));
+    return;
+  }
+
+  if (url.pathname.startsWith('/avatars/')) {
+    const fileName = sanitizeAvatarFile(url.pathname.slice('/avatars/'.length));
+    const filePath = fileName ? path.join(avatarDir, fileName) : '';
+    if (!fileName || !filePath.startsWith(avatarDir)) {
+      res.writeHead(403);
+      res.end('forbidden');
+      return;
+    }
+    fs.readFile(filePath, (err, data) => {
+      if (err) {
+        res.writeHead(404);
+        res.end('not found');
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': contentType(filePath),
+        'cache-control': 'public, max-age=31536000, immutable'
+      });
+      res.end(data);
+    });
     return;
   }
 
   const shortcutCode = sanitizeCode(url.pathname.slice(1));
   const isRoomShortcut = url.pathname.length === 5 && shortcutCode.length === 4;
+  const shortcutRoom = isRoomShortcut ? roomsByCode.get(shortcutCode) : null;
+  const requestedApp = resolveWebApp(url.searchParams.get('app') || '');
+  const selectedWebApp = shortcutRoom?.webApp || (requestedApp.ok && requestedApp.specified ? requestedApp.name : 'default');
+  const servesCatalogAsset = url.pathname.startsWith('/catalog/');
+  const staticRoot = servesCatalogAsset ? catalogPublicDir : publicDir;
+  const staticPath = servesCatalogAsset ? url.pathname.slice('/catalog/'.length) : url.pathname;
   let filePath = (url.pathname === '/' || isRoomShortcut)
-    ? path.join(publicDir, 'index.html')
-    : path.join(publicDir, path.normalize(url.pathname));
-  if (!filePath.startsWith(publicDir)) {
+    ? path.join(selectedWebApp === 'catalog' ? catalogPublicDir : publicDir, 'index.html')
+    : path.join(staticRoot, path.normalize(staticPath));
+  if (!filePath.startsWith(staticRoot)) {
     res.writeHead(403);
     res.end('forbidden');
     return;
@@ -1519,17 +2746,22 @@ server.on('upgrade', (req, socket) => {
     .createHash('sha1')
     .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
     .digest('base64');
+  const compression = wantsPerMessageDeflate(req);
 
-  socket.write([
+  const responseHeaders = [
     'HTTP/1.1 101 Switching Protocols',
     'Upgrade: websocket',
     'Connection: Upgrade',
-    `Sec-WebSocket-Accept: ${accept}`,
-    '',
-    ''
-  ].join('\r\n'));
+    `Sec-WebSocket-Accept: ${accept}`
+  ];
+  if (compression) {
+    responseHeaders.push('Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover');
+  }
+  responseHeaders.push('', '');
 
-  new WebSocketConnection(socket, req, kind);
+  socket.write(responseHeaders.join('\r\n'));
+
+  new WebSocketConnection(socket, req, kind, { compression });
 });
 
 setInterval(() => {
@@ -1537,7 +2769,7 @@ setInterval(() => {
   for (const room of roomsById.values()) {
     if (roomHostHeartbeatExpired(room, now)) {
       log('host.heartbeat_expired', { roomId: room.roomId, displayCode: room.displayCode, lastSeenMs: room.lastSeenMs });
-      removeRoom(room, 'host_disconnected');
+      markHostDisconnected(room, 'heartbeat_expired');
       continue;
     } else if (roomHostGraceExpired(room, now)) {
       removeRoom(room, 'host_disconnected');
