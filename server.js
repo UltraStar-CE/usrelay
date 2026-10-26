@@ -2002,6 +2002,7 @@ async function handleClientMessage(conn, msg) {
     if (![
       'menu.up', 'menu.down', 'menu.left', 'menu.right', 'menu.select', 'menu.back',
       'game.pause', 'game.resume', 'song.skipIntro', 'song.restart',
+      'continuous.start', 'continuous.queue', 'continuous.stop', 'continuous.skip',
       'song.menu', 'song.playlistMenu', 'song.jumpTo', 'song.random',
       'song.select', 'song.start', 'song.skip', 'song.list',
       'preview.start', 'preview.stop',

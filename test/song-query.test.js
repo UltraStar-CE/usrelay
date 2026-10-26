@@ -48,4 +48,14 @@ test('generic song query uses authenticated command routing and targeted reply',
   host.send(JSON.stringify({type:'ack', protocol:1, playerId:query.playerId, commandId:7, accepted:true,
     data:{snapshotId:'test', total:1, songs:[{songId:4,title:'Test'}]}}));
   assert.equal((await reply).data.songs[0].songId, 4);
+  for (const command of ['continuous.start','continuous.queue','continuous.stop','continuous.skip']) {
+    const commandId = 20 + ['continuous.start','continuous.queue','continuous.stop','continuous.skip'].indexOf(command);
+    const incoming = message(host, 'control.command');
+    phone.send(JSON.stringify({type:'control.command',protocol:1,commandId,command,args:{songIds:[0,1]}}));
+    const forwardedCommand = await incoming;
+    assert.equal(forwardedCommand.command, command);
+    assert.deepEqual(forwardedCommand.args.songIds,[0,1]);
+    assert.equal(forwardedCommand.playerId,player.playerId);
+  }
+
 });
