@@ -37,14 +37,19 @@ test('PCM fallback authenticates slot identity, validates frames, and requires t
     t.after(() => host.close());
     const hostRead = inbox(host);
     await once(host, 'open');
-    host.send(JSON.stringify({ type: 'host.hello', protocol: 1, maxPlayers: 1, capabilities: capable ? ['rawPcmV1'] : [] }));
+    host.send(JSON.stringify({ type: 'host.hello', protocol: 1, maxPlayers: 2, capabilities: capable ? ['rawPcmV1'] : [] }));
     const room = await hostRead('room.created');
     const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/client`);
     t.after(() => phone.close());
     const phoneRead = inbox(phone);
     await once(phone, 'open');
-    phone.send(JSON.stringify({ type: 'client.join', protocol: 1, displayCode: room.displayCode, name: 'PCM test', preferredSlot: 1 }));
+    phone.send(JSON.stringify({ type: 'client.join', protocol: 1, displayCode: room.displayCode, name: 'PCM test', preferredSlot: 2 }));
     const joined = await phoneRead('client.joined');
+    assert.equal(joined.rawPcmV1, capable);
+    host.send(JSON.stringify({type:'audio.stop',protocol:1,reason:'test_abort'}));
+    assert.equal((await phoneRead('audio.stop')).reason,'test_abort');
+    host.send(JSON.stringify({type:'screen.info',protocol:1,screen:'high_scores',entries:[{name:'Test singer',score:9000}]}));
+    assert.equal((await phoneRead('screen.info')).entries[0].score,9000);
     const packet = Buffer.alloc(980);
     packet.write('UAP1'); packet.writeUInt32LE(48000, 8); packet.writeUInt32LE(480, 12);
     const pcm = packet.toString('base64');
@@ -52,8 +57,17 @@ test('PCM fallback authenticates slot identity, validates frames, and requires t
     if (capable) {
       const frame = await hostRead('audio.pcm');
       assert.equal(frame.playerId, joined.playerId);
-      assert.equal(frame.slot, 1);
+      assert.equal(frame.slot, 2);
       assert.equal(frame.pcm, pcm);
+      host.send(JSON.stringify({type:'input.state',protocol:1,playerCount:7,inputs:[{slot:7,local:true,source:'local',name:'Local seven'}]}));
+      let inputState;
+      do { inputState=await phoneRead('game.state'); } while(!inputState.inputs?.some(input=>input.slot===7));
+      assert.equal(inputState.gamePlayerCount,7);
+      phone.send(JSON.stringify({type:'player.slotProfile.set',protocol:1,slot:7}));
+      assert.equal((await phoneRead('error')).code,'player.slot_taken');
+      host.send(JSON.stringify({type:'input.state',protocol:1,playerCount:0,inputs:[]}));
+      do { inputState=await phoneRead('game.state'); } while(inputState.gamePlayerCount!==0);
+      assert.equal(inputState.inputs.length,0);
       packet.writeUInt32LE(44100, 8);
       phone.send(JSON.stringify({ type: 'audio.pcm', protocol: 1, pcm: packet.toString('base64') }));
     }

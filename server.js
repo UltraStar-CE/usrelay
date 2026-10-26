@@ -747,8 +747,9 @@ function highestOccupiedSlot(room) {
 }
 
 function activeGamePlayerCount(room) {
+  if (Array.isArray(room.inputs)) return room.inputs.reduce((highest,input)=>Math.max(highest,input.slot),0);
   const highest = highestOccupiedSlot(room);
-  if (highest <= 0) return 1;
+  if (highest <= 0) return 0;
   return highest === 5 ? 6 : highest;
 }
 
@@ -779,7 +780,8 @@ function updateRoomGameState(room, options = {}) {
     players: [...room.players.values()].filter((player) => isLivePlayer(player)).map((player) => publicPlayer(player)),
     maxPlayers: room.maxPlayers,
     gamePlayerCount: activeGamePlayerCount(room),
-    controllerPlayerId: room.controllerPlayerId
+    controllerPlayerId: room.controllerPlayerId,
+    inputs: room.inputs || []
   };
   if (options.broadcast !== true) return;
   broadcastRoom(room, room.gameState);
@@ -1043,7 +1045,7 @@ function songSelectForPlayer(message, player = null) {
 
 function sendSongSelectSnapshot(conn, room, player = conn.player) {
   if (room.lastCatalogManifest) conn.sendJson({ ...room.lastCatalogManifest, playerId: player?.playerId || null });
-  if (room.lastSongSelectState) conn.sendJson(songSelectForPlayer(room.lastSongSelectState, player));
+  if (room.lastSongSelectState) conn.sendJson(songSelectForPlayer({ ...room.lastSongSelectState, screenActive: room.gameState?.state === 'song_select' }, player));
   if (room.lastSongLibraryProgress) conn.sendJson(room.lastSongLibraryProgress);
 }
 
@@ -1093,7 +1095,7 @@ function requestSongStateFromHost(conn, room, player, options = {}) {
 
 function broadcastSongSelectState(room, message) {
   for (const player of room.players.values()) {
-    player.conn?.sendJson(songSelectForPlayer(message, player));
+    player.conn?.sendJson(songSelectForPlayer({ ...message, screenActive: room.gameState?.state === 'song_select' }, player));
   }
 }
 
@@ -1235,6 +1237,7 @@ function requestCatalogFromHost(conn, room, player, options = {}) {
 function sendSongRuntimeSnapshot(conn, room) {
   if (room.lastSongStarted) conn.sendJson(room.lastSongStarted);
   if (room.lastSongLyrics) conn.sendJson(room.lastSongLyrics);
+  if (room.lastScreenInfo) conn.sendJson(room.lastScreenInfo);
 }
 
 function endPreviewRequest(requestId, status = 504, message = 'preview unavailable') {
@@ -1422,7 +1425,21 @@ function handleHostMessage(conn, msg) {
     if (handlePreviewHostMessage(room, msg)) return;
   }
 
+  if (msg.type === 'input.state') {
+    room.inputs = (Array.isArray(msg.inputs) ? msg.inputs : []).filter(input=>
+      Number.isInteger(input.slot)&&input.slot>=1&&input.slot<=(input.local===true?24:12)).map(input=>({slot:input.slot,
+        local:input.local===true,source:['local','direct','server'].includes(input.source)?input.source:'server',
+        name:String(input.name||'').slice(0,80)}));
+    room.maxPlayers=Math.max(room.maxPlayers,Math.min(12,activeGamePlayerCount(room)));
+    updateRoomGameState(room,{broadcast:true});
+    return;
+  }
   if (msg.type === 'game.state') {
+    if (room.lastScreenInfo?.screen !== msg.state) room.lastScreenInfo = null;
+    if (!['singing', 'paused'].includes(msg.state)) {
+      room.lastSongStarted = null;
+      room.lastSongLyrics = null;
+    }
     room.gameState = {
       ...msg,
       protocol: protocolVersion,
@@ -1431,8 +1448,9 @@ function handleHostMessage(conn, msg) {
         ? msg.controllerPlayerId
         : room.controllerPlayerId,
       maxPlayers: room.maxPlayers,
-      gamePlayerCount: Number.isFinite(Number(msg.gamePlayerCount))
-        ? Math.max(1, Math.min(12, Math.round(Number(msg.gamePlayerCount))))
+      inputs: room.inputs || [],
+      gamePlayerCount: Array.isArray(room.inputs) ? activeGamePlayerCount(room) : Number.isFinite(Number(msg.gamePlayerCount))
+        ? Math.max(0, Math.min(24, Math.round(Number(msg.gamePlayerCount))))
         : activeGamePlayerCount(room)
     };
     broadcastRoom(room, room.gameState);
@@ -1482,7 +1500,9 @@ function handleHostMessage(conn, msg) {
     return;
   }
 
-  if (msg.type === 'song.started') {
+  if (msg.type === 'screen.info') {
+    room.lastScreenInfo = { ...msg, protocol: protocolVersion };
+  } else if (msg.type === 'song.started') {
     room.lastSongStarted = { ...msg, protocol: protocolVersion };
     room.lastSongLyrics = null;
   } else if (msg.type === 'song.lyrics') {
@@ -1522,11 +1542,15 @@ function handleHostMessage(conn, msg) {
     return;
   }
 
-  if (['song.starting', 'song.started', 'song.paused', 'song.position', 'song.lyrics', 'song.resumed', 'song.ended', 'score.snapshot'].includes(msg.type)) {
+  if (['audio.stop', 'song.starting', 'song.started', 'song.paused', 'song.position', 'song.lyrics', 'song.resumed', 'song.ended', 'score.snapshot', 'screen.info'].includes(msg.type)) {
     broadcastPlayers(room, { ...msg, protocol: protocolVersion });
     return;
   }
 
+  if (msg.type === 'party.state' && msg.targetPlayerId) {
+    room.players.get(String(msg.targetPlayerId))?.conn?.sendJson({...msg,protocol:protocolVersion});
+    return;
+  }
   if (['song.library.progress', 'playlist.state', 'playlist.automation.event', 'party.state', 'party.notification', 'error'].includes(msg.type)) {
     broadcastRoom(room, { ...msg, protocol: protocolVersion });
     return;
@@ -1620,6 +1644,7 @@ function handleClientJoin(conn, msg) {
       controllerPlayerId: room.controllerPlayerId,
       gameState: room.gameState,
       webApp: room.webApp || 'default',
+      rawPcmV1: room.capabilities.includes('rawPcmV1'),
       p2p: publicP2pConfig(room),
       resumed: true
     });
@@ -1635,6 +1660,7 @@ function handleClientJoin(conn, msg) {
   const preferredSlotAvailable = Number.isInteger(requestedSlot) &&
     requestedSlot > 0 &&
     requestedSlot <= room.maxPlayers &&
+    !room.inputs?.some(input=>input.local&&input.slot===requestedSlot) &&
     ![...room.players.values()].some((candidate) => isLivePlayer(candidate) && Number(candidate.slot) === requestedSlot);
   const slot = preferredSlotAvailable ? requestedSlot : 0;
 
@@ -1690,6 +1716,7 @@ function handleClientJoin(conn, msg) {
     controllerPlayerId: room.controllerPlayerId,
     gameState: room.gameState,
     webApp: room.webApp || 'default',
+    rawPcmV1: room.capabilities.includes('rawPcmV1'),
     p2p: publicP2pConfig(room)
   });
   sendSongRuntimeSnapshot(conn, room);
@@ -1721,7 +1748,6 @@ async function handleClientMessage(conn, msg) {
     conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'client.not_joined' });
     return;
   }
-  room.lastSeenMs = Date.now();
   player.lastSeenMs = Date.now();
 
   if (msg.type === 'client.heartbeat') {
@@ -1731,7 +1757,7 @@ async function handleClientMessage(conn, msg) {
   if (msg.type === 'audio.pcm') {
     // Optional native PCM experiment. Never forward audio to unrelated rooms.
     const pcm = typeof msg.pcm === 'string' ? msg.pcm : '';
-    if (!room.capabilities.includes('rawPcmV1') || player.slot !== 1 ||
+    if (!room.capabilities.includes('rawPcmV1') || player.slot < 1 || player.slot > room.maxPlayers ||
         pcm.length !== 1308 || !/^[A-Za-z0-9+/]+=$/.test(pcm)) {
       conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'audio.invalid' });
       return;
@@ -1889,7 +1915,7 @@ async function handleClientMessage(conn, msg) {
     return;
   }
 
-  if (msg.type === 'party.like' || msg.type === 'party.unlike' || msg.type === 'party.likeShown') {
+  if (msg.type === 'party.like' || msg.type === 'party.unlike' || msg.type === 'party.likeShown' || msg.type === 'party.unlikeShown') {
     if (!room.host || room.host.closed) {
       conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'host_disconnected' });
       return;
@@ -2069,7 +2095,7 @@ async function handleClientMessage(conn, msg) {
     const occupied = [...room.players.values()].find((candidate) =>
       requestedSlot > 0 && candidate.playerId !== player.playerId && isLivePlayer(candidate) && candidate.slot === requestedSlot
     );
-    if (occupied) {
+    if (occupied || room.inputs?.some(input=>input.local&&input.slot===requestedSlot)) {
       conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'player.slot_taken' });
       return;
     }
@@ -2099,7 +2125,7 @@ async function handleClientMessage(conn, msg) {
     const occupied = [...room.players.values()].find((candidate) =>
       requestedSlot > 0 && candidate.playerId !== player.playerId && isLivePlayer(candidate) && candidate.slot === requestedSlot
     );
-    if (occupied) {
+    if (occupied || room.inputs?.some(input=>input.local&&input.slot===requestedSlot)) {
       conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'player.slot_taken' });
       return;
     }

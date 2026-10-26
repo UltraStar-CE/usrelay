@@ -1,3 +1,5 @@
+import { NativePcmSender } from './native-pcm.js?v=1';
+import { createAudioInput, startSyntheticPcm } from './audio-input.js?v=2';
 const protocol = 1;
 const sessionKey = 'usdx.remote.session.v1';
 const nameKey = 'usdx.remote.name.v1';
@@ -17,7 +19,7 @@ const lastMicSlotKey = 'usdx.remote.lastMicSlot.v1';
 const settingsKey = 'usdx.remote.settings.v1';
 const settingsVersion = 3;
 const tabKey = 'usdx.remote.tab.v1';
-const appVersion = 'v260505034500-browser-liked-songs';
+const appVersion = 'v20261026-test-audio';
 const songPageSize = 80;
 const searchDebounceMinMs = 40;
 const searchDebounceMaxMs = 350;
@@ -25,12 +27,11 @@ const slotSwitchCooldownMs = 200;
 const avatarCanvasMaxDimension = 512;
 const avatarUploadTargetBytes = 320 * 1024;
 const deviceMusicOutputLeadSec = 0;
-const deviceMusicInitialLeadSec = 0.5;
-const deviceMusicNominalPlaybackRate = 1.0001;
-const deviceMusicHardSeekThresholdSec = 0.75;
+const deviceMusicNominalPlaybackRate = 1;
+const deviceMusicHardSeekThresholdSec = 0.25;
 const deviceMusicSoftSyncThresholdSec = 0.010;
-const deviceMusicRateCurveScaleSec = 1.25;
-const deviceMusicMaxPlaybackRateDeviation = 0.50;
+const deviceMusicRateCurveScaleSec = 0.75;
+const deviceMusicMaxPlaybackRateDeviation = 0.06;
 const deviceMusicAnchorSnapThresholdSec = 0.30;
 const deviceMusicDecoderTimeoutMs = 3500;
 const deviceMusicDecoderMaxRetries = 3;
@@ -167,6 +168,7 @@ const state = {
   audioContextPerfBaseUs: null,
   micInputLatencyUs: 0,
   micStream: null,
+  audioInput: null,
   worklet: null,
   audioSink: null,
   pitchBatch: [],
@@ -193,6 +195,8 @@ const state = {
     wakeLock: true,
     lockMicBar: true,
     controlOnly: false,
+    showAdminControls: false,
+    preferTextLabels: false,
     playMusicOnDevice: true,
     targetDriftMs: 0,
     micDelayMs: 0,
@@ -329,6 +333,8 @@ const autoGainInput = $('autoGainInput');
 const wakeLockInput = $('wakeLockInput');
 const lockMicBarInput = $('lockMicBarInput');
 const controlOnlyInput = $('controlOnlyInput');
+const showAdminControlsInput = $('showAdminControlsInput');
+const preferTextLabelsInput = $('preferTextLabelsInput');
 const playMusicOnDeviceInput = $('playMusicOnDeviceInput');
 const deviceMusicStatus = $('deviceMusicStatus');
 const deviceMusicStateValue = $('deviceMusicStateValue');
@@ -365,9 +371,6 @@ const capacityInput = $('capacityInput');
 const capacityValueLabel = $('capacityValueLabel');
 const capacityStatus = $('capacityStatus');
 const volumeFill = $('volumeFill');
-const pitchValue = $('pitchValue');
-const confidenceValue = $('confidenceValue');
-const voicedValue = $('voicedValue');
 const songPositionValue = $('songPositionValue');
 const playerScoreValue = $('playerScoreValue');
 const rttValue = $('rttValue');
@@ -453,6 +456,8 @@ function loadSettings() {
         wakeLock: saved.wakeLock !== false,
         lockMicBar: saved.lockMicBar !== false,
         controlOnly: Boolean(saved.controlOnly),
+        showAdminControls: Boolean(saved.showAdminControls),
+        preferTextLabels: Boolean(saved.preferTextLabels),
         playMusicOnDevice: savedSettingsVersion < 2
           ? true
           : (Object.prototype.hasOwnProperty.call(saved, 'playMusicOnDevice')
@@ -924,22 +929,33 @@ function renderProfileControls() {
 
 function micRoomsUnlocked() {
   return Boolean(state.settings.controlOnly)
-    || Boolean(state.micStream && state.audioContext && state.audioContext.state === 'running');
+    || Boolean(state.audioInput?.synthetic || (state.audioInput && state.audioContext?.state === 'running'));
+}
+
+function setActionLabel(button, label, icon) {
+  if (!button) return;
+  button.classList.add('icon-action');
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  const glyph = document.createElement('img');
+  glyph.className = 'action-icon'; glyph.src = `/icons/${icon}.svg`; glyph.alt = '';
+  const text = document.createElement('span'); text.className = 'action-label'; text.textContent = label;
+  button.replaceChildren(glyph,text);
 }
 
 function renderMicEntryFlow() {
   const unlocked = micRoomsUnlocked();
-  const starting = Boolean(state.audioContext && !state.micStream);
+  const starting = Boolean(state.audioContext && !state.audioInput);
   micPanel?.classList.toggle('mic-entry-locked', !unlocked);
   micRoomHeader?.classList.remove('hidden');
   micRoomList?.classList.remove('hidden');
   slotButtons?.classList.remove('hidden');
   micMeter?.classList.remove('hidden');
-  micMetrics?.classList.remove('hidden');
+  micMetrics?.classList.toggle('hidden', !['singing', 'paused', 'results'].includes(state.gameState));
   if (micButton) {
     micButton.classList.toggle('hidden', unlocked);
     micButton.disabled = starting || Boolean(state.settings.controlOnly);
-    if (!unlocked) micButton.textContent = starting ? 'Starting Mic...' : 'Start Mic';
+    if (!unlocked) setActionLabel(micButton, starting ? 'Starting Mic...' : 'Start Mic', 'microphone');
   }
 }
 
@@ -956,6 +972,16 @@ function renderSettings() {
   wakeLockInput.checked = state.settings.wakeLock;
   lockMicBarInput.checked = state.settings.lockMicBar;
   controlOnlyInput.checked = state.settings.controlOnly;
+  showAdminControlsInput.checked = state.settings.showAdminControls;
+  preferTextLabelsInput.checked = state.settings.preferTextLabels;
+  document.body.classList.toggle('prefer-text-labels', state.settings.preferTextLabels);
+  for (const button of document.querySelectorAll('.tab')) {
+    const label = button.querySelector('.action-label')?.textContent || button.textContent;
+    button.setAttribute('aria-label', label);
+    button.title = label;
+  }
+  document.querySelector('[data-tab="control"]').classList.toggle('hidden', !state.settings.showAdminControls);
+  if (!state.settings.showAdminControls && !$('controlPanel').classList.contains('hidden')) setTab('settings');
   playMusicOnDeviceInput.checked = state.settings.playMusicOnDevice;
   nameChangeInput.value = state.name || nameInput.value || '';
   renderProfileControls();
@@ -1063,6 +1089,8 @@ function clearStoredRoom() {
   state.displayCode = null;
   state.playerId = null;
   state.playerToken = null;
+  state.inputSlots = [];
+  state.screenInfo = null;
 }
 
 function stopClientHeartbeat() {
@@ -1218,15 +1246,25 @@ function clientLog(event, data = {}) {
 }
 
 function renderConnectionState() {
+  micDelayInput?.closest('section')?.classList.toggle('hidden', Boolean(state.rawPcmV1));
+  const direct = state.rawPcmV1 ? nativeAudioActive() && state.pcmSender &&
+    !state.pcmSender.usingServer() : state.p2p.connected;
   const warning = $('routeWarning');
-  if (warning) warning.hidden = !state.roomId || !state.ws ||
-    state.ws.readyState !== WebSocket.OPEN || state.p2p.connected;
+  if (warning) {
+    warning.hidden = !state.roomId || !state.audioInput || (!state.audioInput.synthetic && state.audioContext?.state !== 'running') || Number(state.slot) <= 0 || !state.ws || state.ws.readyState !== WebSocket.OPEN;
+    warning.querySelector('svg').style.display = direct ? 'none' : '';
+    warning.lastChild.textContent = direct ? ' Direct' : ' Server';
+    warning.style.background = direct ? '#12382c' : '#422f08';
+    warning.style.color = direct ? '#a7f3d0' : '#fcd34d';
+    warning.title = direct ? 'Direct microphone audio confirmed by the game.' :
+      'Microphone audio uses the server while direct audio is unconfirmed; latency may be higher.';
+  }
   if (!connectionState) return;
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
     connectionState.textContent = 'disconnected';
     return;
   }
-  connectionState.textContent = state.p2p.connected ? 'connected direct' : 'connected relay';
+  connectionState.textContent = direct ? 'connected direct' : 'connected relay';
 }
 
 function sendRelay(message) {
@@ -1236,6 +1274,7 @@ function sendRelay(message) {
 }
 
 function sendDirect(message) {
+  if (state.rawPcmV1) return false; // Native channel carries PCM; controls keep their existing bridge path.
   const dc = state.p2p.dc;
   if (!dc || dc.readyState !== 'open') return false;
   try {
@@ -1256,6 +1295,7 @@ function shortRequestId(prefix = 'req') {
 }
 
 function closeP2p(notify = false) {
+  state.pcmSender?.reset();
   if (state.p2p.negotiationTimer) window.clearTimeout(state.p2p.negotiationTimer);
   state.p2p.negotiationTimer = null;
   if (state.p2p.reconnectTimer) window.clearTimeout(state.p2p.reconnectTimer);
@@ -1318,7 +1358,13 @@ function attachP2pDataChannel(dc, attempt) {
   dc.addEventListener('message', (event) => {
     if (state.p2p.attempt !== attempt || state.p2p.dc !== dc) return;
     try {
-      handleMessage(JSON.parse(event.data)).catch((error) => {
+      const message = JSON.parse(event.data);
+      if (state.rawPcmV1 && message.type === 'audio.pcm.ack') {
+        state.pcmSender?.acknowledge(message);
+        renderConnectionState();
+        return;
+      }
+      handleMessage(message).catch((error) => {
         clientLog('direct.message.error', { error: error?.message || String(error) });
       });
     } catch {
@@ -1391,6 +1437,7 @@ async function handleP2pSignal(message) {
 }
 
 async function startP2p() {
+  if (state.rawPcmV1 && !nativeAudioActive()) return;
   if (!state.p2p.enabled || !state.roomId || state.p2p.connecting || state.p2p.connected) return;
   const PeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
   if (!PeerConnection) {
@@ -1425,7 +1472,9 @@ async function startP2p() {
       if (state.p2p.pc !== pc) return;
       if (['failed', 'closed', 'disconnected'].includes(pc.iceConnectionState)) scheduleP2pReconnect();
     });
-    attachP2pDataChannel(pc.createDataChannel('usdx-remote', { ordered: true }), attempt);
+    attachP2pDataChannel(state.rawPcmV1
+      ? pc.createDataChannel('usce-pcm-v1', { ordered: false, maxRetransmits: 0 })
+      : pc.createDataChannel('usdx-remote', { ordered: true }), attempt);
     const offer = await pc.createOffer();
     if (state.p2p.pc !== pc) return;
     await pc.setLocalDescription(offer);
@@ -1671,24 +1720,34 @@ function renderLyricsInto(container, entry, songUs) {
   const text = String(entry?.text || '').trim();
   const notes = Array.isArray(entry?.notes) ? entry.notes : [];
   const activeIndex = activeLyricIndex(notes, songUs);
-  container.replaceChildren();
-
-  if (notes.length) {
+  const signature = JSON.stringify([text, notes.map(note => [note.text, note.startUs, note.endUs])]);
+  if (container.dataset.lyrics !== signature) {
+    container.dataset.lyrics = signature;
+    container.replaceChildren();
+    if (notes.length) {
     for (let index = 0; index < notes.length; index += 1) {
       const note = notes[index];
       const syllable = String(note.text || '');
       if (!syllable) continue;
       const span = document.createElement('span');
       span.className = `lyric-syllable ${classifyLyricNote(note, index, activeIndex, songUs)}`;
+      span.dataset.noteIndex = String(index);
       if (index === activeIndex) span.style.setProperty('--lyric-progress', `${Math.round(lyricProgress(note, songUs) * 100)}%`);
       span.textContent = syllable;
       container.append(span);
     }
-  } else if (text) {
+    } else if (text) {
     const span = document.createElement('span');
     span.className = 'lyric-syllable upcoming';
     span.textContent = text;
     container.append(span);
+    }
+  }
+  for (const span of container.children) {
+    const index = Number(span.dataset.noteIndex);
+    if (!notes[index]) continue;
+    span.className = `lyric-syllable ${classifyLyricNote(notes[index], index, activeIndex, songUs)}`;
+    if (index === activeIndex) span.style.setProperty('--lyric-progress', `${Math.round(lyricProgress(notes[index], songUs) * 100)}%`);
   }
 
   container.classList.toggle('hidden', !container.textContent.trim());
@@ -1732,6 +1791,41 @@ function updateSongProgressView() {
   if (lockProgressFill) lockProgressFill.style.width = `${Math.round(progressState.progress * 1000) / 10}%`;
   if (lockProgressLabel) lockProgressLabel.textContent = progressState.duration == null ? 'Progress --' : `${Math.round(progressState.progress * 100)}%`;
   renderLockLyrics();
+  renderLockGameInfo();
+}
+
+function renderLockGameInfo() {
+  const panel = $('lockGameInfo');
+  if (!panel) return;
+  const info = state.screenInfo?.screen === state.gameState ? state.screenInfo : null;
+  const results = ['results', 'high_scores'].includes(state.gameState);
+  if (lockSongLabel && !['singing', 'paused'].includes(state.gameState)) {
+    const labels = { song_select: 'Choose a song', song_ended: 'Song finished', results: 'Results', high_scores: 'High scores', lobby: 'Waiting for the game' };
+    lockSongLabel.textContent = labels[state.gameState] || 'Waiting for the game';
+  }
+  const signature = JSON.stringify(info);
+  if (panel.dataset.content !== signature) {
+    panel.dataset.content = signature;
+    panel.replaceChildren();
+    if (info) {
+      const title = document.createElement('strong');
+      title.textContent = [info.artist, info.title].filter(Boolean).join(' — ');
+      panel.append(title);
+      if (info.difficulty) {
+        const difficulty = document.createElement('p');
+        difficulty.textContent = info.difficulty;
+        panel.append(difficulty);
+      }
+      const list = document.createElement('ol');
+      for (const entry of (info.entries || []).slice(0, 20)) {
+        const row = document.createElement('li');
+        row.textContent = `${entry.name || `Mic ${entry.slot}`} · ${Math.round(Number(entry.score) || 0)}`;
+        list.append(row);
+      }
+      panel.append(list);
+    }
+  }
+  panel.classList.toggle('hidden', !results || !info);
 }
 
 function renderLockLevel(level, label) {
@@ -1869,32 +1963,41 @@ function sendPartyLikeSong(song, sourceButton = null) {
   markFireAndForgetButton(sourceButton, ok);
 }
 
-function sendPartyLikeMatchedSongs(sourceButton = null) {
+function sendPartyLikeMatchedSongs(sourceButton = null, liked = true) {
   const songs = visibleSongResults()
     .map((song) => ({
       songId: Number(song.songId),
       title: song.title || '',
       artist: song.artist || ''
     }))
-    .filter((song) => Number.isInteger(song.songId) && song.songId >= 0 && !playerLikedSong(song.songId));
+    .filter((song) => Number.isInteger(song.songId) && song.songId >= 0 && playerLikedSong(song.songId) !== liked);
   if (!songs.length) {
     markFireAndForgetButton(sourceButton, false);
-    if (partyNotice) partyNotice.textContent = 'All matching songs are already liked.';
+    if (partyNotice) partyNotice.textContent = liked ? 'All matching songs are already liked.' : 'No matching songs are liked.';
     return;
   }
+  if (songs.length > 80 && !window.confirm(`${liked ? 'Like' : 'Unlike'} ${songs.length} songs at once? This affects all matching songs, including those outside the current page.`)) return;
   for (const song of songs) {
-    state.localLikedSongIds.add(Number(song.songId));
-    rememberPersistentLikedSong(songById(song.songId) || song, { force: true, save: false });
+    if (liked) {
+      state.localLikedSongIds.add(Number(song.songId));
+      rememberPersistentLikedSong(songById(song.songId) || song, { force: true, save: false });
+    } else {
+      state.localLikedSongIds.delete(Number(song.songId));
+      forgetPersistentLikedSong(songById(song.songId) || song, { save: false });
+    }
   }
   savePersistentLikedSongs();
   holdLocalPartyLikes();
   scheduleSongSelectRender();
   renderPartyState();
-  const ok = send({ type: 'party.likeShown', songs });
+  let ok = true;
+  for (let offset = 0; offset < songs.length; offset += 500) {
+    ok = send({ type: liked ? 'party.likeShown' : 'party.unlikeShown', songs: songs.slice(offset, offset + 500) }) && ok;
+  }
   markFireAndForgetButton(sourceButton, ok);
   if (partyNotice) partyNotice.textContent = ok
-    ? `Liked ${songs.length} matching songs.`
-    : `Saved ${songs.length} likes on this phone; reconnect to sync party mode.`;
+    ? `${liked ? 'Liked' : 'Unliked'} ${songs.length} matching songs.`
+    : 'Saved on this phone; reconnect to sync party mode.';
 }
 
 function partyPhaseText(party) {
@@ -1947,7 +2050,7 @@ function renderPartyState() {
   const formLocked = Boolean(state.partySettingsDirty) || Date.now() < Number(state.partySettingsPendingUntilMs || 0);
   if (partyStatusLabel) partyStatusLabel.textContent = party.statusText || (party.enabled ? 'Running' : 'Idle');
   if (partyMinPlayersInput && !formLocked && document.activeElement !== partyMinPlayersInput) {
-    partyMinPlayersInput.value = String(Math.max(2, Math.min(12, Number(party.minPlayers || 2))));
+    partyMinPlayersInput.value = String(Math.max(1, Math.min(12, Number(party.minPlayers || 2))));
   }
   if (partyEndlessInput && !formLocked) partyEndlessInput.checked = Boolean(party.endless);
   if (partyCountdownInput && !formLocked && document.activeElement !== partyCountdownInput) {
@@ -1956,7 +2059,7 @@ function renderPartyState() {
   if (partySourceInput && !formLocked && document.activeElement !== partySourceInput) {
     partySourceInput.value = party.source === 'playlist' ? 'playlist' : 'all';
   }
-  const partyReady = Boolean(state.roomId);
+  const partyReady = Boolean(state.roomId && party.available);
   if (partyStartButton) partyStartButton.disabled = !partyReady;
   if (partyFindMatchButton) partyFindMatchButton.disabled = !partyReady || !party.enabled;
   if (partyStopButton) partyStopButton.disabled = !partyReady || !party.enabled;
@@ -2190,6 +2293,7 @@ function sendSlotProfile(slot, sourceButton) {
     profile: currentProfile()
   });
   if (ok && requestedSlot !== Number(state.slot)) {
+    if (state.rawPcmV1) closeP2p(false);
     state.pendingPreviousSlot = state.slot;
     state.pendingSlot = requestedSlot;
     state.pendingSlotUntilMs = performance.now() + 2500;
@@ -2197,7 +2301,7 @@ function sendSlotProfile(slot, sourceButton) {
     const self = state.players.find((player) => player.playerId === state.playerId);
     if (self) self.slot = requestedSlot;
     rememberLastMicSlot(requestedSlot);
-    if (micStatus) micStatus.textContent = requestedSlot > 0 ? `Mic ${requestedSlot} selected.` : 'Lobby selected.';
+    if (micStatus) micStatus.textContent = state.audioInput?.synthetic ? '' : state.audioInput ? 'Audio running.' : '';
     updateIdentity();
     updateGameStateView();
   } else if (!ok && micStatus) {
@@ -2217,12 +2321,17 @@ function renderMicRooms() {
     maxPlayers,
     shownSlot,
     state.playerId || '',
-    playersUiSignature(players)
+    playersUiSignature(players),
+    JSON.stringify(state.inputSlots || [])
   ].join('|');
   if (!shouldRenderSignature('micRooms', signature)) return;
 
   micRoomList.replaceChildren();
-  const assigned = players.filter((player) => Number(player.slot) > 0).length;
+  micRoomList.classList.toggle('many-mics', maxPlayers > 6);
+  const assigned = new Set([
+    ...players.filter(player => Number(player.slot) > 0).map(player => Number(player.slot)),
+    ...(state.inputSlots || []).filter(input => input.local && input.slot <= maxPlayers).map(input => input.slot)
+  ]).size;
   setTextIfChanged(micRoomCountLabel, `${assigned}/${maxPlayers} mics`);
 
   const lobbyOccupants = players.filter((player) => Number(player.slot) <= 0);
@@ -2245,11 +2354,17 @@ function renderMicRooms() {
     lobbyMeta.textContent = 'No one in lobby';
   }
   lobbyButton.append(lobbyTitle, lobbyMeta);
-  micRoomList.append(lobbyButton);
+  lobbyButton.classList.toggle('empty-lobby', !lobbyOccupants.length);
+  if (!lobbyOccupants.length) {
+    lobbyTitle.textContent = shownSlot > 0 ? 'Leave mic · Lobby' : 'Lobby';
+    lobbyMeta.hidden = true;
+  }
 
   for (let slot = 1; slot <= maxPlayers; slot += 1) {
+    const localInput = state.inputSlots?.find(input=>input.local&&input.slot===slot);
     const occupant = players.find((player) => Number(player.slot) === slot && player.connected !== false)
-      || players.find((player) => Number(player.slot) === slot && player.playerId === state.playerId);
+      || players.find((player) => Number(player.slot) === slot && player.playerId === state.playerId)
+      || (localInput ? {playerId:`local:${slot}`,name:localInput.name||'Local mic',role:'local',connected:true} : null);
     const button = document.createElement('button');
     const title = document.createElement('strong');
     const meta = document.createElement('span');
@@ -2267,11 +2382,12 @@ function renderMicRooms() {
     const detail = document.createElement('small');
     detail.textContent = occupant && occupant.connected !== false
       ? `${difficultyLabel(occupant.difficulty)} - ${occupant.connected === false ? 'offline' : occupant.role || 'singer'}`
-      : 'Default avatar - Medium';
+      : '';
     metaWrap.append(meta, detail);
     button.append(createRoomAvatar(occupant && occupant.connected !== false ? occupant : null, slot), title, metaWrap);
     micRoomList.append(button);
   }
+  micRoomList.append(lobbyButton);
 }
 
 function sendControl(command, args = {}, sourceButton = null) {
@@ -2860,7 +2976,8 @@ async function mergeSongSelectState(previous, message) {
   if (Array.isArray(incoming.library) && incoming.libraryHash) {
     saveCachedSongLibrary(String(incoming.libraryHash), incoming.library);
   } else if (!Array.isArray(incoming.library) && incoming.libraryHash) {
-    const cached = await loadCachedSongLibrary(String(incoming.libraryHash));
+    const cached = previous?.libraryHash === incoming.libraryHash && Array.isArray(previous.library)
+      ? { library: previous.library } : await loadCachedSongLibrary(String(incoming.libraryHash));
     if (cached) {
       incoming.library = cached.library;
       state.songLibraryCacheUsable = true;
@@ -2887,7 +3004,7 @@ async function mergeSongSelectState(previous, message) {
     for (const field of ['library', 'results']) {
       if (!Array.isArray(merged[field])) continue;
       const index = merged[field].findIndex((song) => Number(song.songId) === currentSongId);
-      if (index >= 0) {
+      if (index >= 0 && Object.entries(merged.currentSong).some(([key, value]) => merged[field][index][key] !== value)) {
         merged[field] = merged[field].slice();
         merged[field][index] = { ...merged[field][index], ...merged.currentSong };
       }
@@ -3196,6 +3313,9 @@ async function startPhonePreview(song, button, slider) {
 
 function stopDeviceMusic(status = 'Device music is off.') {
   const errorStatus = isDeviceMusicErrorStatus(status);
+  // Invalidate first: pause/load events and pending play promises may fire while stopping.
+  const audio = state.deviceMusicAudio;
+  state.deviceMusicAudio = null;
   if (state.deviceMusicTimer) {
     clearTimeout(state.deviceMusicTimer);
     state.deviceMusicTimer = null;
@@ -3212,14 +3332,14 @@ function stopDeviceMusic(status = 'Device music is off.') {
     clearInterval(state.deviceMusicSyncTimer);
     state.deviceMusicSyncTimer = null;
   }
-  if (state.deviceMusicAudio) {
-    state.deviceMusicAudio.pause();
-    try { state.deviceMusicAudio.playbackRate = 1; } catch {}
+  if (audio) {
+    audio.pause();
+    try { audio.playbackRate = 1; } catch {}
     try {
-      state.deviceMusicAudio.removeAttribute('src');
-      state.deviceMusicAudio.load();
+      audio.removeAttribute('src');
+      audio.load();
     } catch {
-      state.deviceMusicAudio.src = '';
+      audio.src = '';
     }
   }
   if (state.deviceMusicAbortController) {
@@ -3402,6 +3522,12 @@ function updateMicTransportStatus(force = false) {
   if (!force && now - state.pitchLastStatusMs < 1000) return;
   state.pitchLastStatusMs = now;
   if (!state.audioContext) return;
+  if (nativeAudioActive()) {
+    const pcm = state.pcmSender;
+    micStatus.textContent = `Mic ${state.slot}: audio to game; ${pcm?.usingServer() === false ? 'direct' : 'via server'}; ` +
+      `${pcm?.sent || 0} direct / ${pcm?.relayed || 0} server packets, ${pcm?.dropped || 0} dropped before send.`;
+    return;
+  }
 
   const slot = Number(state.slot || 0);
   if (slot <= 0) {
@@ -3559,10 +3685,7 @@ function updateSongClockFromMessage(message = {}, source = '') {
 function desiredDeviceMusicPositionSec(clientUs = clientNowUs()) {
   const position = currentGameAudioPositionSec(clientUs);
   if (position == null) return 0;
-  const initialLead = performance.now() < Number(state.deviceMusicInitialLeadUntilMs || 0)
-    ? deviceMusicInitialLeadSec
-    : 0;
-  return Math.max(0, position + deviceMusicOutputLeadSec + state.settings.targetDriftMs / 1000 + initialLead);
+  return Math.max(0, position + deviceMusicOutputLeadSec + state.settings.targetDriftMs / 1000);
 }
 
 function deviceMusicGameTargetEnded(clientUs = clientNowUs()) {
@@ -3742,14 +3865,15 @@ function deviceMusicPlaybackRateForDrift(drift) {
   if (absDrift <= deviceMusicSoftSyncThresholdSec) return deviceMusicNominalPlaybackRate;
 
   const effectiveDrift = absDrift - deviceMusicSoftSyncThresholdSec;
-  const strength = 1 - Math.exp(-effectiveDrift / deviceMusicRateCurveScaleSec);
-  const correction = Math.sign(drift) * deviceMusicMaxPlaybackRateDeviation * strength;
+  const correction = Math.sign(drift) * Math.min(deviceMusicMaxPlaybackRateDeviation,
+    effectiveDrift / deviceMusicRateCurveScaleSec);
   return deviceMusicNominalPlaybackRate + correction;
 }
 
 function syncDeviceMusicAudio(audio, force = false) {
   if (state.deviceMusicAudio !== audio) return null;
   if (audio.readyState < HTMLMediaElement.HAVE_METADATA) return null;
+  if (audio.seeking) return null;
   if (stopDeviceMusicAtGameEnd(audio)) return null;
   const sampleClientUs = clientNowUs();
   const desiredMedia = desiredDeviceMusicPositionSec(sampleClientUs);
@@ -3758,13 +3882,16 @@ function syncDeviceMusicAudio(audio, force = false) {
   if (phone == null) return null;
   const drift = desired - phone;
   const canInitialSeek = state.deviceMusicInitialSeekPending && (force || Math.abs(drift) > deviceMusicHardSeekThresholdSec);
-  if (canInitialSeek) {
+  const canRecoverSeek = Math.abs(drift) > deviceMusicHardSeekThresholdSec &&
+    performance.now() - (state.deviceMusicLastSeekMs ?? -Infinity) >= 2000;
+  if (canInitialSeek || canRecoverSeek) {
     if (canSeekDeviceMusic(audio, desired)) {
       try {
         audio.currentTime = desired;
         audio.playbackRate = deviceMusicNominalPlaybackRate;
         resetDeviceMusicPositionAnchor(audio, sampleClientUs, desired);
         state.deviceMusicInitialSeekPending = false;
+        state.deviceMusicLastSeekMs = performance.now();
       } catch {
         return null;
       }
@@ -3780,23 +3907,9 @@ function syncDeviceMusicAudio(audio, force = false) {
 }
 
 function forceDeviceMusicSeekToGame(audio) {
-  if (state.deviceMusicAudio !== audio) return null;
-  if (audio.readyState < HTMLMediaElement.HAVE_METADATA) return null;
-  if (stopDeviceMusicAtGameEnd(audio)) return null;
-  if (!state.deviceMusicInitialSeekPending) return syncDeviceMusicAudio(audio, false);
-  const sampleClientUs = clientNowUs();
-  const desired = clampDeviceMusicPosition(audio, desiredDeviceMusicPositionSec(sampleClientUs));
-  if (!canSeekDeviceMusic(audio, desired)) return syncDeviceMusicAudio(audio, false);
-  try {
-    audio.currentTime = desired;
-    audio.playbackRate = deviceMusicNominalPlaybackRate;
-    resetDeviceMusicPositionAnchor(audio, sampleClientUs, desired);
-    state.deviceMusicInitialSeekPending = false;
-    return desired;
-  } catch {
-    return null;
-  }
+  return syncDeviceMusicAudio(audio, true);
 }
+
 
 function startDeviceMusicSync(audio) {
   if (state.deviceMusicSyncTimer) clearInterval(state.deviceMusicSyncTimer);
@@ -3807,7 +3920,7 @@ function startDeviceMusicSync(audio) {
     if (drift != null) {
       setDeviceMusicStatus(`Device music playing. Target drift ${Math.round(drift * 1000)} ms.`, 'state-playing');
     }
-  }, 750);
+  }, 250);
 }
 
 function playDeviceMusicAudio(reason = '') {
@@ -3827,11 +3940,13 @@ function playDeviceMusicAudio(reason = '') {
   syncDeviceMusicAudio(audio, audio.paused);
   audio.play()
     .then(() => {
+      if (state.deviceMusicAudio !== audio || !['song_select', 'singing'].includes(state.gameState)) { audio.pause(); return; }
       state.deviceMusicBlocked = false;
       startDeviceMusicSync(audio);
       setDeviceMusicStatus('Device music playing. Synced to game clock.', 'state-playing');
     })
     .catch(() => {
+      if (state.deviceMusicAudio !== audio) return;
       state.deviceMusicBlocked = true;
       setDeviceMusicStatus('Device music starting...', 'state-buffering');
   });
@@ -3865,6 +3980,7 @@ function scheduleDeviceMusicRetry(message = {}, delayMs = 1000) {
 
 function maybeStartDeviceMusic(message = {}) {
   if (!state.settings.playMusicOnDevice) return;
+  if (!['song_select', 'singing'].includes(state.gameState)) return;
   if (message && Object.keys(message).length) updateSongClockFromMessage(message, message.type || 'device music');
   if (state.gameState === 'song_select') {
     if (deviceMusicTargetKey() === 'select:-1') {
@@ -4005,6 +4121,7 @@ async function probeDeviceMusicMedia(audioUrl, fileLabel = '') {
 
 async function startDeviceMusic(message = {}, recoveryAttempt = 0, extensionAttempt = 0, extensionFallbacksOverride = null) {
   if (!state.settings.playMusicOnDevice) return;
+  if (!['song_select', 'singing'].includes(state.gameState)) return;
   if (recoveryAttempt === 0 && extensionAttempt === 0) state.deviceMusicStickyErrorText = null;
   if (message && Object.keys(message).length) updateSongClockFromMessage(message, message.type || 'device music');
   const isSongSelectPreview = state.gameState === 'song_select';
@@ -4277,6 +4394,12 @@ async function startDeviceMusic(message = {}, recoveryAttempt = 0, extensionAtte
 
 function reconcileDeviceMusic() {
   if (!state.settings.playMusicOnDevice) return;
+  if (!['song_select', 'singing', 'paused'].includes(state.gameState)) {
+    if (state.deviceMusicAudio || state.deviceMusicRecoveryTimer || state.deviceMusicAbortController) {
+      stopDeviceMusic('Device music stopped.');
+    }
+    return;
+  }
   if (!state.playerId) {
     setDeviceMusicStatus('Device music enabled. Waiting for game.', 'state-buffering');
     return;
@@ -4347,6 +4470,9 @@ function activateDeviceMusic(reason = '') {
 }
 
 function renderSongSelectState() {
+  // Preview-clock updates continue while controls/microphone are visible;
+  // rebuilding the hidden song catalog must not interrupt live audio.
+  if ($('songsPanel')?.classList.contains('hidden')) return;
   const renderStartMs = performance.now();
   const data = state.songSelect || {};
   if (searchFieldInput && document.activeElement !== searchFieldInput) {
@@ -4411,7 +4537,7 @@ function renderSongSelectState() {
     showAllSongsButton.textContent = 'All Songs';
   }
   if (showLikedSongsButton) {
-    showLikedSongsButton.textContent = state.showLikedSongsOnly ? '\u2665 Liked' : '\u2665 Liked';
+    setActionLabel(showLikedSongsButton, 'Liked songs', 'heart');
     showLikedSongsButton.classList.toggle('active-filter', state.showLikedSongsOnly);
   }
   if (clearSearchButton) {
@@ -4606,7 +4732,6 @@ function renderSlotButtons() {
   lobbyButton.className = 'slot-button mic-lobby';
   if (Number(state.slot) <= 0) lobbyButton.classList.add('active-slot');
   lobbyButton.addEventListener('click', () => {
-    if (!micRoomsUnlocked()) return;
     sendSlotProfile(0, lobbyButton);
   });
   slotButtons.append(lobbyButton);
@@ -4619,7 +4744,6 @@ function renderSlotButtons() {
     if (Number(state.slot) === slot) button.classList.add('active-slot');
     button.disabled = Boolean(occupant && occupant.playerId !== state.playerId);
     button.addEventListener('click', () => {
-      if (!micRoomsUnlocked()) return;
       sendSlotProfile(slot, button);
     });
     slotButtons.append(button);
@@ -4627,7 +4751,8 @@ function renderSlotButtons() {
 }
 
 function setTab(name) {
-  const tabName = ['mic', 'songs', 'party', 'control', 'settings'].includes(name) ? name : 'mic';
+  const tabName = name === 'control' && !state.settings.showAdminControls ? 'settings'
+    : ['mic', 'songs', 'party', 'control', 'settings'].includes(name) ? name : 'mic';
   for (const button of document.querySelectorAll('.tab')) {
     button.classList.toggle('active', button.dataset.tab === tabName);
   }
@@ -4773,6 +4898,7 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'client.joined') {
+    state.rawPcmV1 = Boolean(message.rawPcmV1);
     Object.assign(state, {
       roomId: message.roomId,
       displayCode: message.displayCode,
@@ -4844,7 +4970,9 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'player.assigned' && message.playerId === state.playerId) {
+    if (state.rawPcmV1 && state.slot !== message.slot) closeP2p(true);
     state.slot = message.slot;
+    if (state.rawPcmV1) startP2p();
     state.role = message.role;
     state.pendingSlot = null;
     state.pendingPreviousSlot = null;
@@ -4942,18 +5070,15 @@ async function handleMessage(message) {
     const nextSongSeq = staleSingingOverSongSelect
       ? Number(state.songSeq || 0)
       : Number(message.songSeq || state.songSeq || 0);
-    const sameActiveSong = ['singing', 'paused'].includes(previousGameState)
-      && !['singing', 'paused', 'song_ended'].includes(incomingGameState)
-      && Number(state.songSeq || 0) > 0
-      && (!Number.isFinite(nextSongSeq) || nextSongSeq <= 0 || nextSongSeq === Number(state.songSeq || 0));
     if (Number.isFinite(nextSongSeq) && nextSongSeq > 0) {
       if (state.songSeq && nextSongSeq !== state.songSeq) {
         clearPitchQueue('Microphone queue reset for new song.');
       }
       state.songSeq = nextSongSeq;
     }
-    state.gameState = sameActiveSong ? previousGameState : incomingGameState;
+    state.gameState = incomingGameState;
     state.maxPlayers = Number(message.maxPlayers || state.maxPlayers || 6);
+    if(Array.isArray(message.inputs)) state.inputSlots=message.inputs;
     if (Array.isArray(message.players)) {
       state.players = message.players.map((player) => mergeProfileIntoPlayer({ ...player }, player));
       const self = state.players.find((player) => player.playerId === state.playerId);
@@ -4990,9 +5115,7 @@ async function handleMessage(message) {
       clearPitchQueue('Microphone queue reset outside song.');
       state.currentSongMessage = null;
       state.currentLyricsMessage = null;
-      pauseDeviceMusicBuffered('Device music stopped.');
-    } else if (sameActiveSong) {
-      keepDeviceMusicPlaying('state correction');
+      stopDeviceMusic('Device music stopped.');
     }
     updateGameStateView();
     logLine(`state ${message.state || 'unknown'} seq ${message.seq || '-'}`);
@@ -5001,10 +5124,15 @@ async function handleMessage(message) {
 
   if (message.type === 'song.select.state') {
     state.songStateRequested = false;
-    state.songSelectStateUntilMs = performance.now() + 5000;
     const previousGameState = state.gameState;
     const renderNeeded = songSelectStateNeedsRender(state.songSelect, message);
     state.songSelect = await mergeSongSelectState(state.songSelect, message);
+    // Catalog snapshots are also delivered while singing or viewing results.
+    if (message.screenActive === false) {
+      if (renderNeeded) renderSongSelectState();
+      return;
+    }
+    state.songSelectStateUntilMs = performance.now() + 5000;
     if (state.gameState !== 'song_select') {
       state.gameState = 'song_select';
       updateGameStateView();
@@ -5156,7 +5284,7 @@ async function handleMessage(message) {
   if (message.type === 'song.lyrics') {
     if (!['singing', 'paused'].includes(state.gameState)) return;
     const songSeq = Number(message.songSeq || state.songSeq || 0);
-    if (Number.isFinite(songSeq) && songSeq > 0) state.songSeq = songSeq;
+    if (songSeq !== Number(state.songSeq)) return;
     state.currentLyricsMessage = message;
     updateSongClockFromMessage(message, 'song.lyrics');
     updateLyricSyncPoints(message);
@@ -5204,7 +5332,22 @@ async function handleMessage(message) {
     return;
   }
 
+  if (message.type === 'screen.info') {
+    state.screenInfo = message;
+    renderLockGameInfo();
+    return;
+  }
+
+  if (message.type === 'audio.stop') {
+    stopDeviceMusic('Device music stopped.');
+    state.selectPreviewAnchorClientUs = null;
+    state.selectPreviewAnchorSec = null;
+    state.selectPreviewAnchorExpiresMs = 0;
+    return;
+  }
+
   if (message.type === 'song.ended') {
+    if (Number(message.songSeq || state.songSeq) !== Number(state.songSeq)) return;
     state.hostSongStartUs = null;
     state.mediaStartUs = 0;
     state.songDurationSec = null;
@@ -5213,7 +5356,7 @@ async function handleMessage(message) {
     state.currentSongMessage = null;
     state.currentLyricsMessage = null;
     state.gameState = 'song_ended';
-    pauseDeviceMusicBuffered('Device music stopped.');
+    stopDeviceMusic('Device music stopped.');
     updateGameStateView();
     logLine('song ended');
     return;
@@ -5317,21 +5460,80 @@ function connectAndJoin(displayCode, name, resume = null) {
   });
 }
 
+function nativeAudioActive() { return Boolean(state.rawPcmV1 && Number(state.slot) >= 1 && Number(state.slot) <= 12 && state.roomId); }
+
+async function stopMic() {
+  const context = state.audioContext;
+  state.audioContext = null;
+  state.audioInput?.stop();
+  state.audioInput = null;
+  state.micStream = null;
+  if (state.pcmWorklet) state.pcmWorklet.port.onmessage = null;
+  if (state.worklet) state.worklet.port.onmessage = null;
+  state.pcmWorklet = state.worklet = state.pcmSender = state.audioSink = null;
+  state.audioContextPerfBaseUs = null;
+  state.micInputLatencyUs = 0;
+  state.pitchTimestampLagUs = null;
+  $('testAudioStatus').hidden = true;
+  micStatus.textContent = 'Audio stopped.';
+  micButton.disabled = false;
+  if (context) await context.close().catch(() => {});
+  renderMicEntryFlow();
+  updateGameStateView();
+}
+
+function resumeMicAudio(context) {
+  context.resume().then(() => {
+    if (state.audioContext !== context) return;
+    renderMicEntryFlow();
+    updateGameStateView();
+  }).catch(error => {
+    if (state.audioContext !== context) return;
+    clientLog('mic.audio_resume_failed', { state: context.state, sampleRate: context.sampleRate,
+      name: error?.name || '', error: error?.message || String(error) });
+    micStatus.textContent = `Microphone audio could not start: ${error?.message || 'audio device unavailable'}. Tap Start Mic to retry.`;
+    micButton.disabled = false;
+  });
+}
+
 async function startMic() {
-  if (state.audioContext) {
-    try {
-      await state.audioContext.resume();
-    } catch {
-      // Keep the existing status below.
+  const frequency = Number($('testAudioInput').value);
+  if (frequency) {
+    if (state.audioInput?.synthetic) return;
+    if (!state.rawPcmV1) {
+      micStatus.textContent = 'Test audio needs a game with native PCM support.';
+      return;
     }
+    await stopMic();
+    state.pcmSender = new NativePcmSender({active: nativeAudioActive,
+      channel: () => state.p2p.dc,
+      relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message)});
+    state.audioInput = startSyntheticPcm({frequency, submit: packet => {
+      state.pcmSender?.submit(packet);
+      if (performance.now() - state.pitchLastUiMs >= pitchUiUpdateMs)
+        handlePitchFrame({rmsDb: -17});
+    }});
+    $('testAudioStatus').textContent = state.audioInput.label;
+    $('testAudioStatus').hidden = false;
+    micStatus.textContent = '';
+    sampleRateValue.textContent = '48000 Hz (synthetic)';
+    channelValue.textContent = '1';
+    processingValue.textContent = 'Game-side pitch detection; synthetic PCM';
+    clientLog('mic.synthetic_started', {frequency, microphone: false});
+    renderMicEntryFlow();
+    updateGameStateView();
+    return;
+  }
+  if (state.audioContext) {
+    resumeMicAudio(state.audioContext);
     if (state.audioContext.state === 'running') {
-      micButton.textContent = 'Mic Running';
+      setActionLabel(micButton, 'Mic Running', 'microphone');
       micButton.disabled = true;
-      micStatus.textContent = state.micStream
-        ? 'Microphone running.'
+      micStatus.textContent = state.audioInput
+        ? `Input: ${state.audioInput.label}`
         : 'Audio is running; waiting for microphone input.';
     } else {
-      micButton.textContent = 'Start Mic';
+      setActionLabel(micButton, 'Start Mic', 'microphone');
       micButton.disabled = false;
       micStatus.textContent = 'Microphone is ready; tap Start Mic again to unlock audio.';
     }
@@ -5339,7 +5541,7 @@ async function startMic() {
     updateGameStateView();
     return;
   }
-  if (state.settings.controlOnly) {
+  if (state.settings.controlOnly && !Number($('testAudioInput').value)) {
     micStatus.textContent = 'Control-only mode is enabled in Settings.';
     return;
   }
@@ -5348,67 +5550,98 @@ async function startMic() {
   let stream = null;
   try {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    audioContext = new AudioContextClass();
+    audioContext = new AudioContextClass({ latencyHint: 'interactive' });
     state.audioContext = audioContext;
     renderMicEntryFlow();
     sampleRateValue.textContent = `${audioContext.sampleRate} Hz`;
 
-    try {
-      await audioContext.resume();
-    } catch {
-      // Some browsers still require the final resume after getUserMedia.
-    }
+    // Request permission even when Firefox keeps resume pending until an input exists.
+    // Calling resume in this gesture still unlocks browsers which require it here.
+    resumeMicAudio(audioContext);
 
-    stream = await navigator.mediaDevices.getUserMedia({
+    micStatus.textContent = 'Requesting microphone access…';
+    const input = await createAudioInput(audioContext, {
+      frequency: Number($('testAudioInput').value),
+      mediaDevices: navigator.mediaDevices,
+      constraints: {
       audio: {
         channelCount: 1,
         echoCancellation: state.settings.echoCancellation,
         noiseSuppression: state.settings.noiseSuppression,
         autoGainControl: state.settings.autoGain
       },
-      video: false
+      video: false }
     });
+    if (state.audioContext !== audioContext) {
+      input.stop();
+      return;
+    }
+    state.audioInput = input;
+    stream = input.stream;
     state.micStream = stream;
-    const track = stream.getAudioTracks()[0];
-    const settings = track.getSettings ? track.getSettings() : {};
+    const settings = input.settings;
+    $('testAudioStatus').hidden = !input.synthetic;
+    $('testAudioStatus').textContent = input.synthetic ? input.label : '';
     const reportedInputLatencySec = Number(settings.latency);
     state.micInputLatencyUs = Number.isFinite(reportedInputLatencySec) && reportedInputLatencySec > 0
       ? Math.min(pitchReportedInputLatencyMaxUs, Math.round(reportedInputLatencySec * 1_000_000))
       : 0;
     state.pitchTimestampLagUs = null;
     channelValue.textContent = settings.channelCount || 'unknown';
-    micStatus.textContent = `Input: ${track.label || 'microphone'}`;
+    micStatus.textContent = `Input: ${input.label}`;
 
     // AudioWorklet `currentTime` is relative to the AudioContext, while clock
     // sync uses performance.now(). Keep an explicit local monotonic mapping.
     state.audioContextPerfBaseUs = clientNowUs() - Math.round(audioContext.currentTime * 1_000_000);
-    await audioContext.audioWorklet.addModule(`/pitch-worklet.js?v=${encodeURIComponent(appVersion)}`);
-    const source = audioContext.createMediaStreamSource(stream);
-    const worklet = new AudioWorkletNode(audioContext, 'usdx-pitch-processor');
+    const source = input.source;
     const silentSink = audioContext.createGain();
     silentSink.gain.value = 0;
-    state.worklet = worklet;
     state.audioSink = silentSink;
-    worklet.port.onmessage = (event) => handlePitchFrame(event.data);
-    source.connect(worklet);
-    worklet.connect(silentSink);
     silentSink.connect(audioContext.destination);
-    if (audioContext.state !== 'running') {
-      await audioContext.resume();
+    if (!state.rawPcmV1) {
+      await audioContext.audioWorklet.addModule(`/pitch-worklet.js?v=${encodeURIComponent(appVersion)}`);
+      const worklet = new AudioWorkletNode(audioContext, 'usdx-pitch-processor');
+      state.worklet = worklet;
+      worklet.port.onmessage = (event) => handlePitchFrame(event.data);
+      source.connect(worklet).connect(silentSink);
     }
-    processingValue.textContent = 'AudioWorklet';
+    if (state.rawPcmV1 || audioContext.sampleRate === 48000) {
+      micStatus.textContent = 'Preparing microphone audio…';
+      state.pcmSender = new NativePcmSender({ active: nativeAudioActive,
+        channel: () => state.p2p.dc,
+        relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message) });
+      await audioContext.audioWorklet.addModule('/pcm-worklet.js?v=2');
+      state.pcmWorklet = new AudioWorkletNode(audioContext, 'usce-pcm');
+      state.pcmWorklet.port.onmessage = event => {
+        state.pcmSender.submit(event.data);
+        if (state.rawPcmV1 && performance.now() - state.pitchLastUiMs >= pitchUiUpdateMs) {
+          const samples = new Int16Array(event.data, 20);
+          let sum = 0;
+          for (const sample of samples) sum += (sample / 32768) ** 2;
+          handlePitchFrame({ rmsDb: 10 * Math.log10(Math.max(1e-12, sum / samples.length)) });
+        }
+      };
+      source.connect(state.pcmWorklet).connect(silentSink);
+    }
+    if (audioContext.state !== 'running') {
+      resumeMicAudio(audioContext);
+    }
+    processingValue.textContent = state.rawPcmV1 ? 'Game-side pitch detection' : 'AudioWorklet';
     if (audioContext.state === 'running') {
-      micButton.textContent = 'Mic Running';
+      setActionLabel(micButton, 'Mic Running', 'microphone');
       micButton.disabled = true;
-      micStatus.textContent = `Input: ${track.label || 'microphone'}; echoCancellation=${settings.echoCancellation ?? 'n/a'}, noiseSuppression=${settings.noiseSuppression ?? 'n/a'}, autoGainControl=${settings.autoGainControl ?? 'n/a'}`;
+      micStatus.textContent = `Input: ${input.label}`;
     } else {
-      micButton.textContent = 'Start Mic';
+      setActionLabel(micButton, 'Start Mic', 'microphone');
       micButton.disabled = false;
       micStatus.textContent = 'Microphone is ready; tap Start Mic again to unlock audio.';
     }
     renderMicEntryFlow();
     updateGameStateView();
   } catch (error) {
+    if (state.audioContext !== audioContext) return;
+    state.audioInput?.stop();
+    state.audioInput = null;
     if (stream) stream.getTracks().forEach((track) => track.stop());
     if (audioContext) {
       try {
@@ -5545,15 +5778,12 @@ function handlePitchFrame(frame) {
     const meterCeilingDb = -6;
     const level = Math.max(0, Math.min(1, (frame.rmsDb - meterFloorDb) / (meterCeilingDb - meterFloorDb)));
     volumeFill.style.width = `${Math.round(level * 100)}%`;
-    pitchValue.textContent = frame.voiced ? `${frame.f0Hz.toFixed(1)} Hz` : '--';
-    confidenceValue.textContent = frame.confidence.toFixed(2);
-    voicedValue.textContent = frame.voiced ? 'voiced' : 'noise';
     if (!lockOverlay.classList.contains('hidden')) {
-      renderLockLevel(level, frame.voiced ? `${frame.f0Hz.toFixed(1)} Hz - ${frame.confidence.toFixed(2)}` : `-- - ${frame.confidence.toFixed(2)}`);
+      renderLockLevel(level, 'Microphone level');
     }
   }
 
-  if (!hasActiveSongClock()) {
+  if (state.rawPcmV1 || !hasActiveSongClock()) {
     if (state.pitchQueue.length || state.pitchVoteBucket) clearPitchQueue();
     updateMicTransportStatus(false);
     return;
@@ -5575,6 +5805,7 @@ function handlePitchFrame(frame) {
 }
 
 function flushPitchBatch() {
+  if (nativeAudioActive()) { clearPitchQueue(); return; }
   const nowMs = performance.now();
   const relayMode = !state.p2p.connected;
   const minFlushMs = relayMode ? 100 : 10;
@@ -5793,6 +6024,7 @@ clearSearchButton?.addEventListener('click', clearSongSearch);
 showAllSongsButton?.addEventListener('click', showAllSongs);
 downloadSongsCsvButton?.addEventListener('click', downloadSongsCsv);
 likeVisibleSongsButton?.addEventListener('click', () => sendPartyLikeMatchedSongs(likeVisibleSongsButton));
+$('unlikeVisibleSongsButton')?.addEventListener('click', (event) => sendPartyLikeMatchedSongs(event.currentTarget, false));
 showLikedSongsButton?.addEventListener('click', showLikedSongs);
 
 controlTextForm.addEventListener('submit', (event) => {
@@ -5839,8 +6071,13 @@ for (const button of document.querySelectorAll('.tab')) {
 }
 
 micButton.addEventListener('click', startMic);
+$('testAudioInput').addEventListener('change', async () => {
+  await stopMic();
+  $('testAudioStartButton').disabled = !Number($('testAudioInput').value);
+});
+$('testAudioStartButton').addEventListener('click', startMic);
+$('stopAudioButton').addEventListener('click', stopMic);
 micRoomList?.addEventListener('click', (event) => {
-  if (!micRoomsUnlocked()) return;
   const button = event.target.closest?.('.mic-room[data-slot]');
   if (!button || !micRoomList.contains(button) || button.disabled) return;
   event.preventDefault();
@@ -5854,6 +6091,8 @@ for (const [input, key] of [
   [wakeLockInput, 'wakeLock'],
   [lockMicBarInput, 'lockMicBar'],
   [controlOnlyInput, 'controlOnly'],
+  [showAdminControlsInput, 'showAdminControls'],
+  [preferTextLabelsInput, 'preferTextLabels'],
   [playMusicOnDeviceInput, 'playMusicOnDevice']
 ]) {
   input.addEventListener('change', () => {
@@ -6060,7 +6299,7 @@ function currentPartyArgs() {
     ? Number(state.songPlaylistIndex)
     : Number(state.songSelect?.curPlaylist ?? -1);
   return {
-    minPlayers: Math.max(2, Math.min(12, Math.round(Number(partyMinPlayersInput.value || 2)))),
+    minPlayers: Math.max(1, Math.min(12, Math.round(Number(partyMinPlayersInput.value || 2)))),
     endless: Boolean(partyEndlessInput.checked),
     countdownSeconds: Math.max(1, Math.min(120, Math.round(Number(partyCountdownInput?.value || 15)))),
     source: partySourceInput?.value === 'playlist' ? 'playlist' : 'all',
@@ -6114,6 +6353,7 @@ partySaveButton?.addEventListener('click', () => {
 partyResetLeaderboardButton?.addEventListener('click', () => sendPartyControl('party.resetLeaderboard', {}, partyResetLeaderboardButton, 'Resetting leaderboard...'));
 
 setInterval(sendClockPing, 1000);
+setInterval(() => { if (state.rawPcmV1) renderConnectionState(); }, 100);
 setInterval(flushPitchBatch, 10);
 setInterval(renderRemoteLyrics, 100);
 setInterval(updateSongProgressView, 500);
@@ -6126,6 +6366,9 @@ setInterval(() => {
   }
 }, 1000);
 
+for (const [button, icon] of [[likeVisibleSongsButton,'heart'],[$('unlikeVisibleSongsButton'),'thumbs-down'],[partyStartButton,'play'],[partyFindMatchButton,'magnifying-glass']]) {
+  if (button) setActionLabel(button, button.textContent.trim(), icon);
+}
 loadPersistentLikedSongs();
 loadProfile();
 resolveStoredAvatar();
