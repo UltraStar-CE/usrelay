@@ -3405,8 +3405,8 @@ async function startPhonePreview(song, button, slider) {
     };
     await audio.play();
   } catch (error) {
-    button.textContent = 'Preview';
     if (state.previewAbort === controller) {
+      button.textContent = 'Preview';
       controlStatus.textContent = error.name === 'AbortError'
         ? 'Preview timed out. Try again.'
         : `Preview failed: ${error.message || 'unavailable'}`;
@@ -3414,8 +3414,10 @@ async function startPhonePreview(song, button, slider) {
     }
   } finally {
     clearTimeout(timeout);
-    if (state.previewPendingButton === button) state.previewPendingButton = null;
-    button.disabled = false;
+    if (state.previewAbort === controller || state.previewPendingButton !== button) {
+      if (state.previewPendingButton === button) state.previewPendingButton = null;
+      button.disabled = false;
+    }
   }
 }
 

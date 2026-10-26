@@ -39,3 +39,19 @@ test('cancelled preview ignores a late response even if fetch ignores abort', as
   assert.equal(button.textContent,'Preview');
   assert.equal(h.timers.size,0);
 });
+
+test('old preview failure cannot reset a replacement request using the same button', async()=>{
+  const requests=[];
+  const h=harness(()=>new Promise((resolve,reject)=>requests.push({resolve,reject})));
+  const button={textContent:'Preview',disabled:false};
+  const first=h.context.startPhonePreview({songId:1},button,{});
+  const second=h.context.startPhonePreview({songId:1},button,{});
+  requests[0].reject(Object.assign(Error('cancelled'),{name:'AbortError'}));
+  await first;
+  assert.equal(button.textContent,'Loading');
+  assert.equal(button.disabled,true);
+  h.context.stopPhonePreview();
+  requests[1].resolve({ok:true,blob:async()=>({})}); await second;
+  assert.equal(button.textContent,'Preview');
+  assert.equal(button.disabled,false);
+});
