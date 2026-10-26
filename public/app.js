@@ -1591,13 +1591,26 @@ function trackCommandButton(commandId, button) {
   state.pendingCommands.set(commandId, { button, timeoutId });
 }
 
-function finishCommandFeedback(commandId, accepted) {
+function finishCommandFeedback(commandId, accepted, reason = '') {
   const pending = state.pendingCommands.get(commandId);
   if (!pending) return;
   state.pendingCommands.delete(commandId);
   if (pending.timeoutId) window.clearTimeout(pending.timeoutId);
   clearButtonFeedback(pending.button);
   pending.button.classList.add(accepted ? 'feedback-ok' : 'feedback-error');
+  const form = pending.button.closest?.('form');
+  if (form) {
+    let status = form.nextElementSibling;
+    if (!status?.classList.contains('command-status')) {
+      status = document.createElement('p');
+      status.className = 'fine command-status';
+      status.setAttribute('role', 'status');
+      form.after(status);
+    }
+    status.textContent = accepted ? '' : `Could not complete this action: ${reason || 'the game rejected the request'}.`;
+    status.hidden = accepted;
+  }
+
   window.setTimeout(() => {
     pending.button.classList.remove('feedback-ok', 'feedback-error');
   }, accepted ? 620 : 1100);
@@ -5525,7 +5538,7 @@ async function handleMessage(message) {
 
   if (message.type === 'ack') {
     if (apiRequests.accept(message)) return;
-    finishCommandFeedback(message.commandId, Boolean(message.accepted));
+    finishCommandFeedback(message.commandId, Boolean(message.accepted), message.reason);
     controlStatus.textContent = message.accepted ? 'Accepted' : `Rejected: ${message.reason || 'unknown'}`;
     clientLog('control.ack', {
       commandId: message.commandId,
