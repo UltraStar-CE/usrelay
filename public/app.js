@@ -2924,7 +2924,8 @@ async function requestNativeSongs() {
     const result = await loadSongs(apiRequests.request);
     if (state.roomId !== roomId) return false;
     state.songLibraryTransfer = {libraryHash:result.snapshotId, chunks:result.songs};
-    await finishSongLibraryTransfer({libraryHash:result.snapshotId, total:result.songs.length});
+    await finishSongLibraryTransfer({libraryHash:result.snapshotId, total:result.songs.length,
+      state: {...state.songSelect}});
     return true;
   } catch (error) {
     if (state.roomId === roomId) {

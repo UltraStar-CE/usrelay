@@ -5,9 +5,10 @@ import {readFileSync} from 'node:fs';
 import {loadSongs} from '../public/song-query.js';
 const app=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
 function harness(request){
- const state={roomId:'a',songCatalogInFlight:false};let finished=0,rendered=0;
+ const state={roomId:'a',songCatalogInFlight:false,songSelect:{playlists:[{index:1,name:'Test'}],curPlaylist:1}};let finished=0,rendered=0;
  const context=vm.createContext({state,loadSongs,apiRequests:{request},
-   finishSongLibraryTransfer:async(message)=>{finished++;assert.equal(message.libraryHash,state.songLibraryTransfer.libraryHash);},
+   finishSongLibraryTransfer:async(message)=>{finished++;assert.equal(message.libraryHash,state.songLibraryTransfer.libraryHash);
+     assert.equal(message.state.playlists[0].name,'Test');assert.equal(message.state.curPlaylist,1);},
    renderSongSelectState:()=>rendered++});
  vm.runInContext(app.slice(app.indexOf('async function requestNativeSongs()'),app.indexOf('async function requestCatalog(')),context);
  return {state,context,finished:()=>finished,rendered:()=>rendered};
