@@ -911,6 +911,10 @@ details.remote-list > summary { cursor: pointer; padding: .5rem 0; font-weight: 
   box-shadow: var(--shadow-strong);
 }
 
+.confirmation-overlay { z-index: 120; }
+.confirmation-overlay .actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.confirmation-overlay p { margin: 0; line-height: 1.5; }
+
 .modal .section-head > div span {
   display: block;
 }

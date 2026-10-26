@@ -401,6 +401,7 @@ const unlockFill = $('unlockFill');
 const unlockHandle = $('unlockHandle');
 
 function setRoomScreenVisible(visible) {
+  if (!visible) closeConfirmation(false);
   joinScreen.classList.toggle('hidden', visible);
   appScreen.classList.toggle('hidden', !visible);
   lockBar.classList.toggle('hidden', !visible);
@@ -948,6 +949,52 @@ function setActionLabel(button, label, icon) {
   button.replaceChildren(glyph,text);
 }
 
+let pendingConfirmation = null;
+function closeConfirmation(accepted = false) {
+  if (!pendingConfirmation) return;
+  const pending = pendingConfirmation;
+  pendingConfirmation = null;
+  pending.overlay.classList.add('hidden');
+  pending.overlay.setAttribute('aria-hidden', 'true');
+  if (pending.main) pending.main.inert = pending.wasInert;
+  if (pending.focus?.isConnected) pending.focus.focus({preventScroll:true});
+  pending.resolve(accepted);
+}
+
+function confirmAction(message, acceptLabel = 'Continue') {
+  closeConfirmation(false);
+  let overlay = $('confirmationOverlay');
+  if (!overlay) {
+    overlay = document.createElement('section');
+    overlay.id = 'confirmationOverlay';
+    overlay.className = 'modal-backdrop confirmation-overlay hidden';
+    overlay.setAttribute('role', 'alertdialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-labelledby', 'confirmationTitle');
+    overlay.setAttribute('aria-describedby', 'confirmationMessage');
+    overlay.innerHTML = '<div class="modal"><strong id="confirmationTitle">Please confirm</strong><p id="confirmationMessage"></p><div class="actions"><button type="button" id="confirmationCancel" class="secondary">Cancel</button><button type="button" id="confirmationAccept">Continue</button></div></div>';
+    document.body.append(overlay);
+    $('confirmationCancel').addEventListener('click', () => closeConfirmation(false));
+    $('confirmationAccept').addEventListener('click', () => closeConfirmation(true));
+    overlay.addEventListener('click', event => {if (event.target === overlay) closeConfirmation(false);});
+    document.addEventListener('keydown', event => {
+      if (pendingConfirmation && event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation(); closeConfirmation(false);
+      }
+    }, true);
+  }
+  $('confirmationMessage').textContent = message;
+  $('confirmationAccept').textContent = acceptLabel;
+  const main = document.querySelector('main');
+  return new Promise(resolve => {
+    pendingConfirmation = {resolve,overlay,main,wasInert:Boolean(main?.inert),focus:document.activeElement};
+    if (main) main.inert = true;
+    overlay.classList.remove('hidden');
+    overlay.setAttribute('aria-hidden', 'false');
+    $('confirmationCancel').focus();
+  });
+}
+
 function renderMicEntryFlow() {
   const unlocked = micRoomsUnlocked();
   const starting = Boolean(state.audioContext && !state.audioInput);
@@ -1123,7 +1170,10 @@ function startClientHeartbeat() {
     state.pcmSender?.probe();
     if (state.pcmSender?.confirmed() && performance.now() - Number(state.lastAudioTimingLogMs || 0) >= 10000) {
       state.lastAudioTimingLogMs = performance.now();
-      clientLog('audio.timing', {route:state.pcmSender.usingServer()?'server':'direct',...state.pcmSender.timings()});
+      const timing=state.pcmSender.timings();
+      clientLog('audio.timing', {gameState:state.gameState,route:state.pcmSender.usingServer()?'server':'direct',
+        networkRoundTripMs:JSON.stringify(timing.networkRoundTripMs),
+        audioToGameRoundTripMs:JSON.stringify(timing.audioToGameRoundTripMs)});
     }
   }, 2000);
 }
@@ -1579,6 +1629,7 @@ function renderPauseRestartButton() {
   if (!shouldRenderSignature('pauseRestart', signature)) return;
   if (pauseRestartButton) {
     setActionLabel(pauseRestartButton, paused ? 'Resume' : 'Pause', paused ? 'play' : 'pause');
+    pauseRestartButton.disabled = !singMode;
     pauseRestartButton.dataset.command = paused ? 'game.resume' : 'game.pause';
     pauseRestartButton.classList.toggle('state-paused', paused);
   }
@@ -1788,10 +1839,13 @@ function updateSongProgressView() {
   const progressState = currentSongProgressSnapshot();
   const position = progressState.position;
   songPositionValue.textContent = position == null ? (state.hostSongStartUs ? 'syncing' : '--') : formatSongPosition(position);
-  const score = Number(state.playerScore);
+  const score = state.playerScore == null ? NaN : Number(state.playerScore);
   playerScoreValue.textContent = Number.isFinite(score) ? String(score) : '--';
   renderLockIdentity();
-  if (lockScoreLabel) lockScoreLabel.textContent = Number.isFinite(score) ? String(score) : '--';
+  if (lockScoreLabel) {
+    lockScoreLabel.textContent = Number.isFinite(score) ? String(score) : '--';
+    lockScoreLabel.classList.toggle('hidden', !Number.isFinite(score));
+  }
   if (lockSongLabel) {
     const remainingText = progressState.remaining == null
       ? (position == null ? (state.hostSongStartUs ? 'syncing' : '--:--') : formatSongPosition(position))
@@ -1800,6 +1854,9 @@ function updateSongProgressView() {
   }
   if (lockProgressFill) lockProgressFill.style.width = `${Math.round(progressState.progress * 1000) / 10}%`;
   if (lockProgressLabel) lockProgressLabel.textContent = progressState.duration == null ? 'Progress --' : `${Math.round(progressState.progress * 100)}%`;
+  const showProgress = ['singing','paused'].includes(state.gameState) && progressState.duration != null;
+  lockProgressFill?.parentElement?.classList.toggle('hidden', !showProgress);
+  lockProgressLabel?.classList.toggle('hidden', !showProgress);
   renderLockLyrics();
   renderLockGameInfo();
 }
@@ -1973,7 +2030,8 @@ function sendPartyLikeSong(song, sourceButton = null) {
   markFireAndForgetButton(sourceButton, ok);
 }
 
-function sendPartyLikeMatchedSongs(sourceButton = null, liked = true) {
+async function sendPartyLikeMatchedSongs(sourceButton = null, liked = true) {
+  const catalogHash = state.songSelect?.libraryHash || state.songLibraryHash;
   const songs = visibleSongResults()
     .map((song) => ({
       songId: Number(song.songId),
@@ -1986,7 +2044,8 @@ function sendPartyLikeMatchedSongs(sourceButton = null, liked = true) {
     if (partyNotice) partyNotice.textContent = liked ? 'All matching songs are already liked.' : 'No matching songs are liked.';
     return;
   }
-  if (songs.length > 80 && !window.confirm(`${liked ? 'Like' : 'Unlike'} ${songs.length} songs at once? This affects all matching songs, including those outside the current page.`)) return;
+  if (songs.length > 80 && !await confirmAction(`${liked ? 'Like' : 'Unlike'} ${songs.length} songs at once? This affects all matching songs, including those outside the current page.`, liked ? 'Like songs' : 'Unlike songs')) return;
+  if (catalogHash !== (state.songSelect?.libraryHash || state.songLibraryHash)) return;
   for (const song of songs) {
     if (liked) {
       state.localLikedSongIds.add(Number(song.songId));
@@ -2264,8 +2323,9 @@ function renderControlPlayers() {
       kick.type = 'button';
       kick.textContent = 'Remove';
       kick.title = 'Disconnect this player from the room';
-      kick.addEventListener('click', () => {
-        if (window.confirm(`Remove ${player.name || 'this player'} from the room?`)) {
+      kick.addEventListener('click', async () => {
+        const roomId = state.roomId;
+        if (await confirmAction(`Remove ${player.name || 'this player'} from the room?`, 'Remove') && state.roomId === roomId) {
           sendControl('player.kick', { playerId: player.playerId }, kick);
         }
       });
@@ -4707,9 +4767,11 @@ function renderSongSelectState() {
     const del = document.createElement('button');
     del.type = 'button';
     del.textContent = 'Delete';
-    del.addEventListener('click', () => {
+    del.addEventListener('click', async () => {
       const name = playlist.name || `Playlist ${playlist.index + 1}`;
-      if (!window.confirm(`Delete playlist "${name}"?`)) return;
+      const roomId = state.roomId;
+      if (!await confirmAction(`Delete playlist "${name}"?`, 'Delete playlist')) return;
+      if (state.roomId !== roomId || !state.songSelect?.playlists?.some(current => current.index === playlist.index && current.name === playlist.name)) return;
       sendControl('playlist.delete', { playlistIndex: playlist.index }, del);
     });
 
@@ -4774,9 +4836,13 @@ function renderSlotButtons() {
   }
 }
 
+const tabScrollPositions = new Map();
+let activeTabName = null;
 function setTab(name) {
   const tabName = name === 'control' && !state.settings.showAdminControls ? 'settings'
     : ['mic', 'songs', 'party', 'control', 'settings'].includes(name) ? name : 'mic';
+  const changingTab = tabName !== activeTabName;
+  if (activeTabName && changingTab) tabScrollPositions.set(activeTabName, window.scrollY);
   for (const button of document.querySelectorAll('.tab')) {
     button.classList.toggle('active', button.dataset.tab === tabName);
   }
@@ -4790,6 +4856,8 @@ function setTab(name) {
   } else if (tabName === 'party') {
     renderPartyState();
   }
+  if (changingTab) window.scrollTo(0, tabScrollPositions.get(tabName) || 0);
+  activeTabName = tabName;
 }
 
 function clientNowUs() {
@@ -6028,6 +6096,7 @@ pauseRestartButton?.addEventListener('click', (event) => {
 
 searchForm.addEventListener('submit', (event) => {
   event.preventDefault();
+  searchInput.blur();
   state.songFilterText = searchInput.value.trim();
   state.songSearchField = normalizeSongSearchField(searchFieldInput?.value);
   resetSongPage();
@@ -6059,6 +6128,7 @@ showLikedSongsButton?.addEventListener('click', showLikedSongs);
 
 controlTextForm.addEventListener('submit', (event) => {
   event.preventDefault();
+  controlTextInput.blur();
   sendControl('search.setText', { text: controlTextInput.value.trim() }, event.submitter);
 });
 
