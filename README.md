@@ -87,7 +87,23 @@ The recovery tests exercise browser connection lifecycle behavior with a simulat
 peer and clock. Real phone-to-bridge tests on LAN and across NAT are still needed
 to validate a deployment's WebRTC routes.
 
-## Native PCM experiment
+## Native PCM microphone
 
-The optional in-process USCE receiver is developed in [USCE PR #168](https://github.com/UltraStar-CE/USCE/pull/168). Its isolated test page is /raw-audio-prototype/index.html. Rooms advertising rawPcmV1 can forward validated, fixed-size PCM packets through the server while direct audio is being confirmed or unavailable. The receiver de-duplicates server and P2P copies. The existing phone app continues to use its original pitch-frame protocol. Native audio requires the prototype game build; entering an ordinary game's room code is not sufficient.
+The existing phone app detects rawPcmV1 from the room's join response. Its normal
+Start Mic button sends raw PCM for Mic 1 when supported; other slots and older
+games retain browser pitch input. USCE PR #168 receives PCM inside the game while
+the existing local bridge keeps controls, catalogs, playlists and game state.
+Use normal usdx.at and the single game room code. The isolated
+/raw-audio-prototype/index.html page remains a developer test tool.
 
+PCM is sent through the server while direct audio is being established. Only
+recent receiver acknowledgments stop server copies; expiry or direct-channel
+backpressure resumes fallback. Sequence numbers suppress duplicate audio. A
+persistent web corner badge shows Direct or a warning triangle with Via server.
+The game does not draw this warning. Room/control traffic keeps its WebSocket
+route even when microphone audio is direct.
+
+Preview clocks reuse the in-memory song catalog and hidden song lists do not
+render while controlling or singing. Phone playback uses the actual game target
+without a temporary 500 ms lead, a guarded seek for large drift and bounded rate
+correction for smaller drift. Real phone synchronization remains to be measured.

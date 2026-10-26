@@ -45,6 +45,7 @@ test('PCM fallback authenticates slot identity, validates frames, and requires t
     await once(phone, 'open');
     phone.send(JSON.stringify({ type: 'client.join', protocol: 1, displayCode: room.displayCode, name: 'PCM test', preferredSlot: 1 }));
     const joined = await phoneRead('client.joined');
+    assert.equal(joined.rawPcmV1, capable);
     const packet = Buffer.alloc(980);
     packet.write('UAP1'); packet.writeUInt32LE(48000, 8); packet.writeUInt32LE(480, 12);
     const pcm = packet.toString('base64');

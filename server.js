@@ -1620,6 +1620,7 @@ function handleClientJoin(conn, msg) {
       controllerPlayerId: room.controllerPlayerId,
       gameState: room.gameState,
       webApp: room.webApp || 'default',
+      rawPcmV1: room.capabilities.includes('rawPcmV1'),
       p2p: publicP2pConfig(room),
       resumed: true
     });
@@ -1690,6 +1691,7 @@ function handleClientJoin(conn, msg) {
     controllerPlayerId: room.controllerPlayerId,
     gameState: room.gameState,
     webApp: room.webApp || 'default',
+    rawPcmV1: room.capabilities.includes('rawPcmV1'),
     p2p: publicP2pConfig(room)
   });
   sendSongRuntimeSnapshot(conn, room);

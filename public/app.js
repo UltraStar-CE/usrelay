@@ -1,3 +1,4 @@
+import { NativePcmSender } from './native-pcm.js?v=1';
 const protocol = 1;
 const sessionKey = 'usdx.remote.session.v1';
 const nameKey = 'usdx.remote.name.v1';
@@ -17,7 +18,7 @@ const lastMicSlotKey = 'usdx.remote.lastMicSlot.v1';
 const settingsKey = 'usdx.remote.settings.v1';
 const settingsVersion = 3;
 const tabKey = 'usdx.remote.tab.v1';
-const appVersion = 'v260505034500-browser-liked-songs';
+const appVersion = 'v20261026-native-pcm-integrated';
 const songPageSize = 80;
 const searchDebounceMinMs = 40;
 const searchDebounceMaxMs = 350;
@@ -1218,15 +1219,24 @@ function clientLog(event, data = {}) {
 }
 
 function renderConnectionState() {
+  const direct = state.rawPcmV1 ? nativeAudioActive() && state.pcmSender &&
+    !state.pcmSender.usingServer() : state.p2p.connected;
   const warning = $('routeWarning');
-  if (warning) warning.hidden = !state.roomId || !state.ws ||
-    state.ws.readyState !== WebSocket.OPEN || state.p2p.connected;
+  if (warning) {
+    warning.hidden = !state.roomId || !state.ws || state.ws.readyState !== WebSocket.OPEN;
+    warning.querySelector('svg').style.display = direct ? 'none' : '';
+    warning.lastChild.textContent = direct ? ' Direct' : ' Via server';
+    warning.style.background = direct ? '#12382c' : '#422f08';
+    warning.style.color = direct ? '#a7f3d0' : '#fcd34d';
+    warning.title = direct ? 'Direct microphone audio confirmed by the game.' :
+      'Microphone audio uses the server while direct audio is unconfirmed; latency may be higher.';
+  }
   if (!connectionState) return;
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
     connectionState.textContent = 'disconnected';
     return;
   }
-  connectionState.textContent = state.p2p.connected ? 'connected direct' : 'connected relay';
+  connectionState.textContent = direct ? 'connected direct' : 'connected relay';
 }
 
 function sendRelay(message) {
@@ -1236,6 +1246,7 @@ function sendRelay(message) {
 }
 
 function sendDirect(message) {
+  if (state.rawPcmV1) return false; // Native channel carries PCM; controls keep their existing bridge path.
   const dc = state.p2p.dc;
   if (!dc || dc.readyState !== 'open') return false;
   try {
@@ -1256,6 +1267,7 @@ function shortRequestId(prefix = 'req') {
 }
 
 function closeP2p(notify = false) {
+  state.pcmSender?.reset();
   if (state.p2p.negotiationTimer) window.clearTimeout(state.p2p.negotiationTimer);
   state.p2p.negotiationTimer = null;
   if (state.p2p.reconnectTimer) window.clearTimeout(state.p2p.reconnectTimer);
@@ -1318,7 +1330,13 @@ function attachP2pDataChannel(dc, attempt) {
   dc.addEventListener('message', (event) => {
     if (state.p2p.attempt !== attempt || state.p2p.dc !== dc) return;
     try {
-      handleMessage(JSON.parse(event.data)).catch((error) => {
+      const message = JSON.parse(event.data);
+      if (state.rawPcmV1 && message.type === 'audio.pcm.ack') {
+        state.pcmSender?.acknowledge(message);
+        renderConnectionState();
+        return;
+      }
+      handleMessage(message).catch((error) => {
         clientLog('direct.message.error', { error: error?.message || String(error) });
       });
     } catch {
@@ -1391,6 +1409,7 @@ async function handleP2pSignal(message) {
 }
 
 async function startP2p() {
+  if (state.rawPcmV1 && !nativeAudioActive()) return;
   if (!state.p2p.enabled || !state.roomId || state.p2p.connecting || state.p2p.connected) return;
   const PeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
   if (!PeerConnection) {
@@ -1425,7 +1444,9 @@ async function startP2p() {
       if (state.p2p.pc !== pc) return;
       if (['failed', 'closed', 'disconnected'].includes(pc.iceConnectionState)) scheduleP2pReconnect();
     });
-    attachP2pDataChannel(pc.createDataChannel('usdx-remote', { ordered: true }), attempt);
+    attachP2pDataChannel(state.rawPcmV1
+      ? pc.createDataChannel('usce-pcm-v1', { ordered: false, maxRetransmits: 0 })
+      : pc.createDataChannel('usdx-remote', { ordered: true }), attempt);
     const offer = await pc.createOffer();
     if (state.p2p.pc !== pc) return;
     await pc.setLocalDescription(offer);
@@ -2860,7 +2881,8 @@ async function mergeSongSelectState(previous, message) {
   if (Array.isArray(incoming.library) && incoming.libraryHash) {
     saveCachedSongLibrary(String(incoming.libraryHash), incoming.library);
   } else if (!Array.isArray(incoming.library) && incoming.libraryHash) {
-    const cached = await loadCachedSongLibrary(String(incoming.libraryHash));
+    const cached = previous?.libraryHash === incoming.libraryHash && Array.isArray(previous.library)
+      ? { library: previous.library } : await loadCachedSongLibrary(String(incoming.libraryHash));
     if (cached) {
       incoming.library = cached.library;
       state.songLibraryCacheUsable = true;
@@ -2887,7 +2909,7 @@ async function mergeSongSelectState(previous, message) {
     for (const field of ['library', 'results']) {
       if (!Array.isArray(merged[field])) continue;
       const index = merged[field].findIndex((song) => Number(song.songId) === currentSongId);
-      if (index >= 0) {
+      if (index >= 0 && Object.entries(merged.currentSong).some(([key, value]) => merged[field][index][key] !== value)) {
         merged[field] = merged[field].slice();
         merged[field][index] = { ...merged[field][index], ...merged.currentSong };
       }
@@ -3402,6 +3424,12 @@ function updateMicTransportStatus(force = false) {
   if (!force && now - state.pitchLastStatusMs < 1000) return;
   state.pitchLastStatusMs = now;
   if (!state.audioContext) return;
+  if (nativeAudioActive()) {
+    const pcm = state.pcmSender;
+    micStatus.textContent = `Mic 1: audio to game; ${pcm?.usingServer() === false ? 'direct' : 'via server'}; ` +
+      `${pcm?.sent || 0} direct / ${pcm?.relayed || 0} server packets, ${pcm?.dropped || 0} dropped before send.`;
+    return;
+  }
 
   const slot = Number(state.slot || 0);
   if (slot <= 0) {
@@ -4347,6 +4375,9 @@ function activateDeviceMusic(reason = '') {
 }
 
 function renderSongSelectState() {
+  // Preview-clock updates continue while controls/microphone are visible;
+  // rebuilding the hidden song catalog must not interrupt live audio.
+  if ($('songsPanel')?.classList.contains('hidden')) return;
   const renderStartMs = performance.now();
   const data = state.songSelect || {};
   if (searchFieldInput && document.activeElement !== searchFieldInput) {
@@ -4773,6 +4804,7 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'client.joined') {
+    state.rawPcmV1 = Boolean(message.rawPcmV1);
     Object.assign(state, {
       roomId: message.roomId,
       displayCode: message.displayCode,
@@ -4844,7 +4876,9 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'player.assigned' && message.playerId === state.playerId) {
+    if (state.rawPcmV1 && state.slot !== message.slot) closeP2p(true);
     state.slot = message.slot;
+    if (state.rawPcmV1) startP2p();
     state.role = message.role;
     state.pendingSlot = null;
     state.pendingPreviousSlot = null;
@@ -5317,6 +5351,8 @@ function connectAndJoin(displayCode, name, resume = null) {
   });
 }
 
+function nativeAudioActive() { return Boolean(state.rawPcmV1 && Number(state.slot) === 1 && state.roomId); }
+
 async function startMic() {
   if (state.audioContext) {
     try {
@@ -5348,7 +5384,8 @@ async function startMic() {
   let stream = null;
   try {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    audioContext = new AudioContextClass();
+    audioContext = new AudioContextClass({ sampleRate: 48000, latencyHint: 'interactive' });
+    if (state.rawPcmV1 && audioContext.sampleRate !== 48000) throw Error('Native microphone audio requires 48 kHz');
     state.audioContext = audioContext;
     renderMicEntryFlow();
     sampleRateValue.textContent = `${audioContext.sampleRate} Hz`;
@@ -5393,10 +5430,21 @@ async function startMic() {
     source.connect(worklet);
     worklet.connect(silentSink);
     silentSink.connect(audioContext.destination);
+    // Preserve browser pitch/level feedback and legacy slots; the native game
+    // scores slot 1 from PCM rather than browser pitch estimates.
+    if (audioContext.sampleRate === 48000) {
+      state.pcmSender = new NativePcmSender({ active: nativeAudioActive,
+        channel: () => state.p2p.dc,
+        relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message) });
+      await audioContext.audioWorklet.addModule('/pcm-worklet.js?v=1');
+      state.pcmWorklet = new AudioWorkletNode(audioContext, 'usce-pcm');
+      state.pcmWorklet.port.onmessage = event => state.pcmSender.submit(event.data);
+      source.connect(state.pcmWorklet).connect(silentSink);
+    }
     if (audioContext.state !== 'running') {
       await audioContext.resume();
     }
-    processingValue.textContent = 'AudioWorklet';
+    processingValue.textContent = state.rawPcmV1 ? 'Audio to game + local mic meter' : 'AudioWorklet';
     if (audioContext.state === 'running') {
       micButton.textContent = 'Mic Running';
       micButton.disabled = true;
@@ -5553,7 +5601,7 @@ function handlePitchFrame(frame) {
     }
   }
 
-  if (!hasActiveSongClock()) {
+  if (nativeAudioActive() || !hasActiveSongClock()) {
     if (state.pitchQueue.length || state.pitchVoteBucket) clearPitchQueue();
     updateMicTransportStatus(false);
     return;
@@ -5575,6 +5623,7 @@ function handlePitchFrame(frame) {
 }
 
 function flushPitchBatch() {
+  if (nativeAudioActive()) { clearPitchQueue(); return; }
   const nowMs = performance.now();
   const relayMode = !state.p2p.connected;
   const minFlushMs = relayMode ? 100 : 10;
@@ -6114,6 +6163,7 @@ partySaveButton?.addEventListener('click', () => {
 partyResetLeaderboardButton?.addEventListener('click', () => sendPartyControl('party.resetLeaderboard', {}, partyResetLeaderboardButton, 'Resetting leaderboard...'));
 
 setInterval(sendClockPing, 1000);
+setInterval(() => { if (state.rawPcmV1) renderConnectionState(); }, 100);
 setInterval(flushPitchBatch, 10);
 setInterval(renderRemoteLyrics, 100);
 setInterval(updateSongProgressView, 500);
