@@ -29,11 +29,16 @@ test('generic song query uses authenticated command routing and targeted reply',
   const created = message(host, 'room.created');
   host.send(JSON.stringify({type:'host.hello', protocol:1, maxPlayers:2}));
   const room = await created;
+  host.send(JSON.stringify({type:'song.select.state',protocol:1,
+    playlists:[{index:0,name:'Retained playlist',size:0}],curPlaylist:-1}));
+  host.send(JSON.stringify({type:'song.select.state',protocol:1,selectedSongId:4}));
   const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/client`);
   t.after(() => phone.close()); await once(phone, 'open');
   const joined = message(phone, 'client.joined');
+  const snapshot = message(phone, 'song.select.state');
   phone.send(JSON.stringify({type:'client.join', protocol:1, displayCode:room.displayCode, name:'Query test'}));
   const player = await joined;
+  assert.equal((await snapshot).playlists[0].name, 'Retained playlist');
   const forwarded = message(host, 'control.command');
   phone.send(JSON.stringify({type:'control.command', protocol:1, command:'song.list', commandId:7, args:{offset:0,limit:10}}));
   const query = await forwarded;

@@ -1512,7 +1512,7 @@ function handleHostMessage(conn, msg) {
     room.lastSongStarted = null;
     room.lastSongLyrics = null;
   } else if (msg.type === 'song.select.state') {
-    room.lastSongSelectState = { ...msg, protocol: protocolVersion };
+    room.lastSongSelectState = { ...room.lastSongSelectState, ...msg, protocol: protocolVersion };
   } else if (msg.type === 'song.library.progress') {
     room.lastSongLibraryProgress = { ...msg, protocol: protocolVersion };
   } else if (msg.type === 'catalog.manifest') {
