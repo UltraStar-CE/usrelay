@@ -218,7 +218,8 @@ const state = {
     connecting: false,
     connected: false,
     pendingCandidates: [],
-    reconnectTimer: null
+    reconnectTimer: null,
+    negotiationTimer: null
   }
 };
 
@@ -1252,6 +1253,8 @@ function shortRequestId(prefix = 'req') {
 }
 
 function closeP2p(notify = false) {
+  if (state.p2p.negotiationTimer) window.clearTimeout(state.p2p.negotiationTimer);
+  state.p2p.negotiationTimer = null;
   if (state.p2p.reconnectTimer) window.clearTimeout(state.p2p.reconnectTimer);
   state.p2p.reconnectTimer = null;
   const dc = state.p2p.dc;
@@ -1269,9 +1272,7 @@ function closeP2p(notify = false) {
 
 function scheduleP2pReconnect() {
   if (!state.p2p.enabled || !state.roomId || state.p2p.reconnectTimer) return;
-  state.p2p.connected = false;
-  state.p2p.connecting = false;
-  renderConnectionState();
+  closeP2p(true);
   state.p2p.reconnectTimer = window.setTimeout(() => {
     state.p2p.reconnectTimer = null;
     startP2p();
@@ -1291,24 +1292,28 @@ function p2pCandidatePayload(candidate) {
 function attachP2pDataChannel(dc, attempt) {
   state.p2p.dc = dc;
   dc.addEventListener('open', () => {
-    if (state.p2p.attempt !== attempt) return;
+    if (state.p2p.attempt !== attempt || state.p2p.dc !== dc) return;
+    if (state.p2p.negotiationTimer) window.clearTimeout(state.p2p.negotiationTimer);
+    state.p2p.negotiationTimer = null;
     state.p2p.connecting = false;
     state.p2p.connected = true;
     renderConnectionState();
     logLine('direct channel open');
   });
   dc.addEventListener('close', () => {
-    if (state.p2p.attempt !== attempt) return;
+    if (state.p2p.attempt !== attempt || state.p2p.dc !== dc) return;
     state.p2p.connected = false;
     renderConnectionState();
     scheduleP2pReconnect();
   });
   dc.addEventListener('error', () => {
-    if (state.p2p.attempt !== attempt) return;
+    if (state.p2p.attempt !== attempt || state.p2p.dc !== dc) return;
     state.p2p.connected = false;
     renderConnectionState();
+    scheduleP2pReconnect();
   });
   dc.addEventListener('message', (event) => {
+    if (state.p2p.attempt !== attempt || state.p2p.dc !== dc) return;
     try {
       handleMessage(JSON.parse(event.data)).catch((error) => {
         clientLog('direct.message.error', { error: error?.message || String(error) });
@@ -1345,7 +1350,7 @@ async function handleP2pSignal(message) {
       await drainP2pCandidates();
     } catch (error) {
       logLine(`direct answer failed: ${error.message || 'error'}`);
-      scheduleP2pReconnect();
+      if (state.p2p.pc === pc) scheduleP2pReconnect();
     }
     return;
   }
@@ -1371,6 +1376,11 @@ async function handleP2pSignal(message) {
     return;
   }
 
+  if (message.type === 'p2p.close' || (message.type === 'p2p.state' && message.state === 'closed')) {
+    scheduleP2pReconnect();
+    return;
+  }
+
   if (message.type === 'p2p.error') {
     logLine(`direct failed: ${message.code || message.reason || 'error'}`);
     scheduleP2pReconnect();
@@ -1390,24 +1400,33 @@ async function startP2p() {
   const attempt = state.p2p.attempt + 1;
   state.p2p.attempt = attempt;
   state.p2p.connecting = true;
+  let pc;
   try {
-    const pc = new PeerConnection({ iceServers: state.p2p.iceServers || [] });
+    pc = new PeerConnection({ iceServers: state.p2p.iceServers || [] });
     state.p2p.pc = pc;
+    state.p2p.negotiationTimer = window.setTimeout(() => {
+      if (state.p2p.pc !== pc || state.p2p.connected) return;
+      logLine('direct negotiation timed out; retrying via relay signaling');
+      scheduleP2pReconnect();
+    }, 15000);
     pc.addEventListener('icecandidate', (event) => {
+      if (state.p2p.pc !== pc) return;
       const candidate = p2pCandidatePayload(event.candidate);
       if (candidate) sendRelay({ type: 'p2p.ice', attempt, candidate });
     });
     pc.addEventListener('connectionstatechange', () => {
-      if (state.p2p.attempt !== attempt) return;
+      if (state.p2p.pc !== pc) return;
       if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) scheduleP2pReconnect();
     });
     pc.addEventListener('iceconnectionstatechange', () => {
-      if (state.p2p.attempt !== attempt) return;
+      if (state.p2p.pc !== pc) return;
       if (['failed', 'closed', 'disconnected'].includes(pc.iceConnectionState)) scheduleP2pReconnect();
     });
     attachP2pDataChannel(pc.createDataChannel('usdx-remote', { ordered: true }), attempt);
     const offer = await pc.createOffer();
+    if (state.p2p.pc !== pc) return;
     await pc.setLocalDescription(offer);
+    if (state.p2p.pc !== pc) return;
     sendRelay({
       type: 'p2p.offer',
       attempt,
@@ -1418,8 +1437,9 @@ async function startP2p() {
     });
     renderConnectionState();
   } catch (error) {
+    if (state.p2p.attempt !== attempt || (pc && state.p2p.pc !== pc)) return;
     logLine(`direct setup failed: ${error.message || 'error'}`);
-    closeP2p(false);
+    scheduleP2pReconnect();
   }
 }
 
@@ -2369,7 +2389,7 @@ function renderPlaylistOverlay() {
   if (!playlists.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-player';
-    empty.textContent = 'No playlists found. Create one below, then choose it after USDX refreshes.';
+    empty.textContent = 'No playlists found. Create one below, then choose it after the game refreshes.';
     playlistOverlayList.append(empty);
     return;
   }
@@ -3993,7 +4013,7 @@ async function startDeviceMusic(message = {}, recoveryAttempt = 0, extensionAtte
   const songId = Number(song?.songId);
   if (!Number.isInteger(songId) || songId < 0) {
     requestSongState();
-    setDeviceMusicStatus('Device music waiting for song data from USDX.', 'state-buffering');
+    setDeviceMusicStatus('Device music waiting for song data from the game.', 'state-buffering');
     scheduleDeviceMusicRetry(message, 1000);
     return;
   }
@@ -4410,7 +4430,7 @@ function renderSongSelectState() {
       ? `Showing liked songs; ${results.length} matching songs.`
       : shownPlaylist
       ? `Showing playlist "${shownPlaylist.name || playlistNameByIndex(shownPlaylist.index)}"; ${results.length} matching songs.`
-      : `${searchableCount} songs indexed from ${data.source === 'bridge-scan' ? 'the bridge scan' : 'USDX'}; ${previewableCount} available for phone preview.`)
+      : `${searchableCount} songs indexed from ${data.source === 'bridge-scan' ? 'the bridge scan' : 'the game'}; ${previewableCount} available for phone preview.`)
     : (previewResults.length
         ? `Received ${previewResults.length} preview songs; ${fullListRequestText}.`
     : (progress
@@ -4739,7 +4759,7 @@ function showPartyTurnNotification(message) {
   }
   if ('vibrate' in navigator) navigator.vibrate?.([180, 80, 180]);
   if ('Notification' in window && Notification.permission === 'granted') {
-    new Notification('USDX Party', { body: text });
+    new Notification('UltraStar Party', { body: text });
   }
 }
 
