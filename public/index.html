@@ -134,10 +134,19 @@
               <input id="partyEndlessInput" type="checkbox">
               Endless random songs
             </label>
-            <label class="input-row">
-              Next song countdown
-              <input id="partyCountdownInput" type="number" min="1" max="120" step="1" value="15">
-            </label>
+            <details class="party-playback-options">
+              <summary>Continuous playback</summary>
+              <p class="fine">The game manages each screen and advances to the next song. Manual waits for you to continue; Skip hides the screen. Changes apply when the next session starts.</p>
+              <label class="input-row">Player setup <select id="partyPlayerSetupInput" data-party-playback="playerSetupSeconds"></select></label>
+              <label class="input-row">Song results <select id="partyResultsInput" data-party-playback="resultSeconds"></select></label>
+              <label class="input-row">High scores <select id="partyHighScoresInput" data-party-playback="highScoreSeconds"></select></label>
+              <label class="input-row">Song display <select id="partySongDisplayInput" data-party-playback="songDisplay">
+                <option value="">Use game setting</option><option value="0">Lyrics + progress</option><option value="1">Lyrics only</option><option value="2">Progress only</option><option value="3">Nothing</option>
+              </select></label>
+              <label class="input-row">Singing display <select id="partySingingDisplayInput" data-party-playback="singingDisplay">
+                <option value="">Use game setting</option><option value="0">Full</option><option value="1">Notes + player info</option><option value="2">Notes only</option><option value="3">Player info only</option><option value="4">Nothing</option>
+              </select></label>
+            </details>
             <label class="input-row">
               Random source
               <select id="partySourceInput">
@@ -174,7 +183,7 @@
           <section class="remote-list">
             <div class="section-head">
               <strong>Leaderboard</strong>
-              <span class="muted">winner gets 1 point</span>
+              <span class="muted">total singing score</span>
             </div>
             <ul id="partyLeaderboardList" class="playlist-item-list"></ul>
           </section>
@@ -247,7 +256,7 @@
           <section class="remote-list">
             <div class="section-head">
               <strong>Players</strong>
-              <span class="muted">controller tools</span>
+              <span class="muted">Remove other players from this room</span>
             </div>
             <div id="controlPlayerList" class="control-player-list"></div>
           </section>

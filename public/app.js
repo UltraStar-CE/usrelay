@@ -309,7 +309,12 @@ const partySkipButton = $('partySkipButton');
 const partyStopButton = $('partyStopButton');
 const partyMinPlayersInput = $('partyMinPlayersInput');
 const partyEndlessInput = $('partyEndlessInput');
-const partyCountdownInput = $('partyCountdownInput');
+const partyPlaybackInputs = [...document.querySelectorAll('[data-party-playback]')];
+for (const input of partyPlaybackInputs.filter(input => input.dataset.partyPlayback.endsWith('Seconds'))) {
+  for (const [value,label] of [['','Use game setting'],[-1,'Manual'],[0,'Skip'],...[5,10,20,30,40,50,60].map(seconds => [seconds,`${seconds} s`])]) {
+    const option=document.createElement('option'); option.value=String(value); option.textContent=label; input.append(option);
+  }
+}
 const partySourceInput = $('partySourceInput');
 const partySaveButton = $('partySaveButton');
 const partyResetLeaderboardButton = $('partyResetLeaderboardButton');
@@ -1551,7 +1556,7 @@ function displaySlot() {
 function updateIdentity() {
   const slot = displaySlot();
   setTextIfChanged(roomSettingsLabel, `Room ${state.displayCode || '----'} - ${slotLabelText(slot)} - ${state.role || '-'}`);
-  setTextIfChanged(controllerStatusLabel, 'all players can control');
+  setTextIfChanged(controllerStatusLabel, 'Shared game controls');
   if (releaseControllerButton) {
     releaseControllerButton.disabled = true;
     releaseControllerButton.classList.add('hidden');
@@ -1568,7 +1573,7 @@ function renderPauseRestartButton() {
   const signature = `${state.gameState || ''}|${paused ? 1 : 0}|${singing ? 1 : 0}|${singMode ? 1 : 0}`;
   if (!shouldRenderSignature('pauseRestart', signature)) return;
   if (pauseRestartButton) {
-    setTextIfChanged(pauseRestartButton, paused ? 'Resume' : 'Pause');
+    setActionLabel(pauseRestartButton, paused ? 'Resume' : 'Pause', paused ? 'play' : 'pause');
     pauseRestartButton.dataset.command = paused ? 'game.resume' : 'game.pause';
     pauseRestartButton.classList.toggle('state-paused', paused);
   }
@@ -2007,7 +2012,8 @@ function partyPhaseText(party) {
     collecting_votes: 'Collecting votes',
     calling_players: 'Calling players',
     singing: 'Singing',
-    scoring: 'Scoring',
+    scoring: 'Song results',
+    highscores: 'High scores',
     next_countdown: 'Next song countdown'
   };
   const base = labels[phase] || phase.replace(/_/g, ' ');
@@ -2053,8 +2059,10 @@ function renderPartyState() {
     partyMinPlayersInput.value = String(Math.max(1, Math.min(12, Number(party.minPlayers || 2))));
   }
   if (partyEndlessInput && !formLocked) partyEndlessInput.checked = Boolean(party.endless);
-  if (partyCountdownInput && !formLocked && document.activeElement !== partyCountdownInput) {
-    partyCountdownInput.value = String(Math.max(1, Math.min(120, Number(party.countdownSeconds || 15))));
+  for (const input of partyPlaybackInputs) {
+    if (!formLocked && document.activeElement !== input) {
+      input.value = party[input.dataset.partyPlayback] == null ? '' : String(party[input.dataset.partyPlayback]);
+    }
   }
   if (partySourceInput && !formLocked && document.activeElement !== partySourceInput) {
     partySourceInput.value = party.source === 'playlist' ? 'playlist' : 'all';
@@ -2241,13 +2249,20 @@ function renderControlPlayers() {
     label.append(name, meta);
     row.append(label);
 
-    if (state.role === 'controller' && player.playerId !== state.playerId) {
+    if (player.playerId === state.playerId) {
+      meta.textContent = `${slotLabelText(player.slot)} - You`;
+    } else if (state.role === 'controller') {
       const actions = document.createElement('div');
       const kick = document.createElement('button');
       actions.className = 'inline-actions';
       kick.type = 'button';
-      kick.textContent = 'Kick';
-      kick.addEventListener('click', () => sendControl('player.kick', { playerId: player.playerId }, kick));
+      kick.textContent = 'Remove';
+      kick.title = 'Disconnect this player from the room';
+      kick.addEventListener('click', () => {
+        if (window.confirm(`Remove ${player.name || 'this player'} from the room?`)) {
+          sendControl('player.kick', { playerId: player.playerId }, kick);
+        }
+      });
       actions.append(kick);
       row.append(actions);
     }
@@ -6301,7 +6316,7 @@ function currentPartyArgs() {
   return {
     minPlayers: Math.max(1, Math.min(12, Math.round(Number(partyMinPlayersInput.value || 2)))),
     endless: Boolean(partyEndlessInput.checked),
-    countdownSeconds: Math.max(1, Math.min(120, Math.round(Number(partyCountdownInput?.value || 15)))),
+    ...Object.fromEntries(partyPlaybackInputs.map(input => [input.dataset.partyPlayback, input.value === '' ? null : Number(input.value)])),
     source: partySourceInput?.value === 'playlist' ? 'playlist' : 'all',
     playlistIndex: Number.isInteger(selectedPlaylist) ? selectedPlaylist : -1,
     mode: 'matchmaking'
@@ -6334,7 +6349,7 @@ function sendPartySettingsControl(command, sourceButton, label) {
   return sendPartyControl(command, args, sourceButton, label);
 }
 
-for (const input of [partyMinPlayersInput, partyEndlessInput, partyCountdownInput, partySourceInput]) {
+for (const input of [partyMinPlayersInput, partyEndlessInput, ...partyPlaybackInputs, partySourceInput]) {
   input?.addEventListener('input', markPartySettingsDirty);
   input?.addEventListener('change', markPartySettingsDirty);
 }
@@ -6366,7 +6381,7 @@ setInterval(() => {
   }
 }, 1000);
 
-for (const [button, icon] of [[likeVisibleSongsButton,'heart'],[$('unlikeVisibleSongsButton'),'thumbs-down'],[partyStartButton,'play'],[partyFindMatchButton,'magnifying-glass']]) {
+for (const [button, icon] of [[likeVisibleSongsButton,'heart'],[$('unlikeVisibleSongsButton'),'thumbs-down'],[partyStartButton,'play'],[partyFindMatchButton,'magnifying-glass'],[$('controlTextForm')?.querySelector('button[type="submit"]'),'magnifying-glass']]) {
   if (button) setActionLabel(button, button.textContent.trim(), icon);
 }
 loadPersistentLikedSongs();
