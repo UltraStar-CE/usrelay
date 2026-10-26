@@ -2943,9 +2943,8 @@ function scheduleFullSongListRequest(reason = '', delayMs = 1200) {
 
 function ensureCatalogRequested(reason = 'ensure-catalog') {
   if (!state.roomId || !state.playerId) return;
-  if (Array.isArray(state.songSelect?.library) && state.songSelect.library.length) return;
   if (state.songLibraryTransfer || state.songCatalogInFlight) return;
-  const key = `${state.roomId}:${cachedSongLibraryHash() || state.songLibraryHash || 'new'}`;
+  const key = state.roomId;
   if (state.songCatalogRequestedForRoom === key) return;
   state.songCatalogRequestedForRoom = key;
   requestCatalog({ reason });
@@ -2956,6 +2955,7 @@ async function hydrateCachedCatalog(reason = 'cache') {
   if (!hash) return false;
   const cached = await loadCachedSongLibrary(hash);
   if (!cached?.library?.length) return false;
+  if (state.songCatalogManifest?.catalogId && state.songCatalogManifest.catalogId !== hash) return false;
   state.songLibraryHash = hash;
   state.songCatalogInFlight = false;
   state.songFullListLastRequestMs = 0;
@@ -2987,6 +2987,7 @@ async function hydrateCachedCatalog(reason = 'cache') {
 
 async function mergeSongSelectState(previous, message) {
   const incoming = { ...message };
+  const libraryChanged = Boolean(incoming.libraryHash && previous?.libraryHash && incoming.libraryHash !== previous.libraryHash);
   if (incoming.libraryHash) state.songLibraryHash = String(incoming.libraryHash);
   if (Array.isArray(incoming.library) && incoming.libraryHash) {
     saveCachedSongLibrary(String(incoming.libraryHash), incoming.library);
@@ -3005,8 +3006,10 @@ async function mergeSongSelectState(previous, message) {
   if (!previous || typeof previous !== 'object') return incoming;
   const merged = { ...previous, ...incoming };
   for (const field of ['library', 'results', 'playlists', 'playlistItems']) {
-    if (!Array.isArray(incoming[field]) && Array.isArray(previous[field])) {
+    if (!Array.isArray(incoming[field]) && Array.isArray(previous[field]) && !libraryChanged) {
       merged[field] = previous[field];
+    } else if (!Array.isArray(incoming[field]) && libraryChanged) {
+      merged[field] = [];
     }
   }
   for (const field of ['source', 'visibleSongs', 'totalSongs', 'searchActive', 'playlistActive', 'curPlaylist', 'libraryProgress']) {
@@ -4945,7 +4948,7 @@ async function handleMessage(message) {
     startP2p();
     logLine(message.resumed ? `rejoined room ${message.displayCode}` : `joined room ${message.displayCode}`);
     window.setTimeout(async () => {
-      if (await hydrateCachedCatalog(message.resumed ? 'resume' : 'join')) return;
+      await hydrateCachedCatalog(message.resumed ? 'resume' : 'join');
       ensureCatalogRequested('client-joined');
     }, 0);
     return;
@@ -5395,6 +5398,12 @@ async function handleMessage(message) {
 
   if (message.type === 'error') {
     const text = message.reason || message.code || 'error';
+    if (message.code === 'join.bad_code') {
+      const attemptedCode = codeInput.value;
+      leaveClosedRoom('Room not found. Check the four-character code shown in the game.');
+      codeInput.value = attemptedCode;
+      return;
+    }
     if (
       ['join.bad_code', 'room.closed'].includes(message.code) ||
       ['host_disconnected', 'expired', 'heartbeat_timeout'].includes(message.reason)
