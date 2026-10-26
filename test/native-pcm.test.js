@@ -2,6 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NativePcmSender } from '../public/native-pcm.js';
 
+test('timing separates receiver-thread echo from PCM drained by the game and ignores unknown or duplicate replies', () => {
+  let now=0;
+  const sent=[];
+  const pcm=new NativePcmSender({now:()=>now,active:()=>true,channel:()=>({readyState:'open',bufferedAmount:0,send:m=>sent.push(m)}),relay:()=>true});
+  pcm.probe();
+  const probe=JSON.parse(sent[0]);
+  now=8;pcm.acknowledge(probe);pcm.acknowledge(probe);
+  const packet=new ArrayBuffer(980);new DataView(packet).setUint32(4,10,true);
+  now=10;pcm.submit(packet);
+  now=44;pcm.acknowledge({type:'audio.pcm.ack',sequence:10,route:'direct'});
+  pcm.acknowledge({type:'audio.pcm.ack',sequence:10,route:'direct'});
+  pcm.acknowledge({type:'latency.ping',id:999});
+  assert.deepEqual(pcm.timings(),{networkRoundTripMs:{count:1,min:8,median:8,p95:8},audioToGameRoundTripMs:{count:1,min:34,median:34,p95:34}});
+  pcm.reset();
+  assert.deepEqual(pcm.timings(),{networkRoundTripMs:null,audioToGameRoundTripMs:null});
+});
+
 test('native mic overlaps both routes until recent receiver confirmation and falls back on loss/backpressure', () => {
   let now = 1000, active = true;
   const sent = [], relay = [];

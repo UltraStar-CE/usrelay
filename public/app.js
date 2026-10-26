@@ -1120,6 +1120,11 @@ function startClientHeartbeat() {
   stopClientHeartbeat();
   state.clientHeartbeatTimer = setInterval(() => {
     send({ type: 'client.heartbeat' });
+    state.pcmSender?.probe();
+    if (state.pcmSender?.confirmed() && performance.now() - Number(state.lastAudioTimingLogMs || 0) >= 10000) {
+      state.lastAudioTimingLogMs = performance.now();
+      clientLog('audio.timing', {route:state.pcmSender.usingServer()?'server':'direct',...state.pcmSender.timings()});
+    }
   }, 2000);
 }
 
@@ -1364,7 +1369,7 @@ function attachP2pDataChannel(dc, attempt) {
     if (state.p2p.attempt !== attempt || state.p2p.dc !== dc) return;
     try {
       const message = JSON.parse(event.data);
-      if (state.rawPcmV1 && message.type === 'audio.pcm.ack') {
+      if (state.rawPcmV1 && ['audio.pcm.ack','latency.ping'].includes(message.type)) {
         state.pcmSender?.acknowledge(message);
         renderConnectionState();
         return;
@@ -2014,6 +2019,7 @@ function partyPhaseText(party) {
     singing: 'Singing',
     scoring: 'Song results',
     highscores: 'High scores',
+    paused: 'Paused',
     next_countdown: 'Next song countdown'
   };
   const base = labels[phase] || phase.replace(/_/g, ' ');
@@ -2054,7 +2060,7 @@ function renderPartyState() {
   const matches = Array.isArray(party.matches) ? party.matches : [];
   const leaderboard = Array.isArray(party.leaderboard) ? party.leaderboard : [];
   const formLocked = Boolean(state.partySettingsDirty) || Date.now() < Number(state.partySettingsPendingUntilMs || 0);
-  if (partyStatusLabel) partyStatusLabel.textContent = party.statusText || (party.enabled ? 'Running' : 'Idle');
+  if (partyStatusLabel) partyStatusLabel.textContent = party.enabled ? partyPhaseText(party) : 'Idle';
   if (partyMinPlayersInput && !formLocked && document.activeElement !== partyMinPlayersInput) {
     partyMinPlayersInput.value = String(Math.max(1, Math.min(12, Number(party.minPlayers || 2))));
   }
@@ -2079,7 +2085,7 @@ function renderPartyState() {
   if (partyUpvoteCountLabel) partyUpvoteCountLabel.textContent = `${likedSongsTotal}`;
   if (partyMatchCountLabel) partyMatchCountLabel.textContent = `${matchesTotal}`;
   if (partyPhaseLabel) partyPhaseLabel.textContent = partyPhaseText(party);
-  if (partyNotice && party.notice) partyNotice.textContent = party.notice;
+  if (partyNotice) partyNotice.textContent = party.notice || '';
 
   if (partyQueueList) {
     const queue = Array.isArray(party.queue) ? party.queue : [];

@@ -695,6 +695,15 @@ details.remote-list > summary { cursor: pointer; padding: .5rem 0; font-weight: 
   font-size: 13px;
 }
 
+.song-result-list li > div:first-child > strong,
+.song-result-list li > div:first-child > span,
+.playlist-list li > div:first-child > strong,
+.playlist-list li > div:first-child > span,
+.playlist-item-list li > div:first-child > strong,
+.playlist-item-list li > div:first-child > span {
+  display: block;
+}
+
 .song-result-list li,
 .playlist-list li,
 .playlist-item-list li {
