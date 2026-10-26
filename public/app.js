@@ -1218,6 +1218,9 @@ function clientLog(event, data = {}) {
 }
 
 function renderConnectionState() {
+  const warning = $('routeWarning');
+  if (warning) warning.hidden = !state.roomId || !state.ws ||
+    state.ws.readyState !== WebSocket.OPEN || state.p2p.connected;
   if (!connectionState) return;
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
     connectionState.textContent = 'disconnected';
