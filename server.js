@@ -788,6 +788,7 @@ function updateRoomGameState(room, options = {}) {
     controllerPlayerId: room.controllerPlayerId,
     inputs: room.inputs || []
   };
+  room.hostedParty?.rosterChanged();
   if (options.broadcast !== true) return;
   broadcastRoom(room, room.gameState);
 }
@@ -976,7 +977,6 @@ function remotePlayersSnapshotMessage(room) {
 
 function sendRemotePlayersSnapshotToHost(room) {
   room.host?.sendJson(remotePlayersSnapshotMessage(room));
-  room.hostedParty?.rosterChanged();
 }
 
 function applyPlayerProfile(player, profile) {
@@ -2480,6 +2480,8 @@ class WebSocketConnection {
     if (this.kind === 'host' && this.room) {
       const room = this.room;
       if (room.host === this) {
+        room.hostedParty?.close();
+        room.hostedParty = null;
         room.host = null;
         room.hostDisconnectedAtMs = Date.now();
         room.lastSeenMs = Date.now();
@@ -2503,6 +2505,7 @@ class WebSocketConnection {
         return;
       }
       player.conn = null;
+      room.hostedParty?.rosterChanged();
       if (player.resumeTimer) clearTimeout(player.resumeTimer);
       player.resumeTimer = setTimeout(() => {
         room.players.delete(player.playerId);

@@ -27,6 +27,8 @@ test('native room hosts Party votes, continuous playback and roster changes with
  const send=m=>phone.send(JSON.stringify({protocol:1,...m}));
  send({type:'client.join',displayCode:room.displayCode,name:'Party singer',preferredSlot:2});
  const player=await readPhone(m=>m.type==='client.joined');
+ const initialParty=await readPhone(m=>m.type==='party.state');
+ assert.equal(initialParty.available,true,'joining clients receive Party state before voting');
  send({type:'party.like',songId:7});
  sendHost({type:'ack',playerId:query.playerId,commandId:query.commandId,accepted:true,data:{snapshotId:'party-test',offset:0,total:1,songs:[{songId:7,title:'Fixture'}]}});
  await readPhone(m=>m.type==='party.state'&&m.likedSongIdsByPlayer?.[player.playerId]?.includes(7));
