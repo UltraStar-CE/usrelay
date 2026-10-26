@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>USDX Catalog</title>
+    <script>
+      (() => {
+        const themeKey = 'usdx.catalog.theme.v1';
+        let theme = 'dark';
+        try {
+          const saved = localStorage.getItem(themeKey);
+          if (saved === 'dark' || saved === 'light') theme = saved;
+        } catch {}
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+      })();
+    </script>
+    <link rel="stylesheet" href="/catalog/catalog.css">
+  </head>
+  <body>
+    <main class="catalog-shell">
+      <section id="joinScreen" class="join-screen">
+        <div class="join-card">
+          <div class="brand-row">
+            <div class="brand-block">
+              <span class="brand-kicker">USDX</span>
+              <h1>Catalog</h1>
+            </div>
+            <button type="button" class="theme-toggle secondary-action" data-theme-toggle aria-pressed="true">Dark</button>
+          </div>
+          <form id="joinForm" class="join-form">
+            <label>
+              Room code
+              <input id="codeInput" name="code" inputmode="latin" autocomplete="one-time-code" maxlength="4" placeholder="K7PM" required>
+            </label>
+            <label>
+              Name
+              <input id="nameInput" name="name" autocomplete="name" maxlength="24" placeholder="Singer" required>
+            </label>
+            <button type="submit" class="primary-action">Join catalog</button>
+          </form>
+          <div id="joinError" class="join-error" role="alert"></div>
+        </div>
+      </section>
+
+      <section id="appScreen" class="app-screen hidden">
+        <header class="topbar">
+          <div>
+            <span id="roomLabel" class="eyebrow">Room ----</span>
+            <h1>Song Catalog</h1>
+          </div>
+        </header>
+
+        <section class="tools-panel">
+          <form id="filterForm" class="filter-grid">
+            <label class="search-box">
+              Search
+              <span class="search-control">
+                <span aria-hidden="true">&#8981;</span>
+                <input id="searchInput" type="search" autocomplete="off" maxlength="100" placeholder="Artist, title or tag">
+              </span>
+            </label>
+            <details id="filterDetails" class="filter-details" open>
+              <summary>Filter</summary>
+              <div class="filter-options">
+                <label>
+                  In
+                  <select id="searchFieldInput">
+                    <option value="all">Artist, title or tag</option>
+                    <option value="artist">Artist</option>
+                    <option value="title">Title</option>
+                    <option value="tags">Tag</option>
+                  </select>
+                </label>
+                <label>
+                  Sort
+                  <select id="sortInput">
+                    <option value="artist">Artist</option>
+                    <option value="title">Title</option>
+                  </select>
+                </label>
+                <label>
+                  Language
+                  <select id="languageInput"></select>
+                </label>
+                <label>
+                  Decade
+                  <select id="decadeInput"></select>
+                </label>
+                <label>
+                  Playlist
+                  <select id="playlistInput"></select>
+                </label>
+              </div>
+            </details>
+          </form>
+          <div class="quick-row">
+            <button type="button" class="theme-toggle secondary-action" data-theme-toggle aria-pressed="true">Dark</button>
+            <button id="favoritesToggleButton" type="button" class="secondary-action">&#9825; Favorites</button>
+          </div>
+          <section class="bulk-bar">
+            <div>
+              <strong id="resultCountLabel">No songs</strong>
+              <span id="catalogMetaLabel">Waiting for catalog</span>
+            </div>
+            <div class="bulk-actions">
+              <select id="bulkPlaylistSelect" aria-label="Playlist for matching songs"></select>
+              <button id="addResultsButton" type="button" class="primary-action">Add Results</button>
+            </div>
+          </section>
+          <div class="panel-actions">
+            <button id="clearFiltersButton" type="button" class="secondary-action">Clear</button>
+            <button id="changeRoomButton" type="button" class="icon-text secondary-action" title="Change room">
+              <span aria-hidden="true">&#8634;</span>
+              <span>Room</span>
+            </button>
+            <span id="statusLabel" class="status-pill">Disconnected</span>
+          </div>
+          <div id="progressWrap" class="progress-wrap hidden" aria-hidden="true">
+            <span id="progressFill"></span>
+            <strong id="progressText">0%</strong>
+          </div>
+        </section>
+
+        <section id="songGrid" class="song-grid" aria-live="polite"></section>
+      </section>
+    </main>
+
+    <section id="songModal" class="modal-backdrop hidden" aria-hidden="true">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <button id="modalCloseButton" type="button" class="modal-close" aria-label="Close">&times;</button>
+        <div id="modalCover" class="modal-cover"></div>
+        <div class="modal-body">
+          <span id="modalArtist" class="eyebrow"></span>
+          <h2 id="modalTitle"></h2>
+          <p id="modalMeta"></p>
+          <div id="modalTags" class="modal-tags"></div>
+          <div class="modal-actions">
+            <button id="modalPreviewButton" type="button" class="primary-action">&#9658; Listen</button>
+            <button id="modalFavoriteButton" type="button" class="secondary-action">&#9825; Favorite</button>
+          </div>
+          <div class="playlist-picker">
+            <label>
+              Add to playlist
+              <select id="modalPlaylistSelect"></select>
+            </label>
+            <button id="modalAddButton" type="button" class="primary-action">Add Song</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div id="previewBar" class="preview-bar hidden" aria-hidden="true">
+      <span id="previewLabel" class="preview-label"></span>
+      <input id="previewSlider" class="preview-slider" type="range" min="0" max="0" value="0" step="1" aria-label="Preview position">
+    </div>
+    <audio id="previewAudio" preload="none"></audio>
+    <script src="/catalog/catalog.js" type="module"></script>
+  </body>
+</html>
