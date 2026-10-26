@@ -42,7 +42,7 @@ export class PartySession {
         this.dirty=true; ack(true); return true;
       case 'party.stop':
         this.enabled=false; this.deadline=0;
-        if(this.gameActive) this.issue('continuous.stop',{},'stop');
+        if(this.gameActive||[...this.pending.values()].includes('start')) this.issue('continuous.stop',{},'stop');
         this.dirty=true; ack(true); return true;
       case 'party.skip':
         if(!this.gameActive) { ack(false,'party_not_playing'); return true; }

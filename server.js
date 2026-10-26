@@ -1,3 +1,4 @@
+import {HostedParty} from './hosted-party.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -663,6 +664,8 @@ function removeRoom(room, reason) {
   for (const [requestId, request] of previewRequests) {
     if (request.room === room) endPreviewRequest(requestId, 410, 'room closed');
   }
+  room.hostedParty?.close();
+  room.hostedParty = null;
   const host = room.host;
   room.host = null;
   host?.close();
@@ -676,6 +679,8 @@ function markHostDisconnected(room, reason = 'disconnect') {
     scheduleHostDisconnectExpiry(room);
     return;
   }
+  room.hostedParty?.close();
+  room.hostedParty = null;
   const host = room.host;
   room.host = null;
   room.hostDisconnectedAtMs = Date.now();
@@ -971,6 +976,7 @@ function remotePlayersSnapshotMessage(room) {
 
 function sendRemotePlayersSnapshotToHost(room) {
   room.host?.sendJson(remotePlayersSnapshotMessage(room));
+  room.hostedParty?.rosterChanged();
 }
 
 function applyPlayerProfile(player, profile) {
@@ -1405,6 +1411,13 @@ function handleHostMessage(conn, msg) {
     return;
   }
   room.lastSeenMs = Date.now();
+  if (msg.type === 'song.select.state' && msg.apiCapabilities?.includes('continuous.start') && !room.hostedParty) {
+    room.hostedParty = new HostedParty({room,
+      sendHost:message=>Boolean(room.host && !room.host.closed && room.host.sendJson(message) !== false),
+      sendClient:(id,message)=>room.players.get(id)?.conn?.sendJson({...message,protocol:protocolVersion}),
+      broadcast:message=>broadcastPlayers(room,{...message,protocol:protocolVersion})});
+  }
+  if (room.hostedParty) queueMicrotask(()=>room.hostedParty?.observe(msg));
 
   if (msg.type === 'host.heartbeat') {
     conn.sendJson({ type: 'ack', protocol: protocolVersion, accepted: true, reason: null });
@@ -1921,6 +1934,7 @@ async function handleClientMessage(conn, msg) {
       conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'host_disconnected' });
       return;
     }
+    if (room.hostedParty?.handle({...msg,playerId:player.playerId,slot:player.slot,role:player.role})) return;
     room.host.sendJson({
       ...msg,
       protocol: protocolVersion,
@@ -2028,6 +2042,7 @@ async function handleClientMessage(conn, msg) {
       return;
     }
     log('control.forwarded', { roomId: room.roomId, playerId: player.playerId, command, commandId: msg.commandId });
+    if (partyCommand && room.hostedParty?.handle({...msg,playerId:player.playerId,slot:player.slot,role:player.role})) return;
     if (command === 'playlist.automation.set') {
       setPlaylistAutomation(room, msg.args || {});
       conn.sendJson({

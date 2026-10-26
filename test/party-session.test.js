@@ -60,3 +60,15 @@ test('scores use the singers present at song start and duplicate endings do not 
   f.party.observe({type:'continuous.state',active:false,reason:'manual'}); f.advance(0);
   assert.equal(f.party.enabled,false);
 });
+
+test('stopping while start acknowledgement is pending still stops the game',()=>{
+ const f=fixture();f.like('a',[1]);f.like('b',[1]);f.start();f.advance(0);
+ const start=f.commands[0];assert.equal(start.command,'continuous.start');
+ f.party.handle({type:'control.command',playerId:'a',commandId:2,command:'party.stop'});f.advance(0);
+ const stop=f.commands.at(-1);assert.equal(stop.command,'continuous.stop');
+ f.party.observe({type:'ack',commandId:start.commandId,accepted:true});
+ f.party.observe({type:'ack',commandId:stop.commandId,accepted:true});
+ f.party.observe({type:'continuous.state',active:false,reason:'manual'});f.advance(0);
+ assert.equal(f.party.enabled,false);assert.equal(f.party.gameActive,false);
+ assert.equal(f.commands.filter(m=>m.command==='continuous.start').length,1);
+});
