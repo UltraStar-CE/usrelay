@@ -79,6 +79,7 @@ const state = {
   songCatalogRequestId: '',
   songCatalogRequestedForRoom: '',
   songCatalogInFlight: false,
+  completedSongLibraryHash: '',
   songFullListRequestTimer: null,
   songFullListLastRequestMs: 0,
   songFullListRequestCount: 0,
@@ -3018,7 +3019,13 @@ async function requestCatalog(options = {}) {
   return requestNativeSongs();
 }
 
+function songCatalogComplete(data = state.songSelect) {
+  return Boolean(data?.libraryHash && Array.isArray(data.library) &&
+    state.completedSongLibraryHash === data.libraryHash);
+}
+
 function scheduleFullSongListRequest(reason = '', delayMs = 1200) {
+  if (songCatalogComplete()) return;
   if (state.songLibraryTransfer || state.songFullListRequestTimer) return;
   if (state.songCatalogInFlight && performance.now() - Number(state.songFullListLastRequestMs || 0) < 10000) return;
   const library = Array.isArray(state.songSelect?.library) ? state.songSelect.library : [];
@@ -3026,7 +3033,7 @@ function scheduleFullSongListRequest(reason = '', delayMs = 1200) {
   state.songFullListRequestTimer = window.setTimeout(() => {
     state.songFullListRequestTimer = null;
     const stillMissing = !Array.isArray(state.songSelect?.library) || !state.songSelect.library.length;
-    if (!stillMissing || state.songLibraryTransfer) return;
+    if (!stillMissing || state.songLibraryTransfer || songCatalogComplete()) return;
     const now = performance.now();
     if (state.songCatalogInFlight && now - Number(state.songFullListLastRequestMs || 0) < 10000) return;
     if (now - Number(state.songFullListLastRequestMs || 0) < 2500) {
@@ -3274,6 +3281,7 @@ async function applyCatalogManifest(message) {
       libraryCached: true
     };
     state.songSelect = await mergeSongSelectState(state.songSelect, incoming);
+    state.completedSongLibraryHash = catalogId;
     state.localLikedSongIds = persistentLikedSongIdsForLibrary(cached.library);
     send({ type: 'catalog.ready', catalogId, songLibraryHash: catalogId, songCount: cached.library.length });
     syncPersistentLikesToBridge('catalog-manifest-cache');
@@ -3322,6 +3330,7 @@ async function finishSongLibraryTransfer(message) {
   };
   state.songCatalogInFlight = false;
   state.songSelect = await mergeSongSelectState(state.songSelect, incoming);
+  state.completedSongLibraryHash = incoming.libraryHash;
   state.localLikedSongIds = persistentLikedSongIdsForLibrary(library);
   syncPersistentLikesToBridge('catalog-transfer');
   renderSongSelectState();
@@ -4579,6 +4588,8 @@ function renderSongSelectState() {
   }
   const progress = activeSongLibraryProgress(data);
   const library = Array.isArray(data.library) ? data.library : [];
+  const catalogComplete = songCatalogComplete(data);
+  const emptyCatalog = catalogComplete && library.length === 0;
   const previewResults = Array.isArray(data.results) ? data.results : [];
   const results = visibleSongResults();
   const playlists = Array.isArray(data.playlists) ? data.playlists : [];
@@ -4609,7 +4620,7 @@ function renderSongSelectState() {
   const scanCounts = progress
     ? `${Number(progress.indexedSongs || 0)} indexed, ${Number(progress.scannedFiles || 0)} files, ${Number(progress.scannedDirs || 0)} folders`
     : '';
-  if (!searchableCount && scanStatus === 'ready' && !state.songLibraryTransfer && !state.songFullListLastRequestMs) {
+  if (!searchableCount && !catalogComplete && scanStatus === 'ready' && !state.songLibraryTransfer && !state.songFullListLastRequestMs) {
     ensureCatalogRequested('ready-without-catalog');
   }
   const fullListRequestAgeSec = state.songFullListLastRequestMs
@@ -4618,7 +4629,7 @@ function renderSongSelectState() {
   const fullListRequestText = fullListRequestAgeSec == null
     ? 'requesting the song catalog'
     : `requested song catalog ${fullListRequestAgeSec}s ago (attempt ${state.songFullListRequestCount || 1})`;
-  if (!searchableCount && scanStatus === 'ready' && !state.songLibraryTransfer) {
+  if (!searchableCount && !catalogComplete && scanStatus === 'ready' && !state.songLibraryTransfer) {
     scheduleFullSongListRequest('ready-without-catalog');
   }
   renderSongLibraryProgress(progress, Boolean(searchableCount));
@@ -4656,15 +4667,19 @@ function renderSongSelectState() {
         : (state.songStateRequested ? '--' : '--'))));
   songLibraryLabel.textContent = searchableCount
     ? (state.showLikedSongsOnly
-      ? `Showing liked songs; ${results.length} matching songs.`
+      ? `Showing liked songs; ${results.length} matching ${results.length === 1 ? 'song' : 'songs'}.`
       : shownPlaylist
-      ? `Showing playlist "${shownPlaylist.name || playlistNameByIndex(shownPlaylist.index)}"; ${results.length} matching songs.`
-      : `${searchableCount} songs indexed from ${data.source === 'bridge-scan' ? 'the bridge scan' : 'the game'}; ${previewableCount} available for phone preview.`)
+      ? `Showing playlist "${shownPlaylist.name || playlistNameByIndex(shownPlaylist.index)}"; ${results.length} matching ${results.length === 1 ? 'song' : 'songs'}.`
+      : `${searchableCount} ${searchableCount === 1 ? 'song' : 'songs'} indexed from ${data.source === 'bridge-scan' ? 'the bridge scan' : 'the game'}; ${previewableCount} available for phone preview.`)
     : (previewResults.length
         ? `Received ${previewResults.length} preview songs; ${fullListRequestText}.`
     : (progress
       ? `${scanStatus || 'scan'}${scanPercentText ? ` ${scanProgressInfo.label}` : ''}${scanMessage ? `: ${scanMessage}` : ''}${scanCounts ? ` (${scanCounts})` : ''}`
       : (state.songStateRequested ? 'Requesting song data...' : 'No song data yet.')));
+  if (emptyCatalog) {
+    songCountLabel.textContent = '0 songs';
+    songLibraryLabel.textContent = 'No songs are available from this game.';
+  }
   playlistCountLabel.textContent = `${playlists.length}`;
   playlistItemCountLabel.textContent = activePlaylistIndex >= 0
     ? `${playlistItems.length} shown`
@@ -4674,7 +4689,7 @@ function renderSongSelectState() {
   if (!results.length) {
     const item = document.createElement('li');
     item.className = 'empty-player';
-    item.textContent = library.length
+    item.textContent = emptyCatalog ? 'No songs are available from this game.' : library.length
       ? (String(state.songFilterText || '').trim()
         ? `No matches for "${state.songFilterText}"`
         : (shownPlaylist ? 'This playlist is empty. Use All Songs to add songs.' : 'No songs match this filter.'))
@@ -4712,7 +4727,9 @@ function renderSongSelectState() {
       const preview = document.createElement('button');
       const slider = document.createElement('input');
       preview.type = 'button';
-      preview.textContent = 'Preview';
+      preview.textContent = song.previewAvailable === false ? 'No preview' : 'Preview';
+      preview.disabled = song.previewAvailable === false;
+      if (preview.disabled) preview.title = 'No audio preview is available for this song.';
       slider.type = 'range';
       slider.min = '0';
       slider.max = '0';
@@ -4775,7 +4792,7 @@ function renderSongSelectState() {
     const meta = document.createElement('span');
     const actions = document.createElement('div');
     name.textContent = playlist.name || `Playlist ${playlist.index + 1}`;
-    meta.textContent = `${playlist.size || 0} songs`;
+    meta.textContent = `${playlist.size || 0} ${Number(playlist.size) === 1 ? 'song' : 'songs'}`;
     label.append(name, meta);
     actions.className = 'inline-actions';
 
@@ -5035,6 +5052,7 @@ async function handleMessage(message) {
       state.party = null;
       state.localLikedSongIds = new Set();
       state.songLibraryHash = '';
+      state.completedSongLibraryHash = '';
       state.songLibraryTransfer = null;
       state.songCatalogInFlight = false;
       state.nativeSongLoadId = null;
@@ -5282,7 +5300,7 @@ async function handleMessage(message) {
     }
     state.songSelect = await mergeSongSelectState(state.songSelect, message);
     if (message.apiCapabilities?.includes('song.list') && !state.songCatalogInFlight &&
-        (previousHash !== message.libraryHash || !state.songSelect?.library?.length)) {
+        (previousHash !== message.libraryHash || !songCatalogComplete())) {
       requestNativeSongs();
     }
     renderSongSelectState();

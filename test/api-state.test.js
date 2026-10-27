@@ -8,6 +8,8 @@ test('API metadata loads playlists without changing the game screen or preview c
   const context=vm.createContext({state,
     mergeSongSelectState:async(previous,incoming)=>({...previous,...incoming}),
     requestNativeSongs:()=>loads++,renderSongSelectState:()=>renders++});
+  const helper=app.indexOf('function songCatalogComplete(');
+  vm.runInContext(app.slice(helper,app.indexOf('function scheduleFullSongListRequest(',helper)),context);
   const start=app.indexOf("  if (message.type === 'api.state') {");
   vm.runInContext('async function update(message){'+app.slice(start,app.indexOf("  if (message.type === 'song.select.state')",start))+'}',context);
   await context.update({type:'api.state',libraryHash:'startup',apiCapabilities:['song.list'],
