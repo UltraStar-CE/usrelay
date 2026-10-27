@@ -2354,7 +2354,7 @@ function renderPartyState() {
         const meta = document.createElement('span');
         const score = document.createElement('strong');
         name.textContent = entry.name || 'Player';
-        meta.textContent = `${entry.rounds || 0} rounds`;
+        meta.textContent = `${entry.rounds || 0} ${Number(entry.rounds) === 1 ? 'round' : 'rounds'}`;
         score.textContent = String(entry.points || 0);
         label.append(name, meta);
         item.append(label, score);
