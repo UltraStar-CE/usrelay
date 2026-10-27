@@ -5024,6 +5024,9 @@ async function handleMessage(message) {
       name: message.name || nameInput.value || state.name || ''
     });
     state.renderSignatures = {};
+    if (message.gameState && typeof message.gameState === 'object') {
+      await handleMessage({...message.gameState, type: 'game.state'});
+    }
     applyOwnProfileFromMessage(message);
     state.p2p.enabled = Boolean(message.p2p?.enabled);
     state.p2p.iceServers = Array.isArray(message.p2p?.iceServers) ? message.p2p.iceServers : [];
