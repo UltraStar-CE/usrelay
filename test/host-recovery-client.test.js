@@ -55,9 +55,9 @@ test('obsolete socket close/message callbacks cannot cancel a replacement connec
  const noop=()=>{};const state={};const context=vm.createContext({state,WebSocket:Socket,joinError:{},connectionState:{},
   saveProfile:noop,saveJoinDraft:noop,resetClockSync:noop,wsUrl:()=>'',apiRequests:{disconnect:()=>calls.push('cancel')},
   handleMessage:()=>{calls.push('message');return Promise.resolve();},renderConnectionState:noop,
-  closeP2p:noop,stopClientHeartbeat:noop,appScreen:{classList:{contains:()=>false}},leaveClosedRoom:()=>calls.push('leave'),logLine:noop});
+  closeP2p:noop,stopClientHeartbeat:noop,appScreen:{classList:{contains:()=>false}},reconnectRelay:()=>calls.push('recover'),logLine:noop});
  const start=app.indexOf('function connectAndJoin(');vm.runInContext(app.slice(start,app.indexOf('function nativeAudioActive()',start)),context);
  context.connectAndJoin('ONE','A');context.connectAndJoin('TWO','A');
  sockets[0].handlers.message({data:'{}'});sockets[0].handlers.close();assert.deepEqual(calls,[]);
- sockets[1].handlers.close();assert.deepEqual(calls,['cancel','leave']);
+ sockets[1].handlers.close();assert.deepEqual(calls,['cancel','recover']);
 });

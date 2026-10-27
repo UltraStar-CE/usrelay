@@ -55,6 +55,22 @@ function nextMessage(socket,predicate){return new Promise(resolve=>{
  const listener=event=>{const value=JSON.parse(event.data);if(predicate(value)){socket.removeEventListener('message',listener);resolve(value);}};
  socket.addEventListener('message',listener);
 });}
+
+test('expired phone heartbeat can authenticate its existing slot, but invalid credentials cannot create a replacement',{timeout:6000},async t=>{
+ const reservation=net.createServer().listen(0,'127.0.0.1');await once(reservation,'listening');
+ const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
+ const server=spawn(process.execPath,['server.js'],{env:{...process.env,USDX_BIND:'127.0.0.1',USDX_PORT:String(port),USDX_PLAYER_HEARTBEAT_TIMEOUT_MS:'400'},stdio:['ignore','pipe','pipe']});t.after(()=>server.kill());
+ await new Promise(resolve=>server.stdout.on('data',data=>{if(String(data).includes('server.listen'))resolve();}));
+ const host=new WebSocket(`ws://127.0.0.1:${port}/ws/host`);t.after(()=>host.close());await once(host,'open');
+ const created=nextMessage(host,m=>m.type==='room.created');host.send(JSON.stringify({type:'host.hello',protocol:1,maxPlayers:2}));const room=await created;
+ const phone=new WebSocket(`ws://127.0.0.1:${port}/ws/client`);t.after(()=>phone.close());await once(phone,'open');
+ const joined=nextMessage(phone,m=>m.type==='client.joined');phone.send(JSON.stringify({type:'client.join',protocol:1,displayCode:room.displayCode,name:'Singer',preferredSlot:2}));const player=await joined;
+ await nextMessage(phone,m=>m.reason==='heartbeat_timeout');
+ const replacement=new WebSocket(`ws://127.0.0.1:${port}/ws/client`);t.after(()=>replacement.close());await once(replacement,'open');
+ const rejected=nextMessage(replacement,m=>m.code==='client.session_expired');replacement.send(JSON.stringify({type:'client.join',protocol:1,displayCode:room.displayCode,playerId:player.playerId,playerToken:'invalid'}));await rejected;
+ const resumed=nextMessage(replacement,m=>m.type==='client.joined');replacement.send(JSON.stringify({type:'client.join',protocol:1,displayCode:room.displayCode,playerId:player.playerId,playerToken:player.playerToken}));const result=await resumed;
+ assert.equal(result.resumed,true);assert.equal(result.playerId,player.playerId);assert.equal(result.slot,2);
+});
 test('temporary host loss retains phone identity and announces authenticated resume before permanent closure',{timeout:6000},async t=>{
  const reservation=net.createServer().listen(0,'127.0.0.1');await once(reservation,'listening');
  const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));

@@ -1198,7 +1198,42 @@ function startClientHeartbeat() {
 
 function renderHostRecoveryNotice() {
   const notice = $('hostRecoveryNotice');
+  if (notice) notice.textContent = state.relayRecovering ? 'Connection lost. Reconnecting…' : 'Game disconnected. Reconnecting…';
   if (notice) notice.classList.toggle('hidden', !state.hostRecovering);
+}
+
+function cancelRelayRecovery() {
+  window.clearTimeout(state.relayRetryTimer);
+  window.clearTimeout(state.relayJoinTimer);
+  state.relayRetryTimer = state.relayJoinTimer = null;
+  state.relayRecovering = false;
+  state.relayRecoveryStarted = 0;
+  state.relayRecoveryAttempts = 0;
+}
+
+function reconnectRelay() {
+  if (state.pageUnloading || !state.roomId || !state.playerId || !state.playerToken) return;
+  if (state.relayRetryTimer) return;
+  state.relayRecoveryStarted ||= performance.now();
+  if (performance.now() - state.relayRecoveryStarted > 60000) {
+    leaveClosedRoom('Could not reconnect. Rejoin the room to try again.');
+    return;
+  }
+  state.relayRecovering = true;
+  waitForGameReconnect();
+  renderHostRecoveryNotice();
+  stopClientHeartbeat();
+  window.clearTimeout(state.relayJoinTimer);
+  const old = state.ws;
+  state.ws = null;
+  old?.close();
+  const delay = Math.min(4000, 300 * 2 ** Math.min(4, state.relayRecoveryAttempts || 0));
+  state.relayRecoveryAttempts = (state.relayRecoveryAttempts || 0) + 1;
+  state.relayRetryTimer = window.setTimeout(() => {
+    state.relayRetryTimer = null;
+    if (!state.relayRecovering || !state.roomId) return;
+    connectAndJoin(state.displayCode, state.name, {playerId:state.playerId,playerToken:state.playerToken,slot:state.slot});
+  }, delay);
 }
 
 function waitForGameReconnect() {
@@ -1238,6 +1273,7 @@ function resumeAfterGameReconnect() {
 }
 
 function leaveClosedRoom(reason = 'Room closed') {
+  cancelRelayRecovery();
   state.hostRecovering = false;
   renderHostRecoveryNotice();
   void stopMic();
@@ -1278,6 +1314,7 @@ function leaveClosedRoom(reason = 'Room closed') {
 }
 
 function showJoinScreenForRoomChange() {
+  cancelRelayRecovery();
   state.hostRecovering = false;
   renderHostRecoveryNotice();
   closeP2p(true);
@@ -5099,6 +5136,8 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'client.joined') {
+    const recoveredTransport = Boolean(state.relayRecovering);
+    cancelRelayRecovery();
     if (state.roomId !== message.roomId) {
       // Numeric song IDs belong to one game's snapshot. Never restore votes
       // from an unvalidated last-room cache before querying the joined game.
@@ -5116,6 +5155,12 @@ async function handleMessage(message) {
     state.lastClientHeartbeatSentMs = 0;
     state.lastClientHeartbeatAckMs = 0;
     state.hostRecovering = false;
+    renderHostRecoveryNotice();
+    if (recoveredTransport) {
+      state.songCatalogRequestedForRoom = '';
+      state.lastPersistentLikeSyncKey = '';
+      requestSongState();
+    }
     state.rawPcmV1 = Boolean(message.rawPcmV1);
     state.audioCalibrationV1 = Boolean(message.audioCalibrationV1);
     Object.assign(state, {
@@ -5635,6 +5680,14 @@ async function handleMessage(message) {
 
   if (message.type === 'error') {
     const text = message.reason || message.code || 'error';
+    if (message.code === 'host.reconnecting' || message.reason === 'heartbeat_timeout') {
+      reconnectRelay();
+      return;
+    }
+    if (message.code === 'client.session_expired') {
+      leaveClosedRoom('Your previous connection expired. Rejoin the room to select a mic.');
+      return;
+    }
     if (message.code === 'join.bad_code') {
       const attemptedCode = codeInput.value;
       leaveClosedRoom('Room not found. Check the four-character code shown in the game.');
@@ -5678,6 +5731,9 @@ function connectAndJoin(displayCode, name, resume = null) {
   const preferredSlot = Number(resume?.slot || 0);
   const ws = new WebSocket(wsUrl('/ws/client'));
   state.ws = ws;
+  if (state.relayRecovering) state.relayJoinTimer = window.setTimeout(() => {
+    if (state.ws === ws && state.relayRecovering) reconnectRelay();
+  }, 6000);
   connectionState.textContent = 'connecting';
   ws.addEventListener('open', () => {
     if (state.ws !== ws) { ws.close(); return; }
@@ -5718,7 +5774,7 @@ function connectAndJoin(displayCode, name, resume = null) {
     stopClientHeartbeat();
     renderConnectionState();
     if (!appScreen.classList.contains('hidden')) {
-      leaveClosedRoom('Game connection timed out.');
+      reconnectRelay();
       return;
     }
     logLine('socket closed');

@@ -1630,7 +1630,7 @@ function handleClientJoin(conn, msg) {
     conn.sendJson({
       type: 'error',
       protocol: protocolVersion,
-      code: 'room.closed',
+      code: 'host.reconnecting',
       reason: 'host_disconnected'
     });
     conn.close();
@@ -1638,6 +1638,10 @@ function handleClientJoin(conn, msg) {
   }
 
   const resumed = findResumePlayer(room, msg);
+  if (!resumed && (msg.playerId || msg.playerToken)) {
+    conn.sendJson({type:'error',protocol:protocolVersion,code:'client.session_expired'});
+    return;
+  }
   if (resumed) {
     if (resumed.resumeTimer) clearTimeout(resumed.resumeTimer);
     resumed.resumeTimer = null;
@@ -2891,7 +2895,8 @@ setInterval(() => {
           lastSeenMs: player.lastSeenMs, lastHeartbeatMs: player.lastHeartbeatMs || null,
           bufferedInputBytes:player.conn.buffer.length, socketBytesRead:player.conn.socket.bytesRead,
           socketBytesWritten:player.conn.socket.bytesWritten, closing:player.conn.closing });
-        removePlayerFromRoom(room, player, 'heartbeat_timeout');
+        player.conn.sendJson({type:'error',protocol:protocolVersion,reason:'heartbeat_timeout'});
+        player.conn.close();
       }
     }
   }
