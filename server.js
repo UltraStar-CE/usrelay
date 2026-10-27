@@ -573,6 +573,8 @@ function resumeRoom(hostConn, hello, webApp) {
   for (const player of room.players.values()) {
     hostConn.sendJson(playerAssignedMessage(room, player, { type: 'player.joined', resumed: true }));
   }
+  broadcastPlayers(room, {type:'host.resumed',protocol:protocolVersion,
+    roomId:room.roomId,displayCode:room.displayCode});
   updateRoomGameState(room);
   broadcastPlaylistAutomation(room);
   log('room.resumed', { roomId: room.roomId, displayCode: room.displayCode, players: room.players.size, webApp: room.webApp || 'default' });

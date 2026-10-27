@@ -80,6 +80,7 @@ const state = {
   songCatalogRequestedForRoom: '',
   songCatalogInFlight: false,
   completedSongLibraryHash: '',
+  hostRecovering: false,
   songFullListRequestTimer: null,
   songFullListLastRequestMs: 0,
   songFullListRequestCount: 0,
@@ -1195,7 +1196,51 @@ function startClientHeartbeat() {
   }, 2000);
 }
 
+function renderHostRecoveryNotice() {
+  const notice = $('hostRecoveryNotice');
+  if (notice) notice.classList.toggle('hidden', !state.hostRecovering);
+}
+
+function waitForGameReconnect() {
+  if (state.hostRecovering || !state.roomId || !state.playerId) return;
+  state.hostRecovering = true;
+  digitalCalibration.cancel(true);
+  closeP2p(false);
+  apiRequests.disconnect();
+  state.nativeSongLoadId = null;
+  state.songCatalogInFlight = false;
+  stopDeviceMusic('Waiting for the game to reconnect.');
+  state.hostSongStartUs = state.hostScoringStartUs = null;
+  state.mediaStartUs = 0;
+  state.currentSongMessage = state.currentLyricsMessage = null;
+  resetClockSync();
+  resetSongMediaClock();
+  clearPitchQueue('Microphone delivery paused while the game reconnects.');
+  renderHostRecoveryNotice();
+  updateGameStateView();
+  renderSongSelectState();
+}
+
+function resumeAfterGameReconnect() {
+  if (!state.hostRecovering || !state.roomId || !state.playerId) return;
+  state.hostRecovering = false;
+  state.songCatalogRequestedForRoom = '';
+  state.lastPersistentLikeSyncKey = '';
+  renderHostRecoveryNotice();
+  resetClockSync();
+  startP2p();
+  sendClockPing();
+  requestSongState();
+  ensureCatalogRequested('host-resumed');
+  persistSettings();
+  updateGameStateView();
+  renderSongSelectState();
+}
+
 function leaveClosedRoom(reason = 'Room closed') {
+  state.hostRecovering = false;
+  renderHostRecoveryNotice();
+  void stopMic();
   closeP2p(false);
   const ws = state.ws;
   state.ws = null;
@@ -1233,6 +1278,8 @@ function leaveClosedRoom(reason = 'Room closed') {
 }
 
 function showJoinScreenForRoomChange() {
+  state.hostRecovering = false;
+  renderHostRecoveryNotice();
   closeP2p(true);
   if (state.ws) {
     state.ws.close();
@@ -1345,7 +1392,7 @@ function renderAudioTiming() {
 function renderConnectionState() {
   digitalCalibration.update({roomId:state.roomId,playerId:state.playerId,slot:Number(state.slot),
     supported:state.audioCalibrationV1, input:state.audioInput,
-    running:Boolean(state.audioInput && (state.audioInput.synthetic ||
+    running:Boolean(!state.hostRecovering && state.audioInput && (state.audioInput.synthetic ||
       (state.audioContext?.state==='running' && state.pcmWorklet))),
     idle:!['singing','paused','boot'].includes(state.gameState),
     route:state.pcmSender?.confirmed()&&!state.pcmSender.usingServer()?'direct':'server',
@@ -1356,7 +1403,7 @@ function renderConnectionState() {
     !state.pcmSender.usingServer() : state.p2p.connected;
   const warning = $('routeWarning');
   if (warning) {
-    warning.hidden = !state.roomId || !state.audioInput || (!state.audioInput.synthetic && state.audioContext?.state !== 'running') || Number(state.slot) <= 0 || !state.ws || state.ws.readyState !== WebSocket.OPEN;
+    warning.hidden = state.hostRecovering || !state.roomId || !state.audioInput || (!state.audioInput.synthetic && state.audioContext?.state !== 'running') || Number(state.slot) <= 0 || !state.ws || state.ws.readyState !== WebSocket.OPEN;
     warning.querySelector('svg').style.display = direct ? 'none' : '';
     warning.lastChild.textContent = direct ? ' Direct' : ' Server';
     warning.style.background = direct ? '#12382c' : '#422f08';
@@ -1369,10 +1416,12 @@ function renderConnectionState() {
     connectionState.textContent = 'disconnected';
     return;
   }
-  connectionState.textContent = direct ? 'connected direct' : 'connected relay';
+  connectionState.textContent = state.hostRecovering ? 'waiting for game' : direct ? 'connected direct' : 'connected relay';
 }
 
 function sendRelay(message) {
+  if (state.hostRecovering && (message.type === 'control.command' || message.type === 'clock.sync.ping' ||
+      String(message.type).startsWith('audio.') || String(message.type).startsWith('p2p.'))) return false;
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return false;
   state.ws.send(JSON.stringify({ protocol, roomId: state.roomId, playerId: state.playerId, ...message }));
   return true;
@@ -1424,7 +1473,7 @@ function closeP2p(notify = false) {
 }
 
 function scheduleP2pReconnect() {
-  if (!state.p2p.enabled || !state.roomId || state.p2p.reconnectTimer) return;
+  if (state.hostRecovering || !state.p2p.enabled || !state.roomId || state.p2p.reconnectTimer) return;
   closeP2p(true);
   state.p2p.reconnectTimer = window.setTimeout(() => {
     state.p2p.reconnectTimer = null;
@@ -1551,6 +1600,7 @@ async function handleP2pSignal(message) {
 }
 
 async function startP2p() {
+  if (state.hostRecovering) return;
   if (state.rawPcmV1 && !nativeAudioActive()) return;
   if (!state.p2p.enabled || !state.roomId || state.p2p.connecting || state.p2p.connected) return;
   const PeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
@@ -1945,7 +1995,7 @@ function renderLockGameInfo() {
     panel.replaceChildren();
     if (info) {
       const title = document.createElement('strong');
-      title.textContent = [info.artist, info.title].filter(Boolean).join(' â€” ');
+      title.textContent = [info.artist, info.title].filter(Boolean).join(' — ');
       panel.append(title);
       if (info.difficulty) {
         const difficulty = document.createElement('p');
@@ -1955,7 +2005,7 @@ function renderLockGameInfo() {
       const list = document.createElement('ol');
       for (const entry of (info.entries || []).slice(0, 20)) {
         const row = document.createElement('li');
-        row.textContent = `${entry.name || `Mic ${entry.slot}`} Â· ${Math.round(Number(entry.score) || 0)}`;
+        row.textContent = `${entry.name || `Mic ${entry.slot}`} · ${Math.round(Number(entry.score) || 0)}`;
         list.append(row);
       }
       panel.append(list);
@@ -2514,7 +2564,7 @@ function renderMicRooms() {
   lobbyButton.append(lobbyTitle, lobbyMeta);
   lobbyButton.classList.toggle('empty-lobby', !lobbyOccupants.length);
   if (!lobbyOccupants.length) {
-    lobbyTitle.textContent = shownSlot > 0 ? 'Leave mic Â· Lobby' : 'Lobby';
+    lobbyTitle.textContent = shownSlot > 0 ? 'Leave mic · Lobby' : 'Lobby';
     lobbyMeta.hidden = true;
   }
 
@@ -2653,6 +2703,7 @@ function addOverlayTargetToPlaylist(playlistIndex, sourceButton = null) {
 }
 
 function playlistEditingAvailable() {
+  if (state.hostRecovering) return false;
   return ['main_menu', 'song_select'].includes(state.gameState);
 }
 
@@ -2991,6 +3042,7 @@ async function requestSongState(options = {}) {
 
 const apiRequests = createApiRequests({send, nextId: () => state.commandId++});
 async function requestNativeSongs() {
+  if (state.hostRecovering) return false;
   if (state.songCatalogInFlight) return false;
   state.songCatalogInFlight = true;
   const roomId = state.roomId;
@@ -4083,6 +4135,7 @@ function scheduleDeviceMusicRetry(message = {}, delayMs = 1000) {
 }
 
 function maybeStartDeviceMusic(message = {}) {
+  if (state.hostRecovering) return;
   if (!state.settings.playMusicOnDevice) return;
   if (!['song_select', 'singing'].includes(state.gameState)) return;
   if (message && Object.keys(message).length) updateSongClockFromMessage(message, message.type || 'device music');
@@ -4497,6 +4550,7 @@ async function startDeviceMusic(message = {}, recoveryAttempt = 0, extensionAtte
 }
 
 function reconcileDeviceMusic() {
+  if (state.hostRecovering) return;
   if (!state.settings.playMusicOnDevice) return;
   if (!['song_select', 'singing', 'paused'].includes(state.gameState)) {
     if (state.deviceMusicAudio || state.deviceMusicRecoveryTimer || state.deviceMusicAbortController) {
@@ -4728,8 +4782,8 @@ function renderSongSelectState() {
       const slider = document.createElement('input');
       preview.type = 'button';
       preview.textContent = song.previewAvailable === false ? 'No preview' : 'Preview';
-      preview.disabled = song.previewAvailable === false;
-      if (preview.disabled) preview.title = 'No audio preview is available for this song.';
+      preview.disabled = state.hostRecovering || song.previewAvailable === false;
+      if (preview.disabled) preview.title = state.hostRecovering ? 'Waiting for the game to reconnect.' : 'No audio preview is available for this song.';
       slider.type = 'range';
       slider.min = '0';
       slider.max = '0';
@@ -5007,7 +5061,7 @@ function handleClockPong(msg, route = 'server') {
   state.clock.jitterUs = previousRtt == null ? 0 : Math.round(Math.abs(rttUs - previousRtt));
   state.clock.confidence = Math.max(0, Math.min(1, 1 - state.clock.rttUs / 500_000));
   state.clock.synced = true;
-  rttValue.textContent = `${Math.round(state.clock.rttUs / 1000)} ms Â· ${route === 'direct' ? 'direct' : 'via server'}`;
+  rttValue.textContent = `${Math.round(state.clock.rttUs / 1000)} ms · ${route === 'direct' ? 'direct' : 'via server'}`;
   offsetValue.textContent = `${Math.round(state.clock.offsetUs / 1000)} ms`;
   if (state.hostSongStartUs && state.settings.playMusicOnDevice && !state.deviceMusicAudio) {
     maybeStartDeviceMusic();
@@ -5061,6 +5115,7 @@ async function handleMessage(message) {
     }
     state.lastClientHeartbeatSentMs = 0;
     state.lastClientHeartbeatAckMs = 0;
+    state.hostRecovering = false;
     state.rawPcmV1 = Boolean(message.rawPcmV1);
     state.audioCalibrationV1 = Boolean(message.audioCalibrationV1);
     Object.assign(state, {
@@ -5101,8 +5156,12 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'host.disconnected') {
-    closeP2p(false);
-    leaveClosedRoom('Game disconnected.');
+    waitForGameReconnect();
+    return;
+  }
+
+  if (message.type === 'host.resumed') {
+    if (message.roomId === state.roomId) resumeAfterGameReconnect();
     return;
   }
 
@@ -5589,7 +5648,7 @@ async function handleMessage(message) {
       const roomClosedText = message.reason === 'heartbeat_timeout'
         ? 'Connection to the relay timed out. Rejoin the room to reconnect.'
         : message.reason === 'host_disconnected' || message.reason === 'expired'
-          ? 'Game timed out.' : text;
+          ? 'Game timed out.' : message.code === 'room.closed' ? 'Game closed the room.' : text;
       if (message.reason === 'heartbeat_timeout') clientLog('relay.heartbeat_expired', {
         lastSentAgeMs:state.lastClientHeartbeatSentMs ? Math.round(performance.now()-state.lastClientHeartbeatSentMs) : null,
         lastAckAgeMs:state.lastClientHeartbeatAckMs ? Math.round(performance.now()-state.lastClientHeartbeatAckMs) : null,
@@ -5621,6 +5680,7 @@ function connectAndJoin(displayCode, name, resume = null) {
   state.ws = ws;
   connectionState.textContent = 'connecting';
   ws.addEventListener('open', () => {
+    if (state.ws !== ws) { ws.close(); return; }
     renderConnectionState();
     ws.send(JSON.stringify({
       type: 'client.join',
@@ -5640,14 +5700,15 @@ function connectAndJoin(displayCode, name, resume = null) {
     }));
   });
   ws.addEventListener('message', (event) => {
+    if (state.ws !== ws) return;
     const message = JSON.parse(event.data);
     handleMessage(message).catch((error) => {
       clientLog('message.error', { type: message?.type || '', error: error?.message || String(error) });
     });
   });
   ws.addEventListener('close', () => {
-    apiRequests.disconnect();
     if (state.ws !== ws) return;
+    apiRequests.disconnect();
     if (state.pageUnloading) {
       saveSessionForReload();
       return;
@@ -5663,12 +5724,13 @@ function connectAndJoin(displayCode, name, resume = null) {
     logLine('socket closed');
   });
   ws.addEventListener('error', () => {
+    if (state.ws !== ws) return;
     joinError.textContent = 'Connection failed';
     connectionState.textContent = 'error';
   });
 }
 
-function nativeAudioActive() { return Boolean(state.rawPcmV1 && Number(state.slot) >= 1 && Number(state.slot) <= 12 && state.roomId); }
+function nativeAudioActive() { return Boolean(!state.hostRecovering && state.rawPcmV1 && Number(state.slot) >= 1 && Number(state.slot) <= 12 && state.roomId); }
 
 async function stopMic() {
   digitalCalibration.cancel(true);
@@ -5792,7 +5854,7 @@ async function startMic() {
     // Calling resume in this gesture still unlocks browsers which require it here.
     resumeMicAudio(audioContext);
 
-    micStatus.textContent = 'Requesting microphone accessÃ¢â‚¬Â¦';
+    micStatus.textContent = 'Requesting microphone access…';
     const input = await createAudioInput(audioContext, {
       frequency: Number($('testAudioInput').value),
       mediaDevices: navigator.mediaDevices,
@@ -5840,7 +5902,7 @@ async function startMic() {
       source.connect(worklet).connect(silentSink);
     }
     if (state.rawPcmV1 || audioContext.sampleRate === 48000) {
-      micStatus.textContent = 'Preparing microphone audioÃ¢â‚¬Â¦';
+      micStatus.textContent = 'Preparing microphone audio…';
       state.pcmSender = new NativePcmSender({ active: nativeAudioActive,
         channel: () => state.p2p.dc,
         relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message) });

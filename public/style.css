@@ -1317,3 +1317,19 @@ dd {
 .prefer-text-labels .icon-action .action-label { display: inline; }
 .prefer-text-labels .icon-action .action-icon { display: none; }
 [hidden] { display: none !important; }
+
+.host-recovery {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 110;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 10px 14px;
+  border: 1px solid #806425;
+  border-radius: 8px;
+  background: #422f08;
+  color: #fcd34d;
+  font-size: 14px;
+}
