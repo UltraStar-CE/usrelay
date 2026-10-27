@@ -8,6 +8,7 @@ export class PartySession {
   constructor({players, library, playlist, gameState, send, command, now = Date.now, catalogReady = () => true}) {
     Object.assign(this,{players,library,playlist,gameState,send,command,now,catalogReady});
     this.likes=new Map(); this.played=new Set(); this.leaderboard=new Map();
+    this.scoredRounds=new Set();
     this.enabled=false; this.gameActive=false; this.dirty=true;
     this.minPlayers=2; this.endless=false; this.playback={}; this.source='all';
     this.deadline=0; this.owner=null; this.sequence=1000000000; this.pending=new Map();
@@ -89,13 +90,45 @@ export class PartySession {
     const stopping=[...this.pending.values()].includes('stop');
     this.pending.clear();
     this.gameActive=Boolean(message.active);
+    if(Number.isInteger(message.sessionSeq))this.nativeSessionSeq=message.sessionSeq;
     if(!this.gameActive)this.currentMatch=null;
     if(message.reason==='manual')this.enabled=false;
     this.queueFingerprint=null;
     this.dirty=true;
     if(stopping&&this.gameActive)this.issue('continuous.stop',{},'stop');
   }
+  recordResult(message, participants) {
+    const seq=Number(message.songSeq);
+    if(!Number.isInteger(seq)||seq<0||this.scoredRounds.has(seq))return;
+    this.scoredRounds.add(seq);
+    for(const result of message.players||[]) {
+      const player=participants?.get(Number(result.slot));
+      if(!player?.playerId)continue;
+      const total=this.leaderboard.get(player.playerId)||{playerId:player.playerId,name:player.name,score:0,songs:0};
+      total.score+=Number(result.scoreTotal)||0;++total.songs;
+      this.leaderboard.set(player.playerId,total);
+    }
+    this.dirty=true;
+  }
+  recoverResults(snapshot) {
+    if(!this.owner)return; // Only recover a Party session this relay started.
+    const markPlayed=round=>{
+      const song=this.library().find(song=>round.catalogKey&&song.catalogKey===round.catalogKey);
+      if(song)this.played.add(Number(song.songId));
+    };
+    for(const round of snapshot.rounds||[]) {
+      if(round.sessionSeq!==this.nativeSessionSeq)continue;
+      markPlayed(round);
+      this.recordResult(round,new Map((round.participants||[]).map(p=>[Number(p.slot),p])));
+    }
+    if(snapshot.currentRound&&snapshot.currentRound.sessionSeq===this.nativeSessionSeq){
+      markPlayed(snapshot.currentRound);
+      this.participants=new Map((snapshot.currentRound.participants||[]).map(p=>[Number(p.slot),p]));
+    }
+    this.dirty=true;
+  }
   observe(message) {
+    if(message.type==='continuous.state'&&message.active&&Number.isInteger(message.sessionSeq))this.nativeSessionSeq=message.sessionSeq;
     if(message.type==='game.state') this.dirty=true;
     if(message.type==='ack'&&this.pending.has(message.commandId)) {
       const kind=this.pending.get(message.commandId); this.pending.delete(message.commandId);
@@ -114,16 +147,7 @@ export class PartySession {
       this.dirty=true;
     }
     if(message.type==='song.ended'&&this.gameActive) {
-      if(this.lastScoredSeq===message.songSeq) return;
-      this.lastScoredSeq=message.songSeq;
-      for(const result of message.players||[]) {
-        const player=this.participants?.get(Number(result.slot));
-        if(!player) continue;
-        const total=this.leaderboard.get(player.playerId)||{playerId:player.playerId,name:player.name,score:0,songs:0};
-        total.score+=Number(result.scoreTotal)||0; ++total.songs;
-        this.leaderboard.set(player.playerId,total);
-      }
-      this.dirty=true;
+      this.recordResult(message,this.participants);
     }
   }
   refresh() {

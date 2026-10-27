@@ -11,7 +11,7 @@ function fixture(){
  hosted.party.leaderboard.set('a',{playerId:'a',name:'Singer',score:10000,songs:1});
  hosted.party.enabled=true;hosted.party.minPlayers=1;hosted.party.playback={playerSetupSeconds:5};
  hosted.party.owner={playerId:'a'};
- const api=()=>hosted.observe({type:'api.state',libraryHash:'same',playlistItems:[{songId:8}]});
+ const api=()=>{hosted.observe({type:'api.state',libraryHash:'same',playlistItems:[{songId:8}]});hosted.observe({type:'song.results',rounds:[]});};
  const reply=async()=>{
   const loading=hosted.loading;const query=commands.filter(m=>m.command==='song.list').at(-1);
   hosted.observe({type:'ack',commandId:query.commandId,accepted:true,data:{snapshotId:'same',total:2,offset:0,songs:hosted.library}});
@@ -61,5 +61,27 @@ test('an aborted catalog request cannot impose a stale retry delay on the resume
   await old;assert.equal(f.hosted.retryAfter,0);
   assert.equal(f.commands.filter(m=>m.command==='song.list').length,2);
   await f.reply();assert.equal(f.hosted.loaded,true);
+ }finally{f.hosted.close();}
+});
+
+test('missed results recover once after native stop, before queue advancement, with original singers and current catalog IDs',async()=>{
+ const f=fixture();try{
+  f.hosted.party.leaderboard.clear();f.hosted.party.played.clear();f.hosted.party.nativeSessionSeq=4;
+  f.hosted.suspend();
+  f.hosted.observe({type:'api.state',libraryHash:'same',playlistItems:[]});
+  f.hosted.observe({type:'continuous.state',active:false,reason:'exhausted',sessionSeq:4});
+  assert.equal(f.commands.length,0,'wait for the result journal before catalog/start commands');
+  const result={songSeq:20,sessionSeq:4,songId:99,catalogKey:'file-A',participants:[{slot:2,playerId:'original',name:'Original'}],players:[{slot:2,scoreTotal:9000}]};
+  const snapshot={type:'song.results',rounds:[result]};
+  f.hosted.observe(snapshot);await f.reply();
+  assert.equal(f.hosted.party.leaderboard.get('original').score,9000);
+  assert.equal(f.hosted.party.leaderboard.has('a'),false,'new occupant cannot inherit an old singer score');
+  assert.ok(f.hosted.party.played.has(7),'played history follows the stable file identity');
+  assert.deepEqual(f.commands.find(m=>m.command==='continuous.start').args.songIds,[8]);
+  f.hosted.observe(snapshot);assert.equal(f.hosted.party.leaderboard.get('original').songs,1);
+  f.hosted.observe({type:'song.results',rounds:[{...result,songSeq:19},{...result,songSeq:20}]});
+  assert.equal(f.hosted.party.leaderboard.get('original').score,18000,'out-of-order older rounds do not let a newer duplicate count twice');
+  f.hosted.observe({type:'song.results',rounds:[{...result,songSeq:21,sessionSeq:3}]});
+  assert.equal(f.hosted.party.leaderboard.get('original').score,18000,'previous native sessions cannot contaminate current match history');
  }finally{f.hosted.close();}
 });

@@ -18,18 +18,20 @@ export class HostedParty {
   }
   suspend() {
     if(this.closed||this.suspended)return;
-    this.suspended=true;this.generation++;this.resumeApi=null;this.resumePlayback=null;
+    this.suspended=true;this.generation++;this.resumeApi=null;this.resumePlayback=null;this.resumeResults=null;
     this.loaded=false;this.retryAfter=0;this.requests.disconnect();
     this.party.rosterChanged();this.party.tick();
   }
   resumeSnapshot(message) {
     if(message.type==='api.state')this.resumeApi=message;
     if(message.type==='continuous.state')this.resumePlayback=message;
-    if(!this.resumeApi||!this.resumePlayback)return false;
+    if(message.type==='song.results')this.resumeResults=message;
+    if(!this.resumeApi||!this.resumePlayback||!this.resumeResults)return false;
     this.suspended=false;
     this.party.reconcilePlayback(this.resumePlayback);
     // Reload even an unchanged hash to validate the current game's IDs.
     this.snapshotId=this.resumeApi.libraryHash;this.retryAfter=0;
+    this.pendingResults=this.resumeResults;
     if(Array.isArray(this.resumeApi.playlistItems))this.playlist=this.resumeApi.playlistItems;
     this.loadLibrary();
     return true;
@@ -47,6 +49,7 @@ export class HostedParty {
       if(expectedSnapshot && result.snapshotId!==expectedSnapshot)throw Error('snapshot_changed');
       this.party.reindexLibrary(this.library,result.songs);
       this.library=result.songs;this.loaded=true;this.loadedSnapshotId=result.snapshotId;
+      if(this.pendingResults){this.party.recoverResults(this.pendingResults);this.pendingResults=null;}
       if(this.party.notice.startsWith('Song loading failed:'))this.party.notice='';
       for(const message of this.pendingVotes.splice(0))this.party.handle(message);
       this.party.rosterChanged();this.party.tick();
@@ -57,6 +60,10 @@ export class HostedParty {
   observe(message) {
     if(this.closed)return;
     if(this.suspended){this.resumeSnapshot(message);return;}
+    if(message.type==='song.results') {
+      if(this.loaded)this.party.recoverResults(message);else this.pendingResults=message;
+      this.party.tick();return;
+    }
     if(message.type==='ack'&&this.requests.accept(message))return;
     if(message.type==='api.state'||message.type==='song.select.state'||message.type==='playlist.state') {
       if(message.type==='api.state' && message.libraryHash!==this.snapshotId) {

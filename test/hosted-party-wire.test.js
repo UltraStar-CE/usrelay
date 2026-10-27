@@ -83,7 +83,7 @@ test('authenticated host reconnection preserves Party votes/settings and reconci
  const disconnected=readPhone(m=>m.type==='host.disconnected');host.close();await disconnected;
  host=new WebSocket(`ws://127.0.0.1:${port}/ws/host`);readHost=inbox(host);await once(host,'open');
  sendHost({type:'host.hello',roomId:room.roomId,hostToken:room.hostToken,maxPlayers:12});await readHost(m=>m.type==='room.resumed');await readPhone(m=>m.type==='host.resumed');
- sendHost({type:'game.state',state:'player_setup',seq:2});sendHost({type:'continuous.state',active:true});sendHost(api);
+ sendHost({type:'game.state',state:'player_setup',seq:2});sendHost({type:'continuous.state',active:true});sendHost(api);sendHost({type:'song.results',rounds:[]});
  answer(await readHost(m=>m.command==='song.list'));
  const queue=await readHost(m=>m.command?.startsWith('continuous.'));
  assert.equal(queue.command,'continuous.queue','do not start the accepted native session a second time');
