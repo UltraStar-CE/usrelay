@@ -1422,6 +1422,11 @@ function handleHostMessage(conn, msg) {
 
   if (msg.type === 'api.state') {
     room.lastApiState = {...msg, protocol:protocolVersion};
+    if (room.lastSongSelectState) {
+      for (const field of ['playlists', 'playlistItems', 'curPlaylist']) {
+        if (Object.hasOwn(msg, field)) room.lastSongSelectState[field] = msg[field];
+      }
+    }
     broadcastPlayers(room, room.lastApiState);
     return;
   }

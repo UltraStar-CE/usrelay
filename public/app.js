@@ -1943,7 +1943,7 @@ function renderLockGameInfo() {
     panel.replaceChildren();
     if (info) {
       const title = document.createElement('strong');
-      title.textContent = [info.artist, info.title].filter(Boolean).join(' — ');
+      title.textContent = [info.artist, info.title].filter(Boolean).join(' â€” ');
       panel.append(title);
       if (info.difficulty) {
         const difficulty = document.createElement('p');
@@ -1953,7 +1953,7 @@ function renderLockGameInfo() {
       const list = document.createElement('ol');
       for (const entry of (info.entries || []).slice(0, 20)) {
         const row = document.createElement('li');
-        row.textContent = `${entry.name || `Mic ${entry.slot}`} · ${Math.round(Number(entry.score) || 0)}`;
+        row.textContent = `${entry.name || `Mic ${entry.slot}`} Â· ${Math.round(Number(entry.score) || 0)}`;
         list.append(row);
       }
       panel.append(list);
@@ -2506,7 +2506,7 @@ function renderMicRooms() {
   lobbyButton.append(lobbyTitle, lobbyMeta);
   lobbyButton.classList.toggle('empty-lobby', !lobbyOccupants.length);
   if (!lobbyOccupants.length) {
-    lobbyTitle.textContent = shownSlot > 0 ? 'Leave mic · Lobby' : 'Lobby';
+    lobbyTitle.textContent = shownSlot > 0 ? 'Leave mic Â· Lobby' : 'Lobby';
     lobbyMeta.hidden = true;
   }
 
@@ -2600,7 +2600,7 @@ function playlistKey(playlist) {
 function selectedPlaylist() {
   const playlists = Array.isArray(state.songSelect?.playlists) ? state.songSelect.playlists : [];
   let playlist = state.songPlaylistIndex == null ? null : playlistByIndex(state.songPlaylistIndex);
-  if (!playlist && state.songPlaylistKey) {
+  if (state.songPlaylistKey && (!playlist || playlistKey(playlist) !== state.songPlaylistKey)) {
     playlist = playlists.find((item) => playlistKey(item) === state.songPlaylistKey) || null;
     if (playlist) state.songPlaylistIndex = Number(playlist.index);
   }
@@ -2644,9 +2644,16 @@ function addOverlayTargetToPlaylist(playlistIndex, sourceButton = null) {
   closePlaylistOverlay();
 }
 
+function playlistEditingAvailable() {
+  return ['main_menu', 'song_select'].includes(state.gameState);
+}
+
 function renderPlaylistOverlay() {
   if (!playlistOverlay || playlistOverlay.classList.contains('hidden')) return;
   const target = state.playlistOverlayTarget;
+  const editable = playlistEditingAvailable();
+  playlistOverlayCreateButton.disabled = !editable;
+  playlistOverlayCreateInput.disabled = !editable;
   const data = state.songSelect || {};
   const playlists = Array.isArray(data.playlists) ? data.playlists : [];
   playlistOverlayTitle.textContent = target?.mode === 'results' ? 'Add all matching songs' : 'Add song';
@@ -2669,6 +2676,7 @@ function renderPlaylistOverlay() {
     const meta = document.createElement('span');
     button.type = 'button';
     button.className = 'playlist-choice';
+    button.disabled = !editable;
     name.textContent = playlist.name || `Playlist ${Number(playlist.index) + 1}`;
     meta.textContent = `${playlist.size || 0} songs - ${playlist.fixedOrder ? 'ordered' : 'random'}`;
     button.append(name, meta);
@@ -2837,9 +2845,6 @@ function showPlaylistSongs(playlist, sourceButton = null) {
   state.songPlaylistKey = playlistKey(target);
   state.showLikedSongsOnly = false;
   resetSongPage();
-  if (Number.isInteger(Number(state.songPlaylistIndex)) && Number(state.songPlaylistIndex) >= 0) {
-    sendControl('playlist.load', { playlistIndex: Number(state.songPlaylistIndex) }, sourceButton);
-  }
   renderSongSelectState();
 }
 
@@ -4645,7 +4650,11 @@ function renderSongSelectState() {
     scheduleFullSongListRequest('ready-without-catalog');
   }
   renderSongLibraryProgress(progress, Boolean(searchableCount));
-  addResultsButton.disabled = !results.length;
+  const playlistsEditable = playlistEditingAvailable();
+  const editHint = $('playlistEditHint');
+  if (editHint) editHint.classList.toggle('hidden', playlistsEditable);
+  for (const input of playlistCreateForm.querySelectorAll('input, button')) input.disabled = !playlistsEditable;
+  addResultsButton.disabled = !results.length || !playlistsEditable;
   if (likeVisibleSongsButton) likeVisibleSongsButton.disabled = !results.length;
   if (likeVisibleSongsButton) likeVisibleSongsButton.title = 'Like all matched songs, not just this page';
   if (downloadSongsCsvButton) downloadSongsCsvButton.disabled = !results.length;
@@ -4694,7 +4703,9 @@ function renderSongSelectState() {
     const item = document.createElement('li');
     item.className = 'empty-player';
     item.textContent = library.length
-      ? `No matches for "${state.songFilterText}"`
+      ? (String(state.songFilterText || '').trim()
+        ? `No matches for "${state.songFilterText}"`
+        : (shownPlaylist ? 'This playlist is empty. Use All Songs to add songs.' : 'No songs match this filter.'))
       : (previewResults.length
         ? `Waiting for the song catalog before searching (${fullListRequestText}).`
       : (['receiving', 'requesting', 'requesting_full', 'catalog_accepted', 'catalog_forwarded', 'catalog_timeout'].includes(scanStatus)
@@ -4741,6 +4752,8 @@ function renderSongSelectState() {
 
       const playlistAction = document.createElement('button');
       playlistAction.type = 'button';
+      playlistAction.disabled = !playlistsEditable;
+      if (!playlistsEditable) playlistAction.title = 'Edit playlists from the game main menu or song selection.';
       if (hasLoadedPlaylist && loadedPlaylistSongIds.has(songId)) {
         playlistAction.textContent = 'Remove';
         playlistAction.addEventListener('click', () => {
@@ -4796,12 +4809,13 @@ function renderSongSelectState() {
 
     const show = document.createElement('button');
     show.type = 'button';
-    show.textContent = state.songPlaylistIndex === playlist.index ? 'Reload' : 'Show';
+    show.textContent = 'Show';
     show.addEventListener('click', () => showPlaylistSongs(playlist, show));
 
     const del = document.createElement('button');
     del.type = 'button';
     del.textContent = 'Delete';
+    del.disabled = !playlistsEditable;
     del.addEventListener('click', async () => {
       const name = playlist.name || `Playlist ${playlist.index + 1}`;
       const roomId = state.roomId;
@@ -4812,6 +4826,7 @@ function renderSongSelectState() {
 
     const order = document.createElement('button');
     order.type = 'button';
+    order.disabled = !playlistsEditable;
     order.textContent = playlist.fixedOrder ? 'Random' : 'Ordered';
     order.title = playlist.fixedOrder ? 'Allow random playlist order' : 'Use fixed playlist order';
     order.addEventListener('click', () => {
@@ -5003,7 +5018,7 @@ function handleClockPong(msg, route = 'server') {
   state.clock.jitterUs = previousRtt == null ? 0 : Math.round(Math.abs(rttUs - previousRtt));
   state.clock.confidence = Math.max(0, Math.min(1, 1 - state.clock.rttUs / 500_000));
   state.clock.synced = true;
-  rttValue.textContent = `${Math.round(state.clock.rttUs / 1000)} ms · ${route === 'direct' ? 'direct' : 'via server'}`;
+  rttValue.textContent = `${Math.round(state.clock.rttUs / 1000)} ms Â· ${route === 'direct' ? 'direct' : 'via server'}`;
   offsetValue.textContent = `${Math.round(state.clock.offsetUs / 1000)} ms`;
   if (state.hostSongStartUs && state.settings.playMusicOnDevice && !state.deviceMusicAudio) {
     maybeStartDeviceMusic();
@@ -5227,6 +5242,7 @@ async function handleMessage(message) {
       state.songSeq = nextSongSeq;
     }
     state.gameState = incomingGameState;
+    if (previousGameState !== state.gameState) renderSongSelectState();
     state.maxPlayers = Number(message.maxPlayers || state.maxPlayers || 6);
     if(Array.isArray(message.inputs)) state.inputSlots=message.inputs;
     if (Array.isArray(message.players)) {
@@ -5768,7 +5784,7 @@ async function startMic() {
     // Calling resume in this gesture still unlocks browsers which require it here.
     resumeMicAudio(audioContext);
 
-    micStatus.textContent = 'Requesting microphone accessâ€¦';
+    micStatus.textContent = 'Requesting microphone accessÃ¢â‚¬Â¦';
     const input = await createAudioInput(audioContext, {
       frequency: Number($('testAudioInput').value),
       mediaDevices: navigator.mediaDevices,
@@ -5816,7 +5832,7 @@ async function startMic() {
       source.connect(worklet).connect(silentSink);
     }
     if (state.rawPcmV1 || audioContext.sampleRate === 48000) {
-      micStatus.textContent = 'Preparing microphone audioâ€¦';
+      micStatus.textContent = 'Preparing microphone audioÃ¢â‚¬Â¦';
       state.pcmSender = new NativePcmSender({ active: nativeAudioActive,
         channel: () => state.p2p.dc,
         relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message) });

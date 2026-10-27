@@ -45,4 +45,16 @@ test('native room hosts Party votes, continuous playback and roster changes with
  assert.deepEqual(update.args.songIds,[]);
  send({type:'control.command',commandId:32,command:'party.stop'});
  assert.equal((await readHost(m=>m.command==='continuous.stop')).command,'continuous.stop');
+ sendHost({type:'song.select.state',playlists:[{index:0,name:'Old list'}],curPlaylist:0});
+ await readPhone(m=>m.type==='song.select.state');
+ sendHost({type:'api.state',libraryHash:'party-test',apiCapabilities:['song.list','continuous.start'],
+   playlists:[{index:0,name:'Edited list',fixedOrder:true,items:[{songId:7}]}],curPlaylist:0});
+ await readPhone(m=>m.type==='api.state'&&m.playlists[0].name==='Edited list');
+ const late=new WebSocket(`ws://127.0.0.1:${port}/ws/client`),readLate=inbox(late);t.after(()=>late.close());await once(late,'open');
+ late.send(JSON.stringify({protocol:1,type:'client.join',displayCode:room.displayCode,name:'Late browser',preferredSlot:0}));
+ await readLate(m=>m.type==='client.joined');
+ const replay=await readLate(m=>m.type==='song.select.state');
+ assert.equal(replay.playlists[0].name,'Edited list','late screen replay cannot overwrite newer API playlist edits');
+ assert.equal(replay.playlists[0].items[0].songId,7);
+
 });
