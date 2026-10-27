@@ -47,8 +47,28 @@ test('route and input changes invalidate previous compensation; no stale start w
   f.calibration.handle({type:'audio.calibration.started',requestId:id,startHostUs:4750000,
     stepUs:250000,notes:Array(16).fill(0)});
   assert.equal(f.waves.length,0);
-  f.time=6000;f.calibration.update(f.context);assert.equal(f.sent.at(-1).type,'audio.calibration.request');
+  f.time=4000;f.calibration.update(f.context);
+  f.time=7000;f.calibration.update(f.context);assert.equal(f.sent.at(-1).type,'audio.calibration.request');
   f.context.input={};f.calibration.update(f.context);
+  assert.equal(f.sent.at(-1).type,'audio.calibration.cancel');
+});
+
+test('brief song-loading ACK stalls preserve accepted compensation; sustained route change invalidates it',()=>{
+  const f=fixture();f.calibration.update(f.context);f.time=3000;f.calibration.update(f.context);
+  const id=f.sent[0].requestId;
+  f.calibration.handle({type:'audio.calibration.result',requestId:id,accepted:true,
+    delayMs:55,uncertaintyMs:20,observations:200,matches:190});
+  f.context.clock.rttUs=300000;f.calibration.update(f.context);
+  assert.equal(f.calibration.result.delayMs,55,'clock quality gates new fits, not an already measured input');
+  f.context.clock.rttUs=2000;
+  f.context.idle=false;f.context.route='server';f.time=5000;f.calibration.update(f.context);
+  f.time=5500;f.calibration.update(f.context);
+  f.context.route='direct';f.time=5700;f.calibration.update(f.context);
+  assert.equal(f.calibration.result.delayMs,55);
+  assert.equal(f.sent.length,1,'transient overlap must not invalidate the game baseline');
+  f.context.route='server';f.time=6000;f.calibration.update(f.context);
+  f.time=7000;f.calibration.update(f.context);
+  assert.equal(f.calibration.result,null);
   assert.equal(f.sent.at(-1).type,'audio.calibration.cancel');
 });
 

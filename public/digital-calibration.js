@@ -16,23 +16,42 @@ export class DigitalCalibration {
   update(context) {
     this.context=context;
     const identity=`${context.roomId||''}/${context.playerId||''}/${context.slot||0}`;
-    if(identity!==this.identity || context.input!==this.input || context.route!==this.route) {
+    if(identity!==this.identity || context.input!==this.input) {
       this.cancel(true);
       this.identity=identity;this.input=context.input;this.route=context.route;
+      this.routeCandidate=context.route;this.routeSince=this.now();
       this.readySince=this.now();this.retryAt=0;this.status='waiting';
     }
-    const ready=context.supported && context.running && context.input &&
-      context.slot>=1 && context.slot<=12 && context.clock?.synced &&
+    if(this.routeCandidate!==context.route) {
+      this.routeCandidate=context.route;this.routeSince=this.now();
+    }
+    if(context.route!==this.route) {
+      // Cancel an in-progress fit immediately, but retain an accepted baseline
+      // across brief receiver-ACK stalls while song media is loading.
+      if(this.current) {this.cancel(true);this.readySince=this.now();this.status='waiting';}
+      if(this.now()-this.routeSince>=1000) {
+        this.cancel(true);this.route=context.route;
+        this.readySince=this.now();this.retryAt=0;this.status='waiting';
+      }
+    }
+    const inputReady=context.supported && context.running && context.input &&
+      context.slot>=1 && context.slot<=12;
+    const clockReady=context.clock?.synced &&
       Number.isFinite(context.clock.offsetUs) && Number.isFinite(context.clock.rttUs) &&
       context.clock.rttUs>=0 && context.clock.rttUs<=200000;
-    if(!ready) {
+    if(!inputReady) {
       if(this.current || this.result) this.cancel(true);
       this.readySince=this.now();this.status='waiting';return;
+    }
+    if(!clockReady) {
+      if(this.current) this.cancel();
+      this.readySince=this.now();if(!this.result) this.status='waiting';return;
     }
     if(!context.idle) {
       if(this.current) {this.cancel();this.retryAt=this.now()+10000;}
       this.readySince=this.now();return;
     }
+    if(context.route!==this.route) return;
     if(this.current && this.now()>this.current.deadline) {
       this.cancel();this.status='unavailable';this.retryAt=this.now()+30000;
     }
