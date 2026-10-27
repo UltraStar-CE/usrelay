@@ -369,6 +369,7 @@ function publicRoom(room) {
     hostConnected: Boolean(room.host),
     maxPlayers: room.maxPlayers,
     gamePlayerCount: activeGamePlayerCount(room),
+    playerColors: room.playerColors || [],
     players: [...room.players.values()].filter((player) => isLivePlayer(player)).map((player) => ({
       playerId: player.playerId,
       name: player.name,
@@ -787,7 +788,8 @@ function updateRoomGameState(room, options = {}) {
     maxPlayers: room.maxPlayers,
     gamePlayerCount: activeGamePlayerCount(room),
     controllerPlayerId: room.controllerPlayerId,
-    inputs: room.inputs || []
+    inputs: room.inputs || [],
+    playerColors: room.playerColors || []
   };
   room.hostedParty?.rosterChanged();
   if (options.broadcast !== true) return;
@@ -1452,6 +1454,8 @@ function handleHostMessage(conn, msg) {
   }
 
   if (msg.type === 'input.state') {
+    room.playerColors = (Array.isArray(msg.playerColors) ? msg.playerColors : []).slice(0,24)
+      .map(color => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color) ? color : null);
     room.inputs = (Array.isArray(msg.inputs) ? msg.inputs : []).filter(input=>
       Number.isInteger(input.slot)&&input.slot>=1&&input.slot<=(input.local===true?24:12)).map(input=>({slot:input.slot,
         local:input.local===true,source:['local','direct','server'].includes(input.source)?input.source:'server',
@@ -1476,6 +1480,7 @@ function handleHostMessage(conn, msg) {
         : room.controllerPlayerId,
       maxPlayers: room.maxPlayers,
       inputs: room.inputs || [],
+      playerColors: room.playerColors || [],
       gamePlayerCount: Array.isArray(room.inputs) ? activeGamePlayerCount(room) : Number.isFinite(Number(msg.gamePlayerCount))
         ? Math.max(0, Math.min(24, Math.round(Number(msg.gamePlayerCount))))
         : activeGamePlayerCount(room)

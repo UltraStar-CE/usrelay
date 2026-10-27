@@ -58,4 +58,12 @@ test('generic song query uses authenticated command routing and targeted reply',
     assert.equal(forwardedCommand.playerId,player.playerId);
   }
 
+  const inputColors=message(phone,'game.state');
+  host.send(JSON.stringify({type:'input.state',protocol:1,inputs:[],playerColors:['#123456','#ABCDEF','invalid']}));
+  assert.deepEqual((await inputColors).playerColors,['#123456','#ABCDEF',null]);
+  const screenColors=message(phone,'game.state');
+  host.send(JSON.stringify({type:'game.state',protocol:1,state:'main_menu',players:[]}));
+  assert.deepEqual((await screenColors).playerColors,['#123456','#ABCDEF',null],
+    'screen changes retain the authoritative game palette');
+
 });

@@ -439,6 +439,19 @@ function slotColorClass(slot) {
   return slotColorClasses[((Number(slot) || 1) - 1) % (slotColorClasses.length - 1) + 1] || 'mic-blue';
 }
 
+function applySlotColor(element, slot) {
+  if (!element) return;
+  const color = state.playerColors?.[Number(slot) - 1];
+  for (const property of ['--room-color','--room-light','--room-text','--occupied-text']) element.style.removeProperty(property);
+  if (Number(slot) <= 0 || typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color)) return;
+  const channels = [1,3,5].map(offset => parseInt(color.slice(offset,offset+2),16));
+  element.style.setProperty('--room-color',color);
+  element.style.setProperty('--room-light',`rgba(${channels.join(',')},0.18)`);
+  element.style.setProperty('--room-text',color);
+  const linear = channels.map(value => value/255 <= 0.04045 ? value/255/12.92 : ((value/255+0.055)/1.055)**2.4);
+  element.style.setProperty('--occupied-text',linear[0]*0.2126+linear[1]*0.7152+linear[2]*0.0722 > 0.179 ? '#111111' : '#ffffff');
+}
+
 function slotLabelText(slot) {
   const number = Number(slot);
   return number > 0 ? `Mic ${number}` : 'Lobby';
@@ -801,7 +814,7 @@ function playerUiSignature(player = {}) {
 }
 
 function playersUiSignature(players = []) {
-  return players.map(playerUiSignature).join('|');
+  return players.map(playerUiSignature).join('|') + JSON.stringify(state.playerColors || []);
 }
 
 function liveUiPlayers(players = state.players) {
@@ -1157,6 +1170,7 @@ function clearStoredRoom() {
   state.playerId = null;
   state.playerToken = null;
   state.inputSlots = [];
+  state.playerColors = [];
   state.screenInfo = null;
 }
 
@@ -1807,6 +1821,7 @@ function renderLockIdentity() {
   if (lockPanel) {
     lockPanel.classList.remove(...slotColorClasses.filter(Boolean), 'mic-lobby');
     lockPanel.classList.add(colorClass);
+    applySlotColor(lockPanel,slot);
   }
   renderLockLyrics();
 }
@@ -2446,6 +2461,7 @@ function updateGameStateView() {
     name.textContent = player.name || 'Player';
     meta.textContent = `${slotLabelText(player.slot)} - ${player.role || 'viewer'}`;
     badge.className = player.connected === false ? 'badge offline' : `badge ${slotColorClass(player.slot)}`;
+    if (player.connected !== false) applySlotColor(badge,player.slot);
     badge.textContent = player.connected === false ? 'offline' : 'online';
     item.append(name, meta, badge);
     playerList.append(item);
@@ -2478,6 +2494,7 @@ function renderControlPlayers() {
     const name = document.createElement('strong');
     const meta = document.createElement('span');
     row.className = `control-player ${slotColorClass(player.slot)}`;
+    applySlotColor(row,player.slot);
     name.textContent = player.name || 'Player';
     meta.textContent = `${slotLabelText(player.slot)} - ${player.role || 'viewer'}`;
     label.append(name, meta);
@@ -2622,6 +2639,7 @@ function renderMicRooms() {
     const metaWrap = document.createElement('span');
     button.type = 'button';
     button.className = `mic-room ${slotColorClass(slot)}`;
+    applySlotColor(button,slot);
     button.dataset.slot = String(slot);
     if (shownSlot === slot) button.classList.add('active-room');
     const occupiedByOther = Boolean(occupant && occupant.connected !== false && occupant.playerId !== state.playerId);
@@ -4966,6 +4984,7 @@ function renderSlotButtons() {
     button.type = 'button';
     button.textContent = occupant ? `Mic ${slot} ${occupant.name || ''}`.trim() : `Mic ${slot}`;
     button.className = `slot-button ${slotColorClass(slot)}`;
+    applySlotColor(button,slot);
     if (Number(state.slot) === slot) button.classList.add('active-slot');
     button.disabled = Boolean(occupant && occupant.playerId !== state.playerId);
     button.addEventListener('click', () => {
@@ -5358,6 +5377,7 @@ async function handleMessage(message) {
     if (previousGameState !== state.gameState) renderSongSelectState();
     state.maxPlayers = Number(message.maxPlayers || state.maxPlayers || 6);
     if(Array.isArray(message.inputs)) state.inputSlots=message.inputs;
+    if(Array.isArray(message.playerColors)) state.playerColors=message.playerColors;
     if (Array.isArray(message.players)) {
       state.players = message.players.map((player) => mergeProfileIntoPlayer({ ...player }, player));
       const self = state.players.find((player) => player.playerId === state.playerId);
