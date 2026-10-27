@@ -4565,6 +4565,7 @@ function reconcileDeviceMusic() {
 function activateDeviceMusic(reason = '') {
   if (!state.settings.playMusicOnDevice) return;
   state.deviceMusicBlocked = false;
+  if (!state.deviceMusicAudio) setDeviceMusicStatus('Device music enabled. Waiting for game audio.');
   if (state.deviceMusicAudio) {
     playDeviceMusicAudio(reason);
   } else {
@@ -6536,6 +6537,9 @@ loadProfile();
 resolveStoredAvatar();
 loadSettings();
 renderSettings();
+setDeviceMusicStatus(state.settings.playMusicOnDevice
+  ? 'Device music enabled. Waiting for game audio.'
+  : 'Device music is off.');
 setTab(localStorage.getItem(tabKey) || 'mic');
 applyWakeLock();
 
