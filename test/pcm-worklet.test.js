@@ -44,17 +44,24 @@ for (const rate of [44100,48000,96000]) {
       context.currentTime=frame*128/rate;
       sender.process([[input]]);
     }
+    const microphone=packets.filter(p=>new DataView(p).getUint32(0,true)===0x31504155);
+    const calibration=packets.filter(p=>new DataView(p).getUint32(0,true)===0x31434155);
     const pcm=[];
-    for(let index=0;index<packets.length;index++) {
-      const view=new DataView(packets[index]);
+    for(let index=0;index<microphone.length;index++) {
+      const view=new DataView(microphone[index]);
       assert.equal(view.getUint32(4,true),index,'calibration must not reset the receiver sequence');
       assert.equal(view.getUint32(16,true),index*480,'sample clock must stay continuous');
       for(let i=0;i<480;i++) pcm.push(view.getInt16(20+2*i,true)/32768);
     }
-    assert.ok(pcm.slice(100,4700).every(x=>Math.abs(x-0.6)<0.001),'capture before calibration');
-    assert.ok(pcm.slice(197000).every(x=>Math.abs(x-0.6)<0.001),'capture after the bounded four-second ladder');
+    assert.ok(pcm.slice(100).every(x=>Math.abs(x-0.6)<0.001),'calibration must never replace real capture');
+    const calibrationPcm=new Float64Array(pcm.length).fill(NaN);
+    for(const packet of calibration) {
+      const view=new DataView(packet),offset=view.getUint32(16,true);
+      for(let i=0;i<480;i++) calibrationPcm[offset+i]=view.getInt16(20+2*i,true)/32768;
+    }
+    assert.ok(Number.isNaN(calibrationPcm[198000]),'calibration must stop after four seconds');
     let error=0;
-    for(let i=4900;i<9600;i++) error+=(pcm[i]-0.25*Math.sin(2*Math.PI*65.40639132514966*(i-4800)/48000))**2;
+    for(let i=4900;i<9600;i++) error+=(calibrationPcm[i]-0.25*Math.sin(2*Math.PI*65.40639132514966*(i-4800)/48000))**2;
     assert.ok(Math.sqrt(error/4700)<0.003,'C2 timing must match the context-clock reference');
   });
 }
@@ -76,8 +83,11 @@ test('calibration validates commands and cancellation immediately restores captu
   sender.port.onmessage({data:{type:'calibration.cancel',id:'old-trial'}});
   assert.equal(sender.calibration.id,'trial','old cancellation must not cancel a new measurement');
   sender.process([[new Float32Array(480).fill(0.6)]]);
-  assert.ok(new Int16Array(packets[0],20).some(x=>Math.abs(x)<1000));
+  assert.equal(new DataView(packets[0]).getUint32(0,true),0x31504155);
+  assert.ok(new Int16Array(packets[0],20).every(x=>Math.abs(x/32768-0.6)<0.001));
+  assert.equal(new DataView(packets[1]).getUint32(0,true),0x31434155);
   sender.port.onmessage({data:{type:'calibration.cancel',id:'trial'}});
   sender.process([[new Float32Array(480).fill(0.6)]]);
-  assert.ok(new Int16Array(packets[1],20).every(x=>Math.abs(x/32768-0.6)<0.001));
+  assert.equal(packets.length,3,'cancellation must stop the calibration stream');
+  assert.ok(new Int16Array(packets[2],20).every(x=>Math.abs(x/32768-0.6)<0.001));
 });

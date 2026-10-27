@@ -60,12 +60,13 @@ export class NativePcmSender {
   }
   submit(packet) {
     if (!this.active() || !(packet instanceof ArrayBuffer) || packet.byteLength !== 980) return;
+    const calibration = new DataView(packet).getUint32(0, true) === 0x31434155;
     const dc = this.channel();
     let direct = false;
     if (dc?.readyState === 'open' && dc.bufferedAmount < 9600) {
       try {
         dc.send(packet);
-        this.pending.set(new DataView(packet).getUint32(4, true), this.now());
+        if (!calibration) this.pending.set(new DataView(packet).getUint32(4, true), this.now());
         if (this.pending.size > 256) this.pending.delete(this.pending.keys().next().value);
         ++this.sent;
         direct = true;
@@ -74,7 +75,7 @@ export class NativePcmSender {
     if (!direct || !this.confirmed()) {
       this.lastFallback = this.now();
       const pcm = btoa(String.fromCharCode(...new Uint8Array(packet)));
-      if (this.relay({ type: 'audio.pcm', pcm })) ++this.relayed;
+      if (this.relay({ type: calibration ? 'audio.calibration.pcm' : 'audio.pcm', pcm })) ++this.relayed;
       else ++this.dropped;
     }
   }

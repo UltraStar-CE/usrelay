@@ -2,6 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NativePcmSender } from '../public/native-pcm.js';
 
+test('calibration uses its own relay message and cannot confirm or retime microphone delivery',()=>{
+  let now=0;const relayed=[];
+  const sender=new NativePcmSender({now:()=>now,active:()=>true,
+    channel:()=>({readyState:'open',bufferedAmount:0,send(){}}),relay:m=>{relayed.push(m);return true;}});
+  const packet=(magic,seq)=>{const p=new ArrayBuffer(980),v=new DataView(p);v.setUint32(0,magic,true);v.setUint32(4,seq,true);return p;};
+  sender.submit(packet(0x31504155,1));
+  now=5;sender.submit(packet(0x31434155,1));
+  assert.equal(relayed.at(-1).type,'audio.calibration.pcm');
+  now=20;sender.acknowledge({type:'audio.pcm.ack',sequence:1,route:'direct'});
+  assert.equal(sender.timings().audioToGameRoundTripMs.median,20,'test traffic must not replace the microphone send timestamp');
+  sender.reset();sender.submit(packet(0x31434155,2));
+  sender.acknowledge({type:'audio.pcm.ack',sequence:2,route:'direct'});
+  assert.equal(sender.confirmed(),false,'test packets cannot establish direct microphone delivery');
+});
+
 test('timing separates receiver-thread echo from PCM drained by the game and ignores unknown or duplicate replies', () => {
   let now=0;
   const sent=[];

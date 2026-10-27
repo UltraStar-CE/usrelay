@@ -5736,7 +5736,8 @@ async function startMic() {
       state.pcmWorklet = new AudioWorkletNode(audioContext, 'usce-pcm');
       state.pcmWorklet.port.onmessage = event => {
         state.pcmSender.submit(event.data);
-        if (state.rawPcmV1 && performance.now() - state.pitchLastUiMs >= pitchUiUpdateMs) {
+        if (new DataView(event.data).getUint32(0, true) === 0x31504155 &&
+            state.rawPcmV1 && performance.now() - state.pitchLastUiMs >= pitchUiUpdateMs) {
           const samples = new Int16Array(event.data, 20);
           let sum = 0;
           for (const sample of samples) sum += (sample / 32768) ** 2;

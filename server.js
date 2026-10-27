@@ -1787,7 +1787,7 @@ async function handleClientMessage(conn, msg) {
     return;
   }
 
-  if (msg.type === 'audio.pcm') {
+  if (msg.type === 'audio.pcm' || msg.type === 'audio.calibration.pcm') {
     // Optional native PCM experiment. Never forward audio to unrelated rooms.
     const pcm = typeof msg.pcm === 'string' ? msg.pcm : '';
     if (!room.capabilities.includes('rawPcmV1') || player.slot < 1 || player.slot > room.maxPlayers ||
@@ -1796,12 +1796,13 @@ async function handleClientMessage(conn, msg) {
       return;
     }
     const packet = Buffer.from(pcm, 'base64');
-    if (packet.length !== 980 || packet.toString('ascii', 0, 4) !== 'UAP1' ||
+    const calibration = msg.type === 'audio.calibration.pcm';
+    if (packet.length !== 980 || packet.toString('ascii', 0, 4) !== (calibration ? 'UAC1' : 'UAP1') ||
         packet.readUInt32LE(8) !== 48000 || packet.readUInt32LE(12) !== 480) {
       conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'audio.invalid' });
       return;
     }
-    room.host?.sendJson({ type: 'audio.pcm', protocol: protocolVersion,
+    room.host?.sendJson({ type: msg.type, protocol: protocolVersion,
       roomId: room.roomId, playerId: player.playerId, slot: player.slot, pcm });
     return;
   }

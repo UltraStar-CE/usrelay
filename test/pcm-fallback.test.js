@@ -74,6 +74,13 @@ test('PCM fallback authenticates slot identity, validates frames, and requires t
       assert.equal(frame.playerId, joined.playerId);
       assert.equal(frame.slot, 2);
       assert.equal(frame.pcm, pcm);
+      const calibrationPacket=Buffer.from(packet);calibrationPacket[2]=67;
+      phone.send(JSON.stringify({type:'audio.calibration.pcm',protocol:1,pcm:calibrationPacket.toString('base64'),slot:12,playerId:'forged'}));
+      const calibrationFrame=await hostRead('audio.calibration.pcm');
+      assert.equal(calibrationFrame.slot,2);
+      assert.equal(calibrationFrame.playerId,joined.playerId);
+      phone.send(JSON.stringify({type:'audio.pcm',protocol:1,pcm:calibrationPacket.toString('base64')}));
+      assert.equal((await phoneRead('error')).code,'audio.invalid','calibration cannot be relabelled as singing PCM');
       host.send(JSON.stringify({type:'input.state',protocol:1,playerCount:7,inputs:[{slot:7,local:true,source:'local',name:'Local seven'}]}));
       let inputState;
       do { inputState=await phoneRead('game.state'); } while(!inputState.inputs?.some(input=>input.slot===7));
