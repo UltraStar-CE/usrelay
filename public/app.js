@@ -281,6 +281,7 @@ const controlTextInput = $('controlTextInput');
 const controlPlayerList = $('controlPlayerList');
 const songCountLabel = $('songCountLabel');
 const songLibraryLabel = $('songLibraryLabel');
+const phonePreviewStatus = $('phonePreviewStatus');
 const songLibraryProgressWrap = $('songLibraryProgressWrap');
 const songLibraryProgressFill = $('songLibraryProgressFill');
 const songLibraryProgressText = $('songLibraryProgressText');
@@ -3452,6 +3453,8 @@ async function startPhonePreview(song, button, slider) {
   }
 
   stopPhonePreview();
+  phonePreviewStatus.textContent = '';
+  phonePreviewStatus.hidden = true;
   button.disabled = true;
   button.textContent = 'Loading';
   const controller = new AbortController();
@@ -3493,9 +3496,10 @@ async function startPhonePreview(song, button, slider) {
   } catch (error) {
     if (state.previewAbort === controller) {
       button.textContent = 'Preview';
-      controlStatus.textContent = error.name === 'AbortError'
+      phonePreviewStatus.textContent = error.name === 'AbortError'
         ? 'Preview timed out. Try again.'
         : `Preview failed: ${error.message || 'unavailable'}`;
+      phonePreviewStatus.hidden = false;
       stopPhonePreview();
     }
   } finally {

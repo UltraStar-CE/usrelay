@@ -8,6 +8,7 @@ function harness(fetch) {
   const timers = new Map(); let id=0, audioCreated=0;
   const context = vm.createContext({state, fetch, AbortController,
     controlStatus:{textContent:''},
+    phonePreviewStatus:{textContent:'',hidden:true},
     setTimeout(fn){timers.set(++id,fn);return id;}, clearTimeout(id){timers.delete(id);},
     URL:{createObjectURL(){return 'blob:test';},revokeObjectURL(){}},
     Audio:class {constructor(){audioCreated++;}},
@@ -25,7 +26,8 @@ test('preview timeout aborts stalled fetch and restores the button', async()=>{
   assert.equal(button.textContent,'Loading');
   [...h.timers.values()][0](); await pending;
   assert.equal(button.disabled,false); assert.equal(button.textContent,'Preview');
-  assert.match(h.context.controlStatus.textContent,/timed out/);
+  assert.match(h.context.phonePreviewStatus.textContent,/timed out/);
+  assert.equal(h.context.phonePreviewStatus.hidden,false);
   assert.equal(h.timers.size,0);
 });
 test('cancelled preview ignores a late response even if fetch ignores abort', async()=>{
@@ -50,8 +52,26 @@ test('old preview failure cannot reset a replacement request using the same butt
   await first;
   assert.equal(button.textContent,'Loading');
   assert.equal(button.disabled,true);
+  assert.equal(h.context.phonePreviewStatus.hidden,true);
+  assert.equal(h.context.phonePreviewStatus.textContent,'');
   h.context.stopPhonePreview();
   requests[1].resolve({ok:true,blob:async()=>({})}); await second;
   assert.equal(button.textContent,'Preview');
   assert.equal(button.disabled,false);
+});
+
+test('retry clears the visible song preview error', async()=>{
+  let rejectRequest;
+  const h=harness(()=>new Promise((resolve,reject)=>{rejectRequest=reject;}));
+  const button={textContent:'Preview',disabled:false};
+  const first=h.context.startPhonePreview({songId:1},button,{});
+  rejectRequest(Error('unavailable')); await first;
+  assert.equal(h.context.phonePreviewStatus.hidden,false);
+  assert.match(h.context.phonePreviewStatus.textContent,/unavailable/);
+  const second=h.context.startPhonePreview({songId:1},button,{});
+  assert.equal(h.context.phonePreviewStatus.hidden,true);
+  assert.equal(h.context.phonePreviewStatus.textContent,'');
+  h.context.stopPhonePreview();
+  rejectRequest(Error('cancelled')); await second;
+  assert.equal(h.context.phonePreviewStatus.hidden,true);
 });
