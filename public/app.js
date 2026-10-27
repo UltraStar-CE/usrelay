@@ -1370,8 +1370,13 @@ function sendRelay(message) {
   return true;
 }
 
+function directClockReady() {
+  return state.p2p.dc?.readyState === 'open' && (!state.rawPcmV1 ||
+    (state.pcmSender?.confirmed() && !state.pcmSender.usingServer()));
+}
+
 function sendDirect(message) {
-  if (state.rawPcmV1) return false; // Native channel carries PCM; controls keep their existing bridge path.
+  if (state.rawPcmV1 && (message.type !== 'clock.sync.ping' || !directClockReady())) return false;
   const dc = state.p2p.dc;
   if (!dc || dc.readyState !== 'open') return false;
   try {
@@ -1456,6 +1461,10 @@ function attachP2pDataChannel(dc, attempt) {
     if (state.p2p.attempt !== attempt || state.p2p.dc !== dc) return;
     try {
       const message = JSON.parse(event.data);
+      if (message.type === 'clock.sync.pong') {
+        handleClockPong(message, 'direct');
+        return;
+      }
       if (state.rawPcmV1 && ['audio.pcm.ack','latency.ping'].includes(message.type)) {
         state.pcmSender?.acknowledge(message);
         renderConnectionState();
@@ -4942,7 +4951,7 @@ function sendClockPing() {
   send({ type: 'clock.sync.ping', clientSendUs });
 }
 
-function handleClockPong(msg) {
+function handleClockPong(msg, route = 'server') {
   const receivedAtClientUs = clientNowUs();
   const clientSendUs = Number(msg.clientSendUs);
   if (!Number.isFinite(clientSendUs)) return;
@@ -4955,6 +4964,14 @@ function handleClockPong(msg) {
   const rttUs = Math.max(0, receivedAtClientUs - clientSendUs - Math.max(0, hostSendUs - hostReceiveUs));
   if (rttUs > 2_000_000) return;
   const offsetUs = Math.round(((hostReceiveUs - clientSendUs) + (hostSendUs - receivedAtClientUs)) / 2);
+  const preferredRoute = directClockReady() ? 'direct' : 'server';
+  if (route !== preferredRoute) return;
+  if (state.clock.route !== route) {
+    state.clock.route = route;
+    state.clock.samples = [];
+    state.clock.rttUs = null;
+    state.clock.synced = false;
+  }
   const previousRtt = state.clock.rttUs;
   const wasSynced = state.clock.synced;
   state.clock.samples.push({ offsetUs, rttUs, receivedAtClientUs });
@@ -4980,7 +4997,7 @@ function handleClockPong(msg) {
   state.clock.jitterUs = previousRtt == null ? 0 : Math.round(Math.abs(rttUs - previousRtt));
   state.clock.confidence = Math.max(0, Math.min(1, 1 - state.clock.rttUs / 500_000));
   state.clock.synced = true;
-  rttValue.textContent = `${Math.round(state.clock.rttUs / 1000)} ms`;
+  rttValue.textContent = `${Math.round(state.clock.rttUs / 1000)} ms · ${route === 'direct' ? 'direct' : 'via server'}`;
   offsetValue.textContent = `${Math.round(state.clock.offsetUs / 1000)} ms`;
   if (state.hostSongStartUs && state.settings.playMusicOnDevice && !state.deviceMusicAudio) {
     maybeStartDeviceMusic();
