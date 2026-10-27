@@ -171,6 +171,8 @@ const state = {
   commandId: 1,
   pendingCommands: new Map(),
   clientHeartbeatTimer: null,
+  lastClientHeartbeatSentMs: 0,
+  lastClientHeartbeatAckMs: 0,
   audioContext: null,
   audioContextPerfBaseUs: null,
   micInputLatencyUs: 0,
@@ -1175,12 +1177,16 @@ function clearSongFullListRequestTimer() {
 function startClientHeartbeat() {
   stopClientHeartbeat();
   state.clientHeartbeatTimer = setInterval(() => {
-    send({ type: 'client.heartbeat' });
+    if (sendRelay({type:'client.heartbeat',clientSendUs:clientNowUs()})) {
+      state.lastClientHeartbeatSentMs = performance.now();
+    }
     state.pcmSender?.probe();
     if (state.pcmSender?.confirmed() && performance.now() - Number(state.lastAudioTimingLogMs || 0) >= 10000) {
       state.lastAudioTimingLogMs = performance.now();
       const timing=state.pcmSender.timings();
       clientLog('audio.timing', {gameState:state.gameState,route:state.pcmSender.usingServer()?'server':'direct',
+        relayHeartbeatAckAgeMs:state.lastClientHeartbeatAckMs ? Math.round(performance.now()-state.lastClientHeartbeatAckMs) : null,
+        relayBufferedBytes:state.ws?.bufferedAmount || 0,
         networkRoundTripMs:JSON.stringify(timing.networkRoundTripMs),
         audioToGameRoundTripMs:JSON.stringify(timing.audioToGameRoundTripMs)});
     }
@@ -5027,7 +5033,16 @@ async function handleMessage(message) {
     return;
   }
 
+  if (message.type === 'client.heartbeat.ack') {
+    if (Number.isFinite(message.clientSendUs) && message.clientSendUs <= clientNowUs()) {
+      state.lastClientHeartbeatAckMs = performance.now();
+    }
+    return;
+  }
+
   if (message.type === 'client.joined') {
+    state.lastClientHeartbeatSentMs = 0;
+    state.lastClientHeartbeatAckMs = 0;
     state.rawPcmV1 = Boolean(message.rawPcmV1);
     state.audioCalibrationV1 = Boolean(message.audioCalibrationV1);
     Object.assign(state, {
@@ -5536,9 +5551,14 @@ async function handleMessage(message) {
       ['join.bad_code', 'room.closed'].includes(message.code) ||
       ['host_disconnected', 'expired', 'heartbeat_timeout'].includes(message.reason)
     ) {
-      const roomClosedText = message.reason === 'host_disconnected' || message.reason === 'expired'
-        ? 'Game timed out.'
-        : text;
+      const roomClosedText = message.reason === 'heartbeat_timeout'
+        ? 'Connection to the relay timed out. Rejoin the room to reconnect.'
+        : message.reason === 'host_disconnected' || message.reason === 'expired'
+          ? 'Game timed out.' : text;
+      if (message.reason === 'heartbeat_timeout') clientLog('relay.heartbeat_expired', {
+        lastSentAgeMs:state.lastClientHeartbeatSentMs ? Math.round(performance.now()-state.lastClientHeartbeatSentMs) : null,
+        lastAckAgeMs:state.lastClientHeartbeatAckMs ? Math.round(performance.now()-state.lastClientHeartbeatAckMs) : null,
+        bufferedBytes:state.ws?.bufferedAmount || 0, readyState:state.ws?.readyState});
       leaveClosedRoom(roomClosedText);
       return;
     }

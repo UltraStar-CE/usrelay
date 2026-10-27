@@ -1772,6 +1772,9 @@ async function handleClientMessage(conn, msg) {
   player.lastSeenMs = Date.now();
 
   if (msg.type === 'client.heartbeat') {
+    player.lastHeartbeatMs = player.lastSeenMs;
+    conn.sendJson({type:'client.heartbeat.ack', protocol:protocolVersion,
+      clientSendUs:Number.isFinite(msg.clientSendUs) ? msg.clientSendUs : null});
     return;
   }
 
@@ -2872,7 +2875,10 @@ setInterval(() => {
     }
     for (const player of [...room.players.values()]) {
       if (playerHeartbeatExpired(player, now)) {
-        log('player.heartbeat_expired', { roomId: room.roomId, playerId: player.playerId, lastSeenMs: player.lastSeenMs });
+        log('player.heartbeat_expired', { roomId: room.roomId, playerId: player.playerId,
+          lastSeenMs: player.lastSeenMs, lastHeartbeatMs: player.lastHeartbeatMs || null,
+          bufferedInputBytes:player.conn.buffer.length, socketBytesRead:player.conn.socket.bytesRead,
+          socketBytesWritten:player.conn.socket.bytesWritten, closing:player.conn.closing });
         removePlayerFromRoom(room, player, 'heartbeat_timeout');
       }
     }
