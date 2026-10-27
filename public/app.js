@@ -1,9 +1,12 @@
 import {audioTimingView} from './audio-timing.js';
+import {DigitalCalibration} from './digital-calibration.js';
 import {loadSongs} from './song-query.js';
 import {createApiRequests} from './api-requests.js';
-import { NativePcmSender } from './native-pcm.js?v=1';
-import { createAudioInput, startSyntheticPcm } from './audio-input.js?v=3';
+import { NativePcmSender } from './native-pcm.js?v=2';
+import { createAudioInput, startSyntheticPcm } from './audio-input.js?v=4';
 const protocol = 1;
+const digitalCalibration = new DigitalCalibration({send:message=>sendRelay(message),
+  startWave:startCalibrationWave,stopWave:stopCalibrationWave});
 const sessionKey = 'usdx.remote.session.v1';
 const nameKey = 'usdx.remote.name.v1';
 const difficultyModeKey = 'usdx.remote.difficultyMode.v1';
@@ -22,7 +25,7 @@ const lastMicSlotKey = 'usdx.remote.lastMicSlot.v1';
 const settingsKey = 'usdx.remote.settings.v1';
 const settingsVersion = 3;
 const tabKey = 'usdx.remote.tab.v1';
-const appVersion = 'v20261026-test-audio';
+const appVersion = 'v20261027-idle-calibration';
 const songPageSize = 80;
 const searchDebounceMinMs = 40;
 const searchDebounceMaxMs = 350;
@@ -1316,17 +1319,29 @@ function renderAudioTiming() {
   const sender = state.pcmSender;
   const timing = audioTimingView(sender?.timings(), Boolean(sender?.confirmed()));
   const status = $('audioLatencyStatus');
+  const calibration = digitalCalibration.view();
   if (status) {
-    status.hidden = !timing;
-    status.textContent = timing?.label || '';
-    status.title = timing?.detail || '';
+    status.hidden = !calibration && !timing;
+    status.textContent = calibration?.label || timing?.label || '';
+    status.title = calibration?.detail || timing?.detail || '';
   }
+  const delay=$('digitalDelayValue');
+  if(delay) {delay.textContent=calibration?.label || 'Waiting for an idle microphone';delay.title=calibration?.detail || '';}
+  const delayDetail=$('digitalDelayDetail');
+  if(delayDetail) delayDetail.textContent=calibration?.detail || 'Digital calibration runs while idle after audio starts; microphone hardware and browser capture buffers are excluded.';
   const audio = $('audioRoundTripValue'), network = $('audioNetworkRoundTripValue');
   if (audio) audio.textContent = timing?.audio || 'Not measured';
   if (network) network.textContent = timing?.network || 'Not measured';
 }
 
 function renderConnectionState() {
+  digitalCalibration.update({roomId:state.roomId,playerId:state.playerId,slot:Number(state.slot),
+    supported:state.audioCalibrationV1, input:state.audioInput,
+    running:Boolean(state.audioInput && (state.audioInput.synthetic ||
+      (state.audioContext?.state==='running' && state.pcmWorklet))),
+    idle:!['singing','paused','boot'].includes(state.gameState),
+    route:state.pcmSender?.confirmed()&&!state.pcmSender.usingServer()?'direct':'server',
+    clock:{...state.clock,mappingUncertaintyMs:state.audioContext?128000/state.audioContext.sampleRate:1}});
   renderAudioTiming();
   micDelayInput?.closest('section')?.classList.toggle('hidden', Boolean(state.rawPcmV1));
   const direct = state.rawPcmV1 ? nativeAudioActive() && state.pcmSender &&
@@ -4987,6 +5002,7 @@ function showPartyTurnNotification(message) {
 }
 
 async function handleMessage(message) {
+  if(digitalCalibration.handle(message)) {renderAudioTiming();return;}
   if (String(message.type || '').startsWith('p2p.')) {
     handleP2pSignal(message);
     return;
@@ -4994,6 +5010,7 @@ async function handleMessage(message) {
 
   if (message.type === 'client.joined') {
     state.rawPcmV1 = Boolean(message.rawPcmV1);
+    state.audioCalibrationV1 = Boolean(message.audioCalibrationV1);
     Object.assign(state, {
       roomId: message.roomId,
       displayCode: message.displayCode,
@@ -5576,6 +5593,7 @@ function connectAndJoin(displayCode, name, resume = null) {
 function nativeAudioActive() { return Boolean(state.rawPcmV1 && Number(state.slot) >= 1 && Number(state.slot) <= 12 && state.roomId); }
 
 async function stopMic() {
+  digitalCalibration.cancel(true);
   const context = state.audioContext;
   state.audioContext = null;
   state.audioInput?.stop();
@@ -5593,6 +5611,20 @@ async function stopMic() {
   if (context) await context.close().catch(() => {});
   renderMicEntryFlow();
   updateGameStateView();
+}
+
+function startCalibrationWave(spec) {
+  if(state.audioInput?.synthetic) return state.audioInput.calibrate(spec);
+  const context=state.audioContext;
+  if(!state.pcmWorklet || context?.state!=='running') return false;
+  state.pcmWorklet.port.postMessage({type:'calibration.start',id:spec.id,notes:spec.notes,
+    startContextTime:context.currentTime+(spec.startClientMs-performance.now())/1000});
+  return true;
+}
+
+function stopCalibrationWave() {
+  state.audioInput?.calibrate?.(null);
+  state.pcmWorklet?.port.postMessage({type:'calibration.cancel'});
 }
 
 function resumeMicAudio(context) {
@@ -5629,7 +5661,8 @@ async function startMic() {
         clockRttUs:state.clock.rttUs}),
       submit: packet => {
       state.pcmSender?.submit(packet);
-      if (performance.now() - state.pitchLastUiMs >= pitchUiUpdateMs) {
+      if (new DataView(packet).getUint32(0, true) === 0x31504155 &&
+          performance.now() - state.pitchLastUiMs >= pitchUiUpdateMs) {
         let energy = 0;
         for (const sample of new Int16Array(packet, 20)) energy += sample * sample;
         handlePitchFrame({rmsDb:energy ? 10 * Math.log10(energy / (480 * 32768 ** 2)) : -120});
@@ -5732,7 +5765,7 @@ async function startMic() {
       state.pcmSender = new NativePcmSender({ active: nativeAudioActive,
         channel: () => state.p2p.dc,
         relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message) });
-      await audioContext.audioWorklet.addModule('/pcm-worklet.js?v=2');
+      await audioContext.audioWorklet.addModule('/pcm-worklet.js?v=3');
       state.pcmWorklet = new AudioWorkletNode(audioContext, 'usce-pcm');
       state.pcmWorklet.port.onmessage = event => {
         state.pcmSender.submit(event.data);

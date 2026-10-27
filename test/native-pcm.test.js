@@ -2,6 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NativePcmSender } from '../public/native-pcm.js';
 
+test('calibration-only congestion does not switch microphone routing or measure a different path',()=>{
+  let now=0;const relayed=[],dc={readyState:'open',bufferedAmount:0,send(){}};
+  const sender=new NativePcmSender({now:()=>now,active:()=>true,channel:()=>dc,
+    relay:m=>{relayed.push(m);return true;}});
+  const packet=(seq,calibration=false)=>{const p=new ArrayBuffer(980),v=new DataView(p);
+    v.setUint32(0,calibration?0x31434155:0x31504155,true);v.setUint32(4,seq,true);return p;};
+  sender.submit(packet(1));sender.acknowledge({type:'audio.pcm.ack',sequence:1,route:'direct'});
+  now=100;sender.submit(packet(2));now=200;sender.acknowledge({type:'audio.pcm.ack',sequence:2,route:'direct'});
+  now=300;assert.equal(sender.usingServer(),false);
+  dc.bufferedAmount=9600;sender.submit(packet(3,true));
+  assert.equal(sender.usingServer(),false);
+  assert.equal(relayed.length,1,'do not calibrate via the server while microphone delivery remains direct');
+});
+
 test('calibration uses its own relay message and cannot confirm or retime microphone delivery',()=>{
   let now=0;const relayed=[];
   const sender=new NativePcmSender({now:()=>now,active:()=>true,

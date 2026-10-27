@@ -1664,6 +1664,7 @@ function handleClientJoin(conn, msg) {
       gameState: room.gameState,
       webApp: room.webApp || 'default',
       rawPcmV1: room.capabilities.includes('rawPcmV1'),
+      audioCalibrationV1: room.capabilities.includes('audioCalibrationV1'),
       p2p: publicP2pConfig(room),
       resumed: true
     });
@@ -1736,6 +1737,7 @@ function handleClientJoin(conn, msg) {
     gameState: room.gameState,
     webApp: room.webApp || 'default',
     rawPcmV1: room.capabilities.includes('rawPcmV1'),
+      audioCalibrationV1: room.capabilities.includes('audioCalibrationV1'),
     p2p: publicP2pConfig(room)
   });
   sendSongRuntimeSnapshot(conn, room);
@@ -1773,16 +1775,21 @@ async function handleClientMessage(conn, msg) {
     return;
   }
 
-  if (msg.type === 'audio.calibration.request') {
-    if (!room.capabilities.includes('audioCalibrationV1') || player.slot < 1 ||
-        player.slot > room.maxPlayers || typeof msg.requestId !== 'string' ||
+  if (msg.type === 'audio.calibration.request' || msg.type === 'audio.calibration.cancel') {
+    const cancel=msg.type==='audio.calibration.cancel';
+    const slot=cancel ? (player.calibrationSession?.requestId===msg.requestId ? player.calibrationSession.slot : 0) : player.slot;
+    if(cancel && !slot) return; // Ignore obsolete cancellation, including after a room change.
+    if (!room.capabilities.includes('audioCalibrationV1') || slot < 1 ||
+        slot > room.maxPlayers || typeof msg.requestId !== 'string' ||
         !msg.requestId || msg.requestId.length > 64 ||
-        !Number.isInteger(msg.clockUncertaintyMs) || msg.clockUncertaintyMs < 0 || msg.clockUncertaintyMs > 100) {
+        (msg.type === 'audio.calibration.request' &&
+         (!Number.isInteger(msg.clockUncertaintyMs) || msg.clockUncertaintyMs < 0 || msg.clockUncertaintyMs > 100))) {
       conn.sendJson({type:'error', protocol:protocolVersion, code:'calibration.unavailable'});
       return;
     }
+    if(!cancel) player.calibrationSession={requestId:msg.requestId,slot};
     room.host?.sendJson({type:msg.type, protocol:protocolVersion, roomId:room.roomId,
-      playerId:player.playerId, slot:player.slot, requestId:msg.requestId,
+      playerId:player.playerId, slot, requestId:msg.requestId,
       clockUncertaintyMs:msg.clockUncertaintyMs});
     return;
   }

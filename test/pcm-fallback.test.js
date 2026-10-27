@@ -46,6 +46,7 @@ test('PCM fallback authenticates slot identity, validates frames, and requires t
     phone.send(JSON.stringify({ type: 'client.join', protocol: 1, displayCode: room.displayCode, name: 'PCM test', preferredSlot: 2 }));
     const joined = await phoneRead('client.joined');
     assert.equal(joined.rawPcmV1, capable);
+    assert.equal(joined.audioCalibrationV1,capable);
     phone.send(JSON.stringify({type:'audio.calibration.request',protocol:1,requestId:'trial',
       clockUncertaintyMs:3,playerId:'forged',slot:12,startHostUs:1}));
     if(capable) {
@@ -60,6 +61,9 @@ test('PCM fallback authenticates slot identity, validates frames, and requires t
       host.send(JSON.stringify({type:'audio.calibration.result',protocol:1,playerId:joined.playerId,
         requestId:'trial',accepted:true,delayMs:127,scope:'digital-path'}));
       assert.equal((await phoneRead('audio.calibration.result')).delayMs,127);
+      phone.send(JSON.stringify({type:'audio.calibration.cancel',protocol:1,requestId:'trial',slot:12,playerId:'forged'}));
+      const cancelled=await hostRead('audio.calibration.cancel');
+      assert.equal(cancelled.slot,2);assert.equal(cancelled.playerId,joined.playerId);
     } else assert.equal((await phoneRead('error')).code,'calibration.unavailable');
     host.send(JSON.stringify({type:'audio.stop',protocol:1,reason:'test_abort'}));
     assert.equal((await phoneRead('audio.stop')).reason,'test_abort');
@@ -99,6 +103,13 @@ test('PCM fallback authenticates slot identity, validates frames, and requires t
       phone.send(JSON.stringify({ type: 'audio.pcm', protocol: 1, pcm: packet.toString('base64') }));
     }
     assert.equal((await phoneRead('error')).code, 'audio.invalid');
+    if(capable) {
+      phone.send(JSON.stringify({type:'player.slotProfile.set',protocol:1,slot:0}));
+      phone.send(JSON.stringify({type:'audio.calibration.cancel',protocol:1,requestId:'trial'}));
+      const cancelledAfterLeaving=await hostRead('audio.calibration.cancel');
+      assert.equal(cancelledAfterLeaving.slot,2,'cancellation targets the measured lane even after leaving it');
+      assert.equal(cancelledAfterLeaving.playerId,joined.playerId);
+    }
     phone.close(); host.close();
   }
 });

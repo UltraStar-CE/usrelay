@@ -70,10 +70,13 @@ export class NativePcmSender {
         if (this.pending.size > 256) this.pending.delete(this.pending.keys().next().value);
         ++this.sent;
         direct = true;
-      } catch { this.lastAck = -Infinity; }
+      } catch { if (!calibration) this.lastAck = -Infinity; }
     }
+    // A test packet must follow the established microphone route. If only its
+    // send is congested, dropping it is preferable to fitting a different path.
+    if (calibration && !direct && this.confirmed()) { ++this.dropped; return; }
     if (!direct || !this.confirmed()) {
-      this.lastFallback = this.now();
+      if (!calibration) this.lastFallback = this.now();
       const pcm = btoa(String.fromCharCode(...new Uint8Array(packet)));
       if (this.relay({ type: calibration ? 'audio.calibration.pcm' : 'audio.pcm', pcm })) ++this.relayed;
       else ++this.dropped;

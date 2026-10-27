@@ -2,6 +2,25 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createAudioInput, startSyntheticPcm} from '../public/audio-input.js';
 
+test('synthetic input calibrates on a separate stream without changing microphone packets',()=>{
+  let time=0,next;const packets=[];
+  const input=startSyntheticPcm({frequency:65,submit:p=>packets.push(p),now:()=>time,
+    schedule(fn){next=fn;return 1;},cancel(){}});
+  assert.equal(input.calibrate({startClientMs:100,notes:Array(16).fill(5)}),true);
+  for(time=10;time<=4300;time+=10) next();
+  const normal=packets.filter(p=>new DataView(p).getUint32(0,true)===0x31504155);
+  const calibration=packets.filter(p=>new DataView(p).getUint32(0,true)===0x31434155);
+  assert.equal(normal.length,431);
+  assert.equal(calibration.length,400);
+  for(const p of normal) {
+    const v=new DataView(p),start=v.getUint32(16,true);
+    for(let i=0;i<480;i++) assert.equal(v.getInt16(20+2*i,true),Math.round(6553*Math.sin(2*Math.PI*65*(start+i)/48000))||0);
+  }
+  assert.equal(input.calibrate({startClientMs:Infinity,notes:Array(16).fill(5)}),false);
+  assert.equal(input.calibrate(null),true);
+  input.stop();
+});
+
 for (const frequency of [65, 220, 440]) {
   test(`${frequency} Hz synthetic PCM preserves sample timing and stops without audio-device APIs`, () => {
     let time = 0, next, cancelled = false;

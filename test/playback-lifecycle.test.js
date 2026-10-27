@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
+import {DigitalCalibration} from '../public/digital-calibration.js';
 
 const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 function harness() {
@@ -16,6 +17,7 @@ function harness() {
     deviceMusicAudio: { pause() { pauses++; }, removeAttribute() {}, load() {} }
   };
   const context = vm.createContext({ state,
+    digitalCalibration:new DigitalCalibration({send(){},startWave(){},stopWave(){}}),
     clearTimeout: id => cleared.push(id), clearInterval: id => cleared.push(id),
     isDeviceMusicErrorStatus: () => false, setDeviceMusicStatus() {},
     resetSongMediaClock() {}, clearPitchQueue() {}, updateGameStateView() {}, logLine() {},

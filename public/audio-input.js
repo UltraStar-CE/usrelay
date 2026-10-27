@@ -22,6 +22,7 @@ export function startSyntheticPcm({frequency, submit, now = () => performance.no
   const started = now();
   let sequence = 0, timer, stopped = false;
   let phase = 0, previousNote = null;
+  let calibration = null;
   function tick() {
     if (stopped) return;
     const due = Math.floor((now() - started) / 10);
@@ -58,10 +59,35 @@ export function startSyntheticPcm({frequency, submit, now = () => performance.no
       }
       ++sequence;
       submit(packet);
+      if (calibration) {
+        const testPacket=packet.slice(0),testView=new DataView(testPacket);
+        testView.setUint32(0,0x31434155,true);
+        let active=false;
+        for(let i=0;i<480;i++) {
+          const elapsed=packetTimeMs+i/48-calibration.startClientMs;
+          let value=0;
+          if(elapsed>=0 && elapsed<4000) {
+            const hz=65.40639132514966*2**(calibration.notes[Math.floor(elapsed/250)]/12);
+            value=Math.round(8192*Math.sin(calibration.phase));
+            calibration.phase=(calibration.phase+2*Math.PI*hz/48000)%(2*Math.PI);
+            active=true;
+          }
+          testView.setInt16(20+2*i,value,true);
+        }
+        if(active) submit(testPacket);
+        if(packetTimeMs>=calibration.startClientMs+4000) calibration=null;
+      }
     }
     timer = schedule(tick, Math.max(1, started + sequence * 10 - now()));
   }
   tick();
   return {synthetic: true, label: alternating ? 'TEST AUDIO: C2 ↔ F2, song synchronized (microphone off)' : `TEST AUDIO: ${frequency} Hz (microphone off)`,
+    calibrate(spec) {
+      if(!spec) {calibration=null;return true;}
+      if(stopped || !Number.isFinite(spec.startClientMs) || spec.startClientMs<now() ||
+        spec.startClientMs>now()+3000 || !Array.isArray(spec.notes) || spec.notes.length!==16 ||
+        !spec.notes.every(n=>Number.isInteger(n)&&n>=0&&n<=24)) return false;
+      calibration={...spec,notes:spec.notes.slice(),phase:0};return true;
+    },
     stop() {stopped = true; cancel(timer);}};
 }
