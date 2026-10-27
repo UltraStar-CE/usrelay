@@ -412,6 +412,16 @@ details.remote-list > summary { cursor: pointer; padding: .5rem 0; font-weight: 
   font-weight: 700;
 }
 
+/* Text selections need more room than the numeric fields. Grid wraps the
+   label above the select when the panel cannot fit two readable columns. */
+.input-row.select-row {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+}
+
+.select-row select {
+  min-width: 0;
+}
+
 .input-row input {
   text-align: center;
 }
