@@ -1514,6 +1514,11 @@ function handleHostMessage(conn, msg) {
     return;
   }
 
+  if (['audio.calibration.started', 'audio.calibration.result'].includes(msg.type) && msg.playerId) {
+    room.players.get(msg.playerId)?.conn?.sendJson({...msg, protocol:protocolVersion});
+    return;
+  }
+
   if (msg.type === 'screen.info') {
     room.lastScreenInfo = { ...msg, protocol: protocolVersion };
   } else if (msg.type === 'song.started') {
@@ -1765,6 +1770,20 @@ async function handleClientMessage(conn, msg) {
   player.lastSeenMs = Date.now();
 
   if (msg.type === 'client.heartbeat') {
+    return;
+  }
+
+  if (msg.type === 'audio.calibration.request') {
+    if (!room.capabilities.includes('audioCalibrationV1') || player.slot < 1 ||
+        player.slot > room.maxPlayers || typeof msg.requestId !== 'string' ||
+        !msg.requestId || msg.requestId.length > 64 ||
+        !Number.isInteger(msg.clockUncertaintyMs) || msg.clockUncertaintyMs < 0 || msg.clockUncertaintyMs > 100) {
+      conn.sendJson({type:'error', protocol:protocolVersion, code:'calibration.unavailable'});
+      return;
+    }
+    room.host?.sendJson({type:msg.type, protocol:protocolVersion, roomId:room.roomId,
+      playerId:player.playerId, slot:player.slot, requestId:msg.requestId,
+      clockUncertaintyMs:msg.clockUncertaintyMs});
     return;
   }
 

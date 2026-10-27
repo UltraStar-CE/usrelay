@@ -37,7 +37,7 @@ test('PCM fallback authenticates slot identity, validates frames, and requires t
     t.after(() => host.close());
     const hostRead = inbox(host);
     await once(host, 'open');
-    host.send(JSON.stringify({ type: 'host.hello', protocol: 1, maxPlayers: 2, capabilities: capable ? ['rawPcmV1'] : [] }));
+    host.send(JSON.stringify({ type: 'host.hello', protocol: 1, maxPlayers: 2, capabilities: capable ? ['rawPcmV1','audioCalibrationV1'] : [] }));
     const room = await hostRead('room.created');
     const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/client`);
     t.after(() => phone.close());
@@ -46,6 +46,21 @@ test('PCM fallback authenticates slot identity, validates frames, and requires t
     phone.send(JSON.stringify({ type: 'client.join', protocol: 1, displayCode: room.displayCode, name: 'PCM test', preferredSlot: 2 }));
     const joined = await phoneRead('client.joined');
     assert.equal(joined.rawPcmV1, capable);
+    phone.send(JSON.stringify({type:'audio.calibration.request',protocol:1,requestId:'trial',
+      clockUncertaintyMs:3,playerId:'forged',slot:12,startHostUs:1}));
+    if(capable) {
+      const request=await hostRead('audio.calibration.request');
+      assert.equal(request.playerId,joined.playerId);
+      assert.equal(request.slot,2);
+      assert.equal(request.requestId,'trial');
+      assert.equal(request.startHostUs,undefined,'the game owns the reference clock');
+      host.send(JSON.stringify({type:'audio.calibration.started',protocol:1,playerId:joined.playerId,
+        requestId:'trial',slot:2,startHostUs:1000000,stepUs:250000,notes:[0,2,4,5]}));
+      assert.equal((await phoneRead('audio.calibration.started')).requestId,'trial');
+      host.send(JSON.stringify({type:'audio.calibration.result',protocol:1,playerId:joined.playerId,
+        requestId:'trial',accepted:true,delayMs:127,scope:'digital-path'}));
+      assert.equal((await phoneRead('audio.calibration.result')).delayMs,127);
+    } else assert.equal((await phoneRead('error')).code,'calibration.unavailable');
     host.send(JSON.stringify({type:'audio.stop',protocol:1,reason:'test_abort'}));
     assert.equal((await phoneRead('audio.stop')).reason,'test_abort');
     host.send(JSON.stringify({type:'screen.info',protocol:1,screen:'high_scores',entries:[{name:'Test singer',score:9000}]}));
