@@ -5273,6 +5273,17 @@ async function handleMessage(message) {
     return;
   }
 
+  if (message.type === 'api.state') {
+    const previousHash = state.songSelect?.libraryHash;
+    state.songSelect = await mergeSongSelectState(state.songSelect, message);
+    if (message.apiCapabilities?.includes('song.list') && !state.songCatalogInFlight &&
+        (previousHash !== message.libraryHash || !state.songSelect?.library?.length)) {
+      requestNativeSongs();
+    }
+    renderSongSelectState();
+    return;
+  }
+
   if (message.type === 'song.select.state') {
     const nativeSongsBecameAvailable = message.apiCapabilities?.includes('song.list') &&
       !state.songSelect?.apiCapabilities?.includes('song.list');

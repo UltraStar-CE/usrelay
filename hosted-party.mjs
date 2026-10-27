@@ -31,7 +31,10 @@ export class HostedParty {
   observe(message) {
     if(this.closed)return;
     if(message.type==='ack'&&this.requests.accept(message))return;
-    if(message.type==='song.select.state'||message.type==='playlist.state') {
+    if(message.type==='api.state'||message.type==='song.select.state'||message.type==='playlist.state') {
+      if(message.type==='api.state' && message.libraryHash!==this.snapshotId) {
+        this.snapshotId=message.libraryHash;this.loaded=false;
+      }
       if(Array.isArray(message.playlistItems)&&JSON.stringify(this.playlist)!==JSON.stringify(message.playlistItems)) {
         this.playlist=message.playlistItems;this.party.rosterChanged();
       }

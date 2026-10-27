@@ -1241,6 +1241,7 @@ function requestCatalogFromHost(conn, room, player, options = {}) {
 }
 
 function sendSongRuntimeSnapshot(conn, room) {
+  if (room.lastApiState) conn.sendJson(room.lastApiState);
   if (room.lastSongStarted) conn.sendJson(room.lastSongStarted);
   if (room.lastSongLyrics) conn.sendJson(room.lastSongLyrics);
   if (room.lastScreenInfo) conn.sendJson(room.lastScreenInfo);
@@ -1411,13 +1412,19 @@ function handleHostMessage(conn, msg) {
     return;
   }
   room.lastSeenMs = Date.now();
-  if (msg.type === 'song.select.state' && msg.apiCapabilities?.includes('continuous.start') && !room.hostedParty) {
+  if (['api.state','song.select.state'].includes(msg.type) && msg.apiCapabilities?.includes('continuous.start') && !room.hostedParty) {
     room.hostedParty = new HostedParty({room,
       sendHost:message=>Boolean(room.host && !room.host.closed && room.host.sendJson(message) !== false),
       sendClient:(id,message)=>room.players.get(id)?.conn?.sendJson({...message,protocol:protocolVersion}),
       broadcast:message=>broadcastPlayers(room,{...message,protocol:protocolVersion})});
   }
   if (room.hostedParty) queueMicrotask(()=>room.hostedParty?.observe(msg));
+
+  if (msg.type === 'api.state') {
+    room.lastApiState = {...msg, protocol:protocolVersion};
+    broadcastPlayers(room, room.lastApiState);
+    return;
+  }
 
   if (msg.type === 'host.heartbeat') {
     conn.sendJson({ type: 'ack', protocol: protocolVersion, accepted: true, reason: null });

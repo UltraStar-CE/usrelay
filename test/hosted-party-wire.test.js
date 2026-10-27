@@ -20,13 +20,15 @@ test('native room hosts Party votes, continuous playback and roster changes with
  const host=new WebSocket(`ws://127.0.0.1:${port}/ws/host`),readHost=inbox(host);t.after(()=>host.close());await once(host,'open');
  const sendHost=m=>host.send(JSON.stringify({protocol:1,...m}));
  sendHost({type:'host.hello',maxPlayers:12});const room=await readHost(m=>m.type==='room.created');
- sendHost({type:'game.state',seq:1,state:'song_select'});
- sendHost({type:'song.select.state',apiCapabilities:['song.list','continuous.start'],playlistItems:[]});
+ sendHost({type:'game.state',seq:1,state:'main_menu'});
+ sendHost({type:'api.state',libraryHash:'party-test',apiCapabilities:['song.list','continuous.start'],playlistItems:[],playlists:[{index:0,name:'Startup list',size:0}]});
  const query=await readHost(m=>m.command==='song.list');
  const phone=new WebSocket(`ws://127.0.0.1:${port}/ws/client`),readPhone=inbox(phone);t.after(()=>phone.close());await once(phone,'open');
  const send=m=>phone.send(JSON.stringify({protocol:1,...m}));
  send({type:'client.join',displayCode:room.displayCode,name:'Party singer',preferredSlot:2});
  const player=await readPhone(m=>m.type==='client.joined');
+ assert.equal(player.gameState.state,'main_menu');
+ const api=await readPhone(m=>m.type==='api.state');assert.equal(api.playlists[0].name,'Startup list');
  const initialParty=await readPhone(m=>m.type==='party.state');
  assert.equal(initialParty.available,true,'joining clients receive Party state before voting');
  send({type:'party.like',songId:7});

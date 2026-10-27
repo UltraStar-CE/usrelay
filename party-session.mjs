@@ -92,7 +92,7 @@ export class PartySession {
   refresh() {
     const participants=this.eligible();
     const allowed=this.source==='playlist'?new Set(this.playlist().map(s=>Number(s.songId))):null;
-    const library=this.library().filter(s=>s.visible!==false&&!s.category&&(!allowed||allowed.has(Number(s.songId))));
+    const library=this.library().filter(s=>!s.category&&(!allowed||allowed.has(Number(s.songId))));
     this.matches=library.map(song=>({...song,likedBy:participants.filter(p=>this.likes.get(p.playerId)?.has(Number(song.songId))) }))
       .filter(song=>song.likedBy.length>=this.minPlayers)
       .sort((a,b)=>b.likedBy.length-a.likedBy.length||Number(a.songId)-Number(b.songId));
@@ -112,7 +112,7 @@ export class PartySession {
   tick() {
     if(this.dirty) this.refresh();
     if(this.enabled&&!this.gameActive&&this.queue.length&&
-      ![...this.pending.values()].includes('start')&&this.gameState()==='song_select') {
+      ![...this.pending.values()].includes('start')&&['main_menu','song_select'].includes(this.gameState())) {
       this.deadline=0;
       this.issue('continuous.start',{songIds:this.queue.map(s=>Number(s.songId)),...this.playback},'start');
     }
@@ -131,7 +131,7 @@ export class PartySession {
     this.send({type:'party.state',available:true,enabled:this.enabled,minPlayers:this.minPlayers,
       endless:this.endless,playerSetupSeconds:null,resultSeconds:null,highScoreSeconds:null,songDisplay:null,singingDisplay:null,...this.playback,source:this.source,
       phase:this.gameActive?({player_setup:'calling_players',results:'scoring',high_scores:'highscores',paused:'paused'}[this.gameState()]||'singing'):this.enabled?'collecting_votes':'off',
-      notice:this.notice||(!this.gameActive&&this.enabled&&this.gameState()!=='song_select'?'Open song selection in the game to start the party.':''),
+      notice:this.notice||(!this.gameActive&&this.enabled&&!['main_menu','song_select'].includes(this.gameState())?'Return to the main menu or song selection to start the party.':''),
       currentMatch:this.currentMatch?compact(this.currentMatch):null,
       queue:this.queue.slice(0,30).map(compact),matches:this.matches.slice(0,30).map(compact),matchesTotal:this.matches.length,
       likedSongs:[...voted.values()].slice(0,30).map(compact),likedSongsTotal:voted.size,

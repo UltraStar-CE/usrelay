@@ -18,14 +18,14 @@ test('party waits for matching votes and asks USCE to run a continuous queue',()
   f.like('b',[1,2,3]); f.advance(0); f.advance(1000);
   assert.equal(f.commands.length,1);
   assert.equal(f.commands[0].command,'continuous.start');
-  assert.deepEqual(f.commands[0].args.songIds,[1,2]);
+  assert.deepEqual(f.commands[0].args.songIds,[1,2,3],'folder-hidden library songs remain eligible');
   assert.ok(!f.commands.some(m=>['song.start','song.select','menu.select'].includes(m.command)));
   assert.equal(f.party.gameActive,false,'do not pretend the game accepted a start');
   f.party.observe({type:'ack',commandId:f.commands[0].commandId,accepted:true});
   f.party.observe({type:'song.started',songId:1,songSeq:10}); f.advance(0);
   assert.equal(f.party.currentMatch.likedBy.length,2,'now-playing retains the votes that selected it');
   assert.equal(f.commands.at(-1).command,'continuous.queue');
-  assert.deepEqual(f.commands.at(-1).args.songIds,[2]);
+  assert.deepEqual(f.commands.at(-1).args.songIds,[2,3]);
 });
 test('unlikes, offline phones and game rejection cannot leave a phantom playing party',()=>{
   const f=fixture(); f.start(); f.like('a',[1]); f.like('b',[1]);
@@ -71,4 +71,12 @@ test('stopping while start acknowledgement is pending still stops the game',()=>
  f.party.observe({type:'continuous.state',active:false,reason:'manual'});f.advance(0);
  assert.equal(f.party.enabled,false);assert.equal(f.party.gameActive,false);
  assert.equal(f.commands.filter(m=>m.command==='continuous.start').length,1);
+});
+
+
+test('matching votes can start continuous Party directly from the main menu',()=>{
+  const f=fixture();f.party.library=()=>[{songId:1,title:'Folder-hidden song',visible:false,category:false}];
+  f.setState('main_menu');f.like('a',[1]);f.like('b',[1]);f.start();f.advance(0);
+  assert.equal(f.commands[0].command,'continuous.start');
+  assert.deepEqual(f.commands[0].args.songIds,[1]);
 });
