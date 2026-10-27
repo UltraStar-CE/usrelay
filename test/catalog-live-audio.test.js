@@ -8,7 +8,7 @@ test('a different room validates its cached catalog once even when songs are alr
   const requests=[];
   const context=vm.createContext({state:{roomId:'new-room',playerId:'phone',songSelect:{library:[{songId:99}]}},
     requestCatalog:args=>requests.push(args)});
-  vm.runInContext(app.slice(app.indexOf('function ensureCatalogRequested('),app.indexOf('async function hydrateCachedCatalog(')),context);
+  vm.runInContext(app.slice(app.indexOf('function ensureCatalogRequested('),app.indexOf('async function mergeSongSelectState(')),context);
   context.ensureCatalogRequested('join'); context.ensureCatalogRequested('tab');
   assert.equal(requests.length,1);
   context.state.roomId='another-room'; context.ensureCatalogRequested('join');

@@ -3039,41 +3039,6 @@ function ensureCatalogRequested(reason = 'ensure-catalog') {
   requestCatalog({ reason });
 }
 
-async function hydrateCachedCatalog(reason = 'cache') {
-  const hash = cachedSongLibraryHash();
-  if (!hash) return false;
-  const cached = await loadCachedSongLibrary(hash);
-  if (!cached?.library?.length) return false;
-  if (state.songCatalogManifest?.catalogId && state.songCatalogManifest.catalogId !== hash) return false;
-  state.songLibraryHash = hash;
-  state.songCatalogInFlight = false;
-  state.songFullListLastRequestMs = 0;
-  state.songLibraryProgress = {
-    type: 'song.library.progress',
-    status: 'ready',
-    indexedSongs: cached.library.length,
-    transferReceived: cached.library.length,
-    transferTotal: cached.library.length,
-    message: `Loaded cached song catalog (${reason})`
-  };
-  state.songSelect = await mergeSongSelectState(state.songSelect, {
-    type: 'song.select.state',
-    source: 'cache',
-    libraryHash: hash,
-    selectedSongId: state.songSelect?.selectedSongId ?? -1,
-    visibleSongs: cached.library.length,
-    totalSongs: cached.library.length,
-    library: cached.library,
-    results: Array.isArray(state.songSelect?.results) ? state.songSelect.results : cached.library.slice(0, 30),
-    playlists: Array.isArray(state.songSelect?.playlists) ? state.songSelect.playlists : []
-  });
-  state.localLikedSongIds = persistentLikedSongIdsForLibrary(cached.library);
-  syncPersistentLikesToBridge(`cache-${reason}`);
-  renderSongSelectState();
-  logLine(`catalog loaded from cache ${hash.slice(0, 8)} ${cached.library.length}`);
-  return true;
-}
-
 async function mergeSongSelectState(previous, message) {
   const incoming = { ...message };
   const libraryChanged = Boolean(incoming.libraryHash && previous?.libraryHash && incoming.libraryHash !== previous.libraryHash);
@@ -5056,6 +5021,19 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'client.joined') {
+    if (state.roomId !== message.roomId) {
+      // Numeric song IDs belong to one game's snapshot. Never restore votes
+      // from an unvalidated last-room cache before querying the joined game.
+      state.songSelect = null;
+      state.party = null;
+      state.localLikedSongIds = new Set();
+      state.songLibraryHash = '';
+      state.songLibraryTransfer = null;
+      state.songCatalogInFlight = false;
+      state.nativeSongLoadId = null;
+      state.songCatalogRequestedForRoom = '';
+      state.lastPersistentLikeSyncKey = '';
+    }
     state.lastClientHeartbeatSentMs = 0;
     state.lastClientHeartbeatAckMs = 0;
     state.rawPcmV1 = Boolean(message.rawPcmV1);
@@ -5093,10 +5071,7 @@ async function handleMessage(message) {
     persistSettings();
     startP2p();
     logLine(message.resumed ? `rejoined room ${message.displayCode}` : `joined room ${message.displayCode}`);
-    window.setTimeout(async () => {
-      await hydrateCachedCatalog(message.resumed ? 'resume' : 'join');
-      ensureCatalogRequested('client-joined');
-    }, 0);
+    window.setTimeout(() => ensureCatalogRequested('client-joined'), 0);
     return;
   }
 
