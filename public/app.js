@@ -25,7 +25,7 @@ const lastMicSlotKey = 'usdx.remote.lastMicSlot.v1';
 const settingsKey = 'usdx.remote.settings.v1';
 const settingsVersion = 3;
 const tabKey = 'usdx.remote.tab.v1';
-const appVersion = 'v20261027-idle-calibration';
+const appVersion = 'v20261027-phone-recovery';
 const songPageSize = 80;
 const searchDebounceMinMs = 40;
 const searchDebounceMaxMs = 350;
@@ -1179,7 +1179,13 @@ function clearSongFullListRequestTimer() {
 
 function startClientHeartbeat() {
   stopClientHeartbeat();
+  state.clientHeartbeatStartedMs = performance.now();
   state.clientHeartbeatTimer = setInterval(() => {
+    const lastReply = state.lastClientHeartbeatAckMs || state.clientHeartbeatStartedMs;
+    if (!state.relayRecovering && performance.now() - lastReply > 15000) {
+      reconnectRelay();
+      return;
+    }
     if (sendRelay({type:'client.heartbeat',clientSendUs:clientNowUs()})) {
       state.lastClientHeartbeatSentMs = performance.now();
     }
@@ -5681,6 +5687,10 @@ async function handleMessage(message) {
   if (message.type === 'error') {
     const text = message.reason || message.code || 'error';
     if (message.code === 'host.reconnecting' || message.reason === 'heartbeat_timeout') {
+      if (!state.playerId) {
+        joinError.textContent = 'The game is reconnecting. Try joining again shortly.';
+        return;
+      }
       reconnectRelay();
       return;
     }

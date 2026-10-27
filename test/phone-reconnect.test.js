@@ -30,3 +30,14 @@ test('phone retry is bounded and cannot reconnect during unload or without crede
  const g=fixture();g.state.pageUnloading=true;g.context.reconnectRelay();assert.equal(g.timers.size,0);
  g.state.pageUnloading=false;g.state.playerToken=null;g.context.reconnectRelay();assert.equal(g.timers.size,0);
 });
+
+test('an apparently open but silent socket triggers recovery after missing heartbeat replies',()=>{
+ let tick,now=100,reconnects=0,sends=0;
+ const state={lastClientHeartbeatAckMs:0};
+ const context=vm.createContext({state,performance:{now:()=>now},stopClientHeartbeat:()=>{},setInterval:fn=>{tick=fn;return 1;},
+  reconnectRelay:()=>reconnects++,sendRelay:()=>{sends++;return true;},clientNowUs:()=>now*1000});
+ const start=app.indexOf('function startClientHeartbeat(');vm.runInContext(app.slice(start,app.indexOf('function renderHostRecoveryNotice(',start)),context);
+ context.startClientHeartbeat();tick();assert.equal(sends,1);
+ now=16100;tick();assert.equal(reconnects,1);assert.equal(sends,1);
+ state.lastClientHeartbeatAckMs=now;tick();assert.equal(sends,2);
+});
