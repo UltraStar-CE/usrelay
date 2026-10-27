@@ -314,14 +314,15 @@
           </section>
           <section class="remote-list">
             <div class="section-head">
-              <strong>Legacy mic delay</strong>
+              <strong>Microphone timing trim</strong>
               <span id="micDelayValueLabel" class="muted">0 ms</span>
             </div>
             <div class="delay-row">
               <button type="button" id="micDelayMinusButton">-</button>
-              <input id="micDelayInput" type="number" min="-500" max="500" step="10" value="0">
+              <input id="micDelayInput" aria-label="Microphone timing trim" type="number" min="-500" max="500" step="10" value="0">
               <button type="button" id="micDelayPlusButton">+</button>
             </div>
+            <p class="fine">Normally leave at 0 ms. This per-player adjustment is added once to the game's automatic compensation. Positive values compensate extra input delay; negative values reduce it.</p>
           </section>
           </details>
           <section class="remote-list">

@@ -1442,7 +1442,6 @@ function renderConnectionState() {
     route:state.pcmSender?.confirmed()&&!state.pcmSender.usingServer()?'direct':'server',
     clock:{...state.clock,mappingUncertaintyMs:state.audioContext?128000/state.audioContext.sampleRate:1}});
   renderAudioTiming();
-  micDelayInput?.closest('section')?.classList.toggle('hidden', Boolean(state.rawPcmV1));
   const direct = state.rawPcmV1 ? nativeAudioActive() && state.pcmSender &&
     !state.pcmSender.usingServer() : state.p2p.connected;
   const warning = $('routeWarning');
