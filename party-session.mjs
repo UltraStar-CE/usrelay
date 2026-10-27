@@ -1,24 +1,50 @@
+// catalogKey distinguishes separate files even when artist/title are identical.
+function catalogIdentity(song) {
+  return typeof song?.catalogKey==='string' && song.catalogKey ? song.catalogKey : null;
+}
+
 // Votes choose upcoming songs. USCE owns playback, results, timing and advancement.
 export class PartySession {
-  constructor({players, library, playlist, gameState, send, command, now = Date.now}) {
-    Object.assign(this,{players,library,playlist,gameState,send,command,now});
+  constructor({players, library, playlist, gameState, send, command, now = Date.now, catalogReady = () => true}) {
+    Object.assign(this,{players,library,playlist,gameState,send,command,now,catalogReady});
     this.likes=new Map(); this.played=new Set(); this.leaderboard=new Map();
     this.enabled=false; this.gameActive=false; this.dirty=true;
     this.minPlayers=2; this.endless=false; this.playback={}; this.source='all';
     this.deadline=0; this.owner=null; this.sequence=1000000000; this.pending=new Map();
     this.queue=[]; this.matches=[]; this.notice=''; this.currentMatch=null;
   }
+  reindexLibrary(previous, next) {
+    const oldById=new Map(previous.map(song=>[Number(song.songId),catalogIdentity(song)]));
+    const nextByKey=new Map();
+    for(const song of next) {
+      const key=catalogIdentity(song);
+      if(!key)continue;
+      if(!nextByKey.has(key))nextByKey.set(key,[]);
+      nextByKey.get(key).push(Number(song.songId));
+    }
+    const remap=ids=>new Set([...ids].flatMap(id=>{
+      const targets=nextByKey.get(oldById.get(id));
+      // Missing or ambiguous identities must not silently choose a file.
+      return targets?.length===1?targets:[];
+    }));
+    for(const [player,ids] of this.likes)this.likes.set(player,remap(ids));
+    this.played=remap(this.played);
+    this.dirty=true;
+  }
   eligible() { return [...this.players().values()].filter(p=>p.connected!==false&&Number(p.slot)>0); }
   rosterChanged() { this.dirty=true; }
   handle(message) {
     if (['party.like','party.unlike','party.likeShown','party.unlikeShown'].includes(message.type)) {
-      const known=new Set(this.library().map(s=>Number(s.songId)));
+      const library=this.library();
+      const known=new Set(library.map(s=>Number(s.songId)));
+      const byKey=new Map(library.filter(s=>s.catalogKey).map(s=>[s.catalogKey,s]));
       const ids=this.likes.get(message.playerId)||new Set();
       this.likes.set(message.playerId,ids);
       const songs=Array.isArray(message.songs)?message.songs.slice(0,500):[message];
       const liked=message.type==='party.like'||message.type==='party.likeShown';
       for(const song of songs) {
-        const id=Number(song.songId);
+        const matched=song.catalogKey ? byKey.get(song.catalogKey) : null;
+        const id=song.catalogKey ? Number(matched?.songId) : Number(song.songId);
         if(Number.isInteger(id)&&known.has(id)) { if(liked) ids.add(id); else ids.delete(id); }
       }
       this.dirty=true; return true;
@@ -110,6 +136,7 @@ export class PartySession {
     this.publish();
   }
   tick() {
+    if(!this.catalogReady()) {if(this.dirty){this.publish();this.dirty=false;}return;}
     if(this.dirty) this.refresh();
     if(this.enabled&&!this.gameActive&&this.queue.length&&
       ![...this.pending.values()].includes('start')&&['main_menu','song_select'].includes(this.gameState())) {
@@ -118,25 +145,26 @@ export class PartySession {
     }
   }
   publish() {
-    const songs=new Map(this.library().map(s=>[Number(s.songId),s]));
+    const ready=this.catalogReady();
+    const songs=new Map((ready?this.library():[]).map(s=>[Number(s.songId),s]));
     const voted=new Map();
     for(const p of this.players().values()) for(const id of this.likes.get(p.playerId)||[]) {
       if(!songs.has(id)) continue;
       if(!voted.has(id)) voted.set(id,{...songs.get(id),likedBy:[]});
       voted.get(id).likedBy.push({playerId:p.playerId,name:p.name});
     }
-    const compact=s=>({songId:s.songId,title:s.title,artist:s.artist,random:s.random,
+    const compact=s=>({songId:s.songId,catalogKey:s.catalogKey,title:s.title,artist:s.artist,random:s.random,
       likedBy:(s.likedBy||[]).map(p=>({playerId:p.playerId,name:p.name})),likedByCount:s.likedBy?.length||0,
       neededLikes:Math.max(0,this.minPlayers-(s.likedBy?.length||0)),matched:(s.likedBy?.length||0)>=this.minPlayers});
     this.send({type:'party.state',available:true,enabled:this.enabled,minPlayers:this.minPlayers,
       endless:this.endless,playerSetupSeconds:null,resultSeconds:null,highScoreSeconds:null,songDisplay:null,singingDisplay:null,...this.playback,source:this.source,
-      phase:this.gameActive?({player_setup:'calling_players',results:'scoring',high_scores:'highscores',paused:'paused'}[this.gameState()]||'singing'):this.enabled?'collecting_votes':'off',
-      notice:this.notice||(!this.gameActive&&this.enabled&&!['main_menu','song_select'].includes(this.gameState())?'Return to the main menu or song selection to start the party.':''),
-      currentMatch:this.currentMatch?compact(this.currentMatch):null,
-      queue:this.queue.slice(0,30).map(compact),matches:this.matches.slice(0,30).map(compact),matchesTotal:this.matches.length,
+      phase:!ready?'loading_songs':this.gameActive?({player_setup:'calling_players',results:'scoring',high_scores:'highscores',paused:'paused'}[this.gameState()]||'singing'):this.enabled?'collecting_votes':'off',
+      notice:(!ready?'Loading songs…':this.notice)||(!this.gameActive&&this.enabled&&!['main_menu','song_select'].includes(this.gameState())?'Return to the main menu or song selection to start the party.':''),
+      currentMatch:ready&&this.currentMatch?compact(this.currentMatch):null,
+      queue:(ready?this.queue:[]).slice(0,30).map(compact),matches:(ready?this.matches:[]).slice(0,30).map(compact),matchesTotal:ready?this.matches.length:0,
       likedSongs:[...voted.values()].slice(0,30).map(compact),likedSongsTotal:voted.size,
       leaderboard:[...this.leaderboard.values()].sort((a,b)=>b.score-a.score).map(entry=>({...entry,points:entry.score,rounds:entry.songs}))});
     for(const [playerId,ids] of this.likes) if(this.players().has(playerId)&&this.players().get(playerId).connected!==false)
-      this.send({type:'party.state',targetPlayerId:playerId,likedSongIdsByPlayer:{[playerId]:[...ids]}});
+      this.send({type:'party.state',targetPlayerId:playerId,likedSongIdsByPlayer:{[playerId]:ready?[...ids]:[]}});
   }
 }

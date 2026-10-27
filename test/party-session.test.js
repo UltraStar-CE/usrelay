@@ -80,3 +80,14 @@ test('matching votes can start continuous Party directly from the main menu',()=
   assert.equal(f.commands[0].command,'continuous.start');
   assert.deepEqual(f.commands[0].args.songIds,[1]);
 });
+
+test('removed or ambiguously identified songs cannot transfer votes to reused IDs',()=>{
+ const f=fixture();f.like('a',[1,2]);f.party.played.add(1);
+ f.party.reindexLibrary([{songId:1,catalogKey:'one',title:'One'},{songId:2,catalogKey:'two',title:'Two'}],
+  [{songId:1,catalogKey:'unrelated',title:'Unrelated'},{songId:3,catalogKey:'two',title:'Two'},{songId:4,catalogKey:'two',title:'Two'}]);
+ assert.deepEqual([...f.party.likes.get('a')],[]);assert.equal(f.party.played.size,0);
+});
+test('an unknown stable song identity cannot fall back to a reused numeric ID',()=>{
+ const f=fixture();f.party.handle({type:'party.like',playerId:'a',songId:1,catalogKey:'missing-file'});
+ assert.equal(f.party.likes.get('a').size,0);
+});

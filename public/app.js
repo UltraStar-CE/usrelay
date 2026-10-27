@@ -716,6 +716,7 @@ function persistentLikedSongsForCurrentCatalog() {
     if (!key || !state.persistentLikedSongs.has(key) || !Number.isInteger(songId) || songId < 0) continue;
     songs.push({
       songId,
+      catalogKey: song.catalogKey,
       title: song.title || '',
       artist: song.artist || ''
     });
@@ -2026,6 +2027,7 @@ function ownLikedSongIds() {
 
 function bridgeOwnLikedSongIds() {
   const ids = new Set();
+  if (state.party?.libraryHash && state.party.libraryHash !== state.songSelect?.libraryHash) return ids;
   const likedByPlayer = state.party?.likedSongIdsByPlayer;
   if (likedByPlayer && typeof likedByPlayer === 'object') {
     const ownIds = Array.isArray(likedByPlayer[state.playerId]) ? likedByPlayer[state.playerId] : [];
@@ -2045,6 +2047,7 @@ function bridgeOwnLikedSongIds() {
 }
 
 function syncLocalLikedSongsFromParty() {
+  if (state.songLibraryHash && state.songSelect?.libraryHash !== state.songLibraryHash) return;
   if (performance.now() < Number(state.partyLikePendingUntilMs || 0)) return;
   const liked = persistentLikedSongIdsForLibrary();
   let imported = false;
@@ -2077,7 +2080,9 @@ function sendPartyLikeSong(song, sourceButton = null) {
     return;
   }
   const liked = playerLikedSong(songId);
-  const songForStorage = songById(songId) || song;
+  const indexedSong = songById(songId);
+  const songForStorage = song.catalogKey && song.catalogKey !== indexedSong?.catalogKey
+    ? song : (indexedSong || song);
   if (liked) {
     state.localLikedSongIds.delete(songId);
     forgetPersistentLikedSong(songForStorage);
@@ -2091,6 +2096,7 @@ function sendPartyLikeSong(song, sourceButton = null) {
   const ok = send({
     type: liked ? 'party.unlike' : 'party.like',
     songId,
+    catalogKey: songForStorage.catalogKey,
     title: song.title || '',
     artist: song.artist || ''
   });
@@ -2102,6 +2108,7 @@ async function sendPartyLikeMatchedSongs(sourceButton = null, liked = true) {
   const songs = visibleSongResults()
     .map((song) => ({
       songId: Number(song.songId),
+      catalogKey: song.catalogKey,
       title: song.title || '',
       artist: song.artist || ''
     }))
@@ -5266,6 +5273,13 @@ async function handleMessage(message) {
 
   if (message.type === 'api.state') {
     const previousHash = state.songSelect?.libraryHash;
+    if (previousHash && previousHash !== message.libraryHash) {
+      state.localLikedSongIds = new Set();
+      state.party = null;
+      state.partyLikePendingUntilMs = 0;
+      if (state.partyLikePendingTimer) window.clearTimeout(state.partyLikePendingTimer);
+      state.partyLikePendingTimer = null;
+    }
     state.songSelect = await mergeSongSelectState(state.songSelect, message);
     if (message.apiCapabilities?.includes('song.list') && !state.songCatalogInFlight &&
         (previousHash !== message.libraryHash || !state.songSelect?.library?.length)) {
@@ -5403,6 +5417,7 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'party.state') {
+    if (message.libraryHash && state.songLibraryHash && message.libraryHash !== state.songLibraryHash) return;
     state.party = {
       ...state.party,
       ...message

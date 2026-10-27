@@ -46,3 +46,25 @@ test('song list rendering does no work while the microphone or Control tab is vi
   vm.runInContext(app.slice(app.indexOf('function renderSongSelectState('), app.indexOf('function renderSlotButtons(')), context);
   context.renderSongSelectState();
 });
+
+test('votes from an obsolete catalog cannot be imported into the new library by numeric ID',()=>{
+ const state={playerId:'phone',songSelect:{libraryHash:'new'},party:{libraryHash:'old',likedSongIdsByPlayer:{phone:[2]}}};
+ const context=vm.createContext({state});
+ const start=app.indexOf('function bridgeOwnLikedSongIds(');
+ vm.runInContext(app.slice(start,app.indexOf('function syncLocalLikedSongsFromParty(',start)),context);
+ assert.deepEqual([...context.bridgeOwnLikedSongIds()],[]);
+ state.party.libraryHash='new';assert.deepEqual([...context.bridgeOwnLikedSongIds()],[2]);
+});
+
+test('a Party action carries its intended file identity even while the local index is older',()=>{
+ const sent=[],remembered=[];
+ const context=vm.createContext({state:{localLikedSongIds:new Set()},Number,
+  playerLikedSong:()=>false,songById:()=>({songId:2,catalogKey:'different',title:'Wrong song'}),
+  rememberPersistentLikedSong:song=>remembered.push(song),forgetPersistentLikedSong(){},
+  holdLocalPartyLikes(){},scheduleSongSelectRender(){},renderPartyState(){},
+  markFireAndForgetButton(){},send:message=>{sent.push(message);return true;}});
+ const start=app.indexOf('function sendPartyLikeSong(');
+ vm.runInContext(app.slice(start,app.indexOf('async function sendPartyLikeMatchedSongs(',start)),context);
+ context.sendPartyLikeSong({songId:2,catalogKey:'intended',title:'Intended song'});
+ assert.equal(sent[0].catalogKey,'intended');assert.equal(remembered[0].title,'Intended song');
+});

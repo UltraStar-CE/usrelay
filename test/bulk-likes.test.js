@@ -9,7 +9,7 @@ for(const liked of [true,false]) for(const count of [80,81]) for(const accepted 
     let prompts=0,saved=0; const messages=[];
     const ids=new Set(liked?[]:Array.from({length:count},(_,i)=>i));
     const context=vm.createContext({state:{localLikedSongIds:ids},
-      visibleSongResults:()=>Array.from({length:count},(_,songId)=>({songId})),
+      visibleSongResults:()=>Array.from({length:count},(_,songId)=>({songId,catalogKey:`file-${songId}`})),
       playerLikedSong:id=>ids.has(id), confirmAction:async()=>{prompts++;return accepted;},
       rememberPersistentLikedSong(){saved++;},forgetPersistentLikedSong(){saved++;},
       savePersistentLikedSongs(){},holdLocalPartyLikes(){},scheduleSongSelectRender(){},
@@ -21,6 +21,6 @@ for(const liked of [true,false]) for(const count of [80,81]) for(const accepted 
     const changed=count<=80||accepted;
     assert.equal(saved,changed?count:0);
     assert.equal(messages.length,changed?1:0);
-    if(changed) assert.equal(messages[0].type,liked?'party.likeShown':'party.unlikeShown');
+    if(changed) {assert.equal(messages[0].type,liked?'party.likeShown':'party.unlikeShown');assert.equal(messages[0].songs[0].catalogKey,'file-0');}
   });
 }

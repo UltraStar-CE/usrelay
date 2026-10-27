@@ -66,3 +66,66 @@ test('new playlist state restarts an exhausted enabled Party without another Sta
   assert.deepEqual(commands.at(-1).args.songIds,[8]);
  }finally{hosted.close();}
 });
+
+test('catalog reordering preserves votes and played songs by identity, not numeric ID',async()=>{
+ const room={players:new Map([['a',{playerId:'a',slot:1,connected:true}]]),gameState:{state:'main_menu'}};
+ const queries=[],sent=[];
+ const hosted=new HostedParty({room,broadcast:m=>sent.push(m),sendClient:(_,m)=>sent.push(m),sendHost:m=>{queries.push(m);return true;}});
+ const answer=(snapshotId,songs)=>{const query=queries.filter(m=>m.command==='song.list').at(-1);hosted.observe({type:'ack',commandId:query.commandId,accepted:true,data:{snapshotId,offset:0,total:songs.length,songs}});};
+ try{
+  hosted.observe({type:'api.state',libraryHash:'before'});let loading=hosted.loading;
+  answer('before',[{songId:1,catalogKey:'file-A',title:'Same'},{songId:2,catalogKey:'file-B',title:'Same'}]);await loading;
+  hosted.handle({type:'party.like',playerId:'a',songId:1});hosted.party.played.add(1);
+  hosted.observe({type:'api.state',libraryHash:'after'});loading=hosted.loading;
+  answer('after',[{songId:1,catalogKey:'file-B',title:'Same'},{songId:2,catalogKey:'file-A',title:'Same'}]);await loading;
+  assert.deepEqual([...hosted.party.likes.get('a')],[2]);
+  assert.deepEqual([...hosted.party.played],[2]);
+  assert.equal(sent.filter(m=>m.likedSongIdsByPlayer).at(-1).libraryHash,'after');
+ }finally{hosted.close();}
+});
+
+test('votes queued during replacement keep stable intent and Party waits for current snapshot',async()=>{
+ const queries=[];const room={players:new Map([['a',{playerId:'a',slot:1,connected:true}]]),gameState:{state:'main_menu'}};
+ const hosted=new HostedParty({room,broadcast:()=>{},sendClient:()=>{},sendHost:m=>{queries.push(m);return true;}});
+ const answer=(hash,songs)=>{const query=queries.filter(m=>m.command==='song.list').at(-1);hosted.observe({type:'ack',commandId:query.commandId,accepted:true,data:{snapshotId:hash,total:songs.length,offset:0,songs}});};
+ try{
+  hosted.observe({type:'api.state',libraryHash:'a'});let loading=hosted.loading;
+  answer('a',[{songId:1,catalogKey:'A',title:'One'},{songId:2,catalogKey:'B',title:'Two'}]);await loading;
+  hosted.handle({type:'party.like',playerId:'a',songId:1});
+  hosted.observe({type:'api.state',libraryHash:'b'});loading=hosted.loading;
+  hosted.handle({type:'party.unlike',playerId:'a',songId:1});
+  hosted.handle({type:'party.like',playerId:'a',songId:1,catalogKey:'B'});
+  hosted.handle({type:'control.command',command:'party.startMatchmaking',playerId:'a',args:{minPlayers:1}});
+  assert.equal(queries.some(m=>m.command==='continuous.start'),false,'do not send old IDs while loading');
+  answer('b',[{songId:1,catalogKey:'B',title:'Two'},{songId:2,catalogKey:'A',title:'One'}]);await loading;
+  assert.deepEqual([...hosted.party.likes.get('a')],[1]);
+  assert.deepEqual(queries.find(m=>m.command==='continuous.start').args.songIds,[1]);
+ }finally{hosted.close();}
+});
+test('an obsolete in-flight library cannot mark a newer announced snapshot loaded',async()=>{
+ const queries=[];const hosted=new HostedParty({room:{players:new Map(),gameState:{state:'main_menu'}},broadcast:()=>{},sendClient:()=>{},sendHost:m=>{queries.push(m);return true;}});
+ try{
+  hosted.observe({type:'api.state',libraryHash:'old'});const old=hosted.loading;
+  hosted.observe({type:'api.state',libraryHash:'new'});
+  hosted.observe({type:'ack',commandId:queries[0].commandId,accepted:true,data:{snapshotId:'old',offset:0,total:1,songs:[{songId:1,title:'Old'}]}});
+  await old;await Promise.resolve();
+  assert.equal(hosted.loaded,false);assert.equal(hosted.library.length,0);assert.equal(queries.length,2);
+  const loading=hosted.loading;
+  hosted.observe({type:'ack',commandId:queries[1].commandId,accepted:true,data:{snapshotId:'new',offset:0,total:1,songs:[{songId:2,title:'New'}]}});
+  await loading;assert.equal(hosted.loadedSnapshotId,'new');assert.equal(hosted.library[0].title,'New');
+ }finally{hosted.close();}
+});
+
+test('failed initial catalog loading retries on roster ticks without requiring the song screen',async()=>{
+ let clock=0;const queries=[];
+ const hosted=new HostedParty({room:{players:new Map(),gameState:{state:'main_menu'}},now:()=>clock,broadcast:()=>{},sendClient:()=>{},sendHost:m=>{queries.push(m);return true;}});
+ try{
+  hosted.observe({type:'api.state',libraryHash:'snapshot'});const first=hosted.loading;
+  hosted.observe({type:'ack',commandId:queries[0].commandId,accepted:false,reason:'temporary'});
+  await assert.rejects(first);await Promise.resolve();
+  hosted.rosterChanged();assert.equal(queries.length,1);
+  clock=5001;hosted.rosterChanged();assert.equal(queries.length,2);const retry=hosted.loading;
+  hosted.observe({type:'ack',commandId:queries[1].commandId,accepted:true,data:{snapshotId:'snapshot',offset:0,total:0,songs:[]}});
+  await retry;assert.equal(hosted.loaded,true);assert.equal(hosted.party.notice,'');
+ }finally{hosted.close();}
+});
