@@ -681,8 +681,7 @@ function markHostDisconnected(room, reason = 'disconnect') {
     scheduleHostDisconnectExpiry(room);
     return;
   }
-  room.hostedParty?.close();
-  room.hostedParty = null;
+  room.hostedParty?.suspend();
   const host = room.host;
   room.host = null;
   room.hostDisconnectedAtMs = Date.now();
@@ -2524,8 +2523,7 @@ class WebSocketConnection {
     if (this.kind === 'host' && this.room) {
       const room = this.room;
       if (room.host === this) {
-        room.hostedParty?.close();
-        room.hostedParty = null;
+        room.hostedParty?.suspend();
         room.host = null;
         room.hostDisconnectedAtMs = Date.now();
         room.lastSeenMs = Date.now();

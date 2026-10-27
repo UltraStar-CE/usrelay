@@ -58,3 +58,37 @@ test('native room hosts Party votes, continuous playback and roster changes with
  assert.equal(replay.playlists[0].items[0].songId,7);
 
 });
+
+test('authenticated host reconnection preserves Party votes/settings and reconciles a lost start ACK',{timeout:8000},async t=>{
+ const reservation=net.createServer().listen(0,'127.0.0.1');await once(reservation,'listening');
+ const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
+ const server=spawn(process.execPath,['server.js'],{env:{...process.env,USDX_BIND:'127.0.0.1',USDX_PORT:String(port),USDX_HOST_RESUME_TTL_MS:'3000'},stdio:['ignore','pipe','pipe']});
+ t.after(()=>server.kill());
+ await new Promise((resolve,reject)=>{server.stdout.on('data',d=>{if(String(d).includes('server.listen'))resolve();});server.once('exit',c=>reject(Error(`server exited ${c}`)));});
+ let host=new WebSocket(`ws://127.0.0.1:${port}/ws/host`),readHost=inbox(host);t.after(()=>host.close());await once(host,'open');
+ const sendHost=m=>host.send(JSON.stringify({protocol:1,...m}));
+ const api={type:'api.state',libraryHash:'recover',apiCapabilities:['song.list','continuous.start'],playlistItems:[]};
+ const songs=[{songId:7,catalogKey:'stable-file',title:'Fixture'}];
+ const answer=query=>sendHost({type:'ack',playerId:query.playerId,commandId:query.commandId,accepted:true,data:{snapshotId:'recover',offset:0,total:1,songs}});
+ sendHost({type:'host.hello',maxPlayers:12});const room=await readHost(m=>m.type==='room.created');
+ sendHost({type:'game.state',state:'main_menu',seq:1});sendHost(api);answer(await readHost(m=>m.command==='song.list'));
+ const phone=new WebSocket(`ws://127.0.0.1:${port}/ws/client`),readPhone=inbox(phone);t.after(()=>phone.close());await once(phone,'open');
+ const send=m=>phone.send(JSON.stringify({protocol:1,...m}));
+ send({type:'client.join',displayCode:room.displayCode,name:'Recovering singer',preferredSlot:2});const player=await readPhone(m=>m.type==='client.joined');
+ send({type:'party.like',songId:7,catalogKey:'stable-file'});
+ await readPhone(m=>m.likedSongIdsByPlayer?.[player.playerId]?.includes(7));
+ send({type:'control.command',commandId:1,command:'party.startMatchmaking',args:{minPlayers:1,playerSetupSeconds:10,highScoreSeconds:5}});
+ const start=await readHost(m=>m.command==='continuous.start');assert.deepEqual(start.args.songIds,[7]);
+ // The native game accepted this command, but its ACK was lost with the socket.
+ const disconnected=readPhone(m=>m.type==='host.disconnected');host.close();await disconnected;
+ host=new WebSocket(`ws://127.0.0.1:${port}/ws/host`);readHost=inbox(host);await once(host,'open');
+ sendHost({type:'host.hello',roomId:room.roomId,hostToken:room.hostToken,maxPlayers:12});await readHost(m=>m.type==='room.resumed');await readPhone(m=>m.type==='host.resumed');
+ sendHost({type:'game.state',state:'player_setup',seq:2});sendHost({type:'continuous.state',active:true});sendHost(api);
+ answer(await readHost(m=>m.command==='song.list'));
+ const queue=await readHost(m=>m.command?.startsWith('continuous.'));
+ assert.equal(queue.command,'continuous.queue','do not start the accepted native session a second time');
+ assert.deepEqual(queue.args.songIds,[7]);
+ const restored=await readPhone(m=>m.type==='party.state'&&m.enabled&&m.minPlayers===1&&m.phase==='calling_players');
+ assert.equal(restored.playerSetupSeconds,10);assert.equal(restored.highScoreSeconds,5);
+ await readPhone(m=>m.likedSongIdsByPlayer?.[player.playerId]?.includes(7));
+});

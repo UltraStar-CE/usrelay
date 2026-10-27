@@ -84,6 +84,17 @@ export class PartySession {
       commandId,command,args});
     return commandId;
   }
+  reconcilePlayback(message) {
+    // A reconnect snapshot replaces uncertain ACKs. Never replay a skip/start.
+    const stopping=[...this.pending.values()].includes('stop');
+    this.pending.clear();
+    this.gameActive=Boolean(message.active);
+    if(!this.gameActive)this.currentMatch=null;
+    if(message.reason==='manual')this.enabled=false;
+    this.queueFingerprint=null;
+    this.dirty=true;
+    if(stopping&&this.gameActive)this.issue('continuous.stop',{},'stop');
+  }
   observe(message) {
     if(message.type==='game.state') this.dirty=true;
     if(message.type==='ack'&&this.pending.has(message.commandId)) {
