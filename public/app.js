@@ -2441,7 +2441,8 @@ function sendSlotProfile(slot, sourceButton) {
   } else if (!ok && micStatus) {
     micStatus.textContent = 'Not connected to the relay; reconnect to switch mic rooms.';
   }
-  if (ok) autoStartMicForSlot(requestedSlot);
+  if (ok && requestedSlot <= 0) void stopMic();
+  else if (ok) autoStartMicForSlot(requestedSlot);
   markFireAndForgetButton(sourceButton, ok);
   return ok;
 }
@@ -5084,6 +5085,7 @@ async function handleMessage(message) {
   if (message.type === 'player.assigned' && message.playerId === state.playerId) {
     if (state.rawPcmV1 && state.slot !== message.slot) closeP2p(true);
     state.slot = message.slot;
+    if (Number(state.slot) <= 0) void stopMic();
     if (state.rawPcmV1) startP2p();
     state.role = message.role;
     state.pendingSlot = null;
@@ -5755,6 +5757,7 @@ async function startMic() {
     silentSink.connect(audioContext.destination);
     if (!state.rawPcmV1) {
       await audioContext.audioWorklet.addModule(`/pitch-worklet.js?v=${encodeURIComponent(appVersion)}`);
+      if (state.audioContext !== audioContext) return;
       const worklet = new AudioWorkletNode(audioContext, 'usdx-pitch-processor');
       state.worklet = worklet;
       worklet.port.onmessage = (event) => handlePitchFrame(event.data);
@@ -5766,6 +5769,7 @@ async function startMic() {
         channel: () => state.p2p.dc,
         relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message) });
       await audioContext.audioWorklet.addModule('/pcm-worklet.js?v=3');
+      if (state.audioContext !== audioContext) return;
       state.pcmWorklet = new AudioWorkletNode(audioContext, 'usce-pcm');
       state.pcmWorklet.port.onmessage = event => {
         state.pcmSender.submit(event.data);

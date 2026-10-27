@@ -483,7 +483,7 @@ details.remote-list > summary { cursor: pointer; padding: .5rem 0; font-weight: 
   border-radius: 12px;
   box-shadow: var(--shadow-soft);
   background: var(--room-light);
-  color: var(--room-text);
+  color: var(--text);
   font-size: 16px;
 }
 .mic-room-list button:not(.occupied) .avatar-placeholder { display: none; }
@@ -537,6 +537,7 @@ details.remote-list > summary { cursor: pointer; padding: .5rem 0; font-weight: 
 }
 
 .mic-room-list .lobby-room {
+  color: var(--room-text);
   display: flex;
   justify-content: space-between;
   align-items: center;
