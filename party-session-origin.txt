@@ -1,0 +1,6 @@
+Party controller copied from UltraStar-CE/USCE game/webs/party-session.mjs
+Source commit: dab3220f
+Source SHA256: 7fea986477c759192c00a3326132136fef4415d1e3908c8005613f1b5d8e9efa
+Hosted relay changes since that source:
+- Stop a pending continuous start when the controller cancels Party.
+The local Node adapter is being retired; API compatibility is not required.

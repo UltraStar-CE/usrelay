@@ -1,4 +1,12 @@
+import {audioTimingView} from './audio-timing.js';
+import {DigitalCalibration} from './digital-calibration.js';
+import {loadSongs} from './song-query.js';
+import {createApiRequests} from './api-requests.js';
+import { NativePcmSender } from './native-pcm.js?v=2';
+import { createAudioInput, startSyntheticPcm } from './audio-input.js?v=4';
 const protocol = 1;
+const digitalCalibration = new DigitalCalibration({send:message=>sendRelay(message),
+  startWave:startCalibrationWave,stopWave:stopCalibrationWave});
 const sessionKey = 'usdx.remote.session.v1';
 const nameKey = 'usdx.remote.name.v1';
 const difficultyModeKey = 'usdx.remote.difficultyMode.v1';
@@ -17,7 +25,7 @@ const lastMicSlotKey = 'usdx.remote.lastMicSlot.v1';
 const settingsKey = 'usdx.remote.settings.v1';
 const settingsVersion = 3;
 const tabKey = 'usdx.remote.tab.v1';
-const appVersion = 'v260505034500-browser-liked-songs';
+const appVersion = 'v20261027-phone-recovery';
 const songPageSize = 80;
 const searchDebounceMinMs = 40;
 const searchDebounceMaxMs = 350;
@@ -25,12 +33,11 @@ const slotSwitchCooldownMs = 200;
 const avatarCanvasMaxDimension = 512;
 const avatarUploadTargetBytes = 320 * 1024;
 const deviceMusicOutputLeadSec = 0;
-const deviceMusicInitialLeadSec = 0.5;
-const deviceMusicNominalPlaybackRate = 1.0001;
-const deviceMusicHardSeekThresholdSec = 0.75;
+const deviceMusicNominalPlaybackRate = 1;
+const deviceMusicHardSeekThresholdSec = 0.25;
 const deviceMusicSoftSyncThresholdSec = 0.010;
-const deviceMusicRateCurveScaleSec = 1.25;
-const deviceMusicMaxPlaybackRateDeviation = 0.50;
+const deviceMusicRateCurveScaleSec = 0.75;
+const deviceMusicMaxPlaybackRateDeviation = 0.06;
 const deviceMusicAnchorSnapThresholdSec = 0.30;
 const deviceMusicDecoderTimeoutMs = 3500;
 const deviceMusicDecoderMaxRetries = 3;
@@ -72,6 +79,8 @@ const state = {
   songCatalogRequestId: '',
   songCatalogRequestedForRoom: '',
   songCatalogInFlight: false,
+  completedSongLibraryHash: '',
+  hostRecovering: false,
   songFullListRequestTimer: null,
   songFullListLastRequestMs: 0,
   songFullListRequestCount: 0,
@@ -154,6 +163,7 @@ const state = {
   selectPreviewAnchorClientUs: null,
   selectPreviewAnchorExpiresMs: 0,
   hostSongStartUs: null,
+  hostScoringStartUs: null,
   mediaStartUs: 0,
   songDurationSec: null,
   songMediaAnchorSec: null,
@@ -163,10 +173,13 @@ const state = {
   commandId: 1,
   pendingCommands: new Map(),
   clientHeartbeatTimer: null,
+  lastClientHeartbeatSentMs: 0,
+  lastClientHeartbeatAckMs: 0,
   audioContext: null,
   audioContextPerfBaseUs: null,
   micInputLatencyUs: 0,
   micStream: null,
+  audioInput: null,
   worklet: null,
   audioSink: null,
   pitchBatch: [],
@@ -193,6 +206,8 @@ const state = {
     wakeLock: true,
     lockMicBar: true,
     controlOnly: false,
+    showAdminControls: false,
+    preferTextLabels: false,
     playMusicOnDevice: true,
     targetDriftMs: 0,
     micDelayMs: 0,
@@ -218,7 +233,8 @@ const state = {
     connecting: false,
     connected: false,
     pendingCandidates: [],
-    reconnectTimer: null
+    reconnectTimer: null,
+    negotiationTimer: null
   }
 };
 
@@ -265,6 +281,7 @@ const controlTextInput = $('controlTextInput');
 const controlPlayerList = $('controlPlayerList');
 const songCountLabel = $('songCountLabel');
 const songLibraryLabel = $('songLibraryLabel');
+const phonePreviewStatus = $('phonePreviewStatus');
 const songLibraryProgressWrap = $('songLibraryProgressWrap');
 const songLibraryProgressFill = $('songLibraryProgressFill');
 const songLibraryProgressText = $('songLibraryProgressText');
@@ -304,7 +321,12 @@ const partySkipButton = $('partySkipButton');
 const partyStopButton = $('partyStopButton');
 const partyMinPlayersInput = $('partyMinPlayersInput');
 const partyEndlessInput = $('partyEndlessInput');
-const partyCountdownInput = $('partyCountdownInput');
+const partyPlaybackInputs = [...document.querySelectorAll('[data-party-playback]')];
+for (const input of partyPlaybackInputs.filter(input => input.dataset.partyPlayback.endsWith('Seconds'))) {
+  for (const [value,label] of [['','Use game setting'],[-1,'Manual'],[0,'Skip'],...[5,10,20,30,40,50,60].map(seconds => [seconds,`${seconds} s`])]) {
+    const option=document.createElement('option'); option.value=String(value); option.textContent=label; input.append(option);
+  }
+}
 const partySourceInput = $('partySourceInput');
 const partySaveButton = $('partySaveButton');
 const partyResetLeaderboardButton = $('partyResetLeaderboardButton');
@@ -328,6 +350,8 @@ const autoGainInput = $('autoGainInput');
 const wakeLockInput = $('wakeLockInput');
 const lockMicBarInput = $('lockMicBarInput');
 const controlOnlyInput = $('controlOnlyInput');
+const showAdminControlsInput = $('showAdminControlsInput');
+const preferTextLabelsInput = $('preferTextLabelsInput');
 const playMusicOnDeviceInput = $('playMusicOnDeviceInput');
 const deviceMusicStatus = $('deviceMusicStatus');
 const deviceMusicStateValue = $('deviceMusicStateValue');
@@ -364,9 +388,6 @@ const capacityInput = $('capacityInput');
 const capacityValueLabel = $('capacityValueLabel');
 const capacityStatus = $('capacityStatus');
 const volumeFill = $('volumeFill');
-const pitchValue = $('pitchValue');
-const confidenceValue = $('confidenceValue');
-const voicedValue = $('voicedValue');
 const songPositionValue = $('songPositionValue');
 const playerScoreValue = $('playerScoreValue');
 const rttValue = $('rttValue');
@@ -392,6 +413,7 @@ const unlockFill = $('unlockFill');
 const unlockHandle = $('unlockHandle');
 
 function setRoomScreenVisible(visible) {
+  if (!visible) closeConfirmation(false);
   joinScreen.classList.toggle('hidden', visible);
   appScreen.classList.toggle('hidden', !visible);
   lockBar.classList.toggle('hidden', !visible);
@@ -415,6 +437,19 @@ const slotColorClasses = [
 function slotColorClass(slot) {
   if (Number(slot) <= 0) return 'mic-lobby';
   return slotColorClasses[((Number(slot) || 1) - 1) % (slotColorClasses.length - 1) + 1] || 'mic-blue';
+}
+
+function applySlotColor(element, slot) {
+  if (!element) return;
+  const color = state.playerColors?.[Number(slot) - 1];
+  for (const property of ['--room-color','--room-light','--room-text','--occupied-text']) element.style.removeProperty(property);
+  if (Number(slot) <= 0 || typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color)) return;
+  const channels = [1,3,5].map(offset => parseInt(color.slice(offset,offset+2),16));
+  element.style.setProperty('--room-color',color);
+  element.style.setProperty('--room-light',`rgba(${channels.join(',')},0.18)`);
+  element.style.setProperty('--room-text',color);
+  const linear = channels.map(value => value/255 <= 0.04045 ? value/255/12.92 : ((value/255+0.055)/1.055)**2.4);
+  element.style.setProperty('--occupied-text',linear[0]*0.2126+linear[1]*0.7152+linear[2]*0.0722 > 0.179 ? '#111111' : '#ffffff');
 }
 
 function slotLabelText(slot) {
@@ -452,6 +487,8 @@ function loadSettings() {
         wakeLock: saved.wakeLock !== false,
         lockMicBar: saved.lockMicBar !== false,
         controlOnly: Boolean(saved.controlOnly),
+        showAdminControls: Boolean(saved.showAdminControls),
+        preferTextLabels: Boolean(saved.preferTextLabels),
         playMusicOnDevice: savedSettingsVersion < 2
           ? true
           : (Object.prototype.hasOwnProperty.call(saved, 'playMusicOnDevice')
@@ -695,6 +732,7 @@ function persistentLikedSongsForCurrentCatalog() {
     if (!key || !state.persistentLikedSongs.has(key) || !Number.isInteger(songId) || songId < 0) continue;
     songs.push({
       songId,
+      catalogKey: song.catalogKey,
       title: song.title || '',
       artist: song.artist || ''
     });
@@ -776,7 +814,7 @@ function playerUiSignature(player = {}) {
 }
 
 function playersUiSignature(players = []) {
-  return players.map(playerUiSignature).join('|');
+  return players.map(playerUiSignature).join('|') + JSON.stringify(state.playerColors || []);
 }
 
 function liveUiPlayers(players = state.players) {
@@ -923,22 +961,81 @@ function renderProfileControls() {
 
 function micRoomsUnlocked() {
   return Boolean(state.settings.controlOnly)
-    || Boolean(state.micStream && state.audioContext && state.audioContext.state === 'running');
+    || Boolean(state.audioInput?.synthetic || (state.audioInput && state.audioContext?.state === 'running'));
+}
+
+function setActionLabel(button, label, icon) {
+  if (!button) return;
+  button.classList.add('icon-action');
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  const glyph = document.createElement('img');
+  glyph.className = 'action-icon'; glyph.src = `/icons/${icon}.svg`; glyph.alt = '';
+  const text = document.createElement('span'); text.className = 'action-label'; text.textContent = label;
+  button.replaceChildren(glyph,text);
+}
+
+let pendingConfirmation = null;
+function closeConfirmation(accepted = false) {
+  if (!pendingConfirmation) return;
+  const pending = pendingConfirmation;
+  pendingConfirmation = null;
+  pending.overlay.classList.add('hidden');
+  pending.overlay.setAttribute('aria-hidden', 'true');
+  if (pending.main) pending.main.inert = pending.wasInert;
+  if (pending.focus?.isConnected) pending.focus.focus({preventScroll:true});
+  pending.resolve(accepted);
+}
+
+function confirmAction(message, acceptLabel = 'Continue') {
+  closeConfirmation(false);
+  let overlay = $('confirmationOverlay');
+  if (!overlay) {
+    overlay = document.createElement('section');
+    overlay.id = 'confirmationOverlay';
+    overlay.className = 'modal-backdrop confirmation-overlay hidden';
+    overlay.setAttribute('role', 'alertdialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-labelledby', 'confirmationTitle');
+    overlay.setAttribute('aria-describedby', 'confirmationMessage');
+    overlay.innerHTML = '<div class="modal"><strong id="confirmationTitle">Please confirm</strong><p id="confirmationMessage"></p><div class="actions"><button type="button" id="confirmationCancel" class="secondary">Cancel</button><button type="button" id="confirmationAccept">Continue</button></div></div>';
+    document.body.append(overlay);
+    $('confirmationCancel').addEventListener('click', () => closeConfirmation(false));
+    $('confirmationAccept').addEventListener('click', () => closeConfirmation(true));
+    overlay.addEventListener('click', event => {if (event.target === overlay) closeConfirmation(false);});
+    document.addEventListener('keydown', event => {
+      if (pendingConfirmation && event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation(); closeConfirmation(false);
+      }
+    }, true);
+  }
+  $('confirmationMessage').textContent = message;
+  $('confirmationAccept').textContent = acceptLabel;
+  const main = document.querySelector('main');
+  return new Promise(resolve => {
+    pendingConfirmation = {resolve,overlay,main,wasInert:Boolean(main?.inert),focus:document.activeElement};
+    if (main) main.inert = true;
+    overlay.classList.remove('hidden');
+    overlay.setAttribute('aria-hidden', 'false');
+    $('confirmationCancel').focus();
+  });
 }
 
 function renderMicEntryFlow() {
   const unlocked = micRoomsUnlocked();
-  const starting = Boolean(state.audioContext && !state.micStream);
+  const starting = Boolean(state.audioContext && !state.audioInput);
   micPanel?.classList.toggle('mic-entry-locked', !unlocked);
   micRoomHeader?.classList.remove('hidden');
   micRoomList?.classList.remove('hidden');
   slotButtons?.classList.remove('hidden');
   micMeter?.classList.remove('hidden');
-  micMetrics?.classList.remove('hidden');
+  const hasScore = state.playerScore != null && Number.isFinite(Number(state.playerScore));
+  const hasPosition = Boolean(state.hostSongStartUs) && ['singing','paused'].includes(state.gameState);
+  micMetrics?.classList.toggle('hidden', Number(displaySlot()) <= 0 || (!hasScore && !hasPosition));
   if (micButton) {
     micButton.classList.toggle('hidden', unlocked);
     micButton.disabled = starting || Boolean(state.settings.controlOnly);
-    if (!unlocked) micButton.textContent = starting ? 'Starting Mic...' : 'Start Mic';
+    if (!unlocked) setActionLabel(micButton, starting ? 'Starting Mic...' : 'Start Mic', 'microphone');
   }
 }
 
@@ -955,6 +1052,16 @@ function renderSettings() {
   wakeLockInput.checked = state.settings.wakeLock;
   lockMicBarInput.checked = state.settings.lockMicBar;
   controlOnlyInput.checked = state.settings.controlOnly;
+  showAdminControlsInput.checked = state.settings.showAdminControls;
+  preferTextLabelsInput.checked = state.settings.preferTextLabels;
+  document.body.classList.toggle('prefer-text-labels', state.settings.preferTextLabels);
+  for (const button of document.querySelectorAll('.tab')) {
+    const label = button.querySelector('.action-label')?.textContent || button.textContent;
+    button.setAttribute('aria-label', label);
+    button.title = label;
+  }
+  document.querySelector('[data-tab="control"]').classList.toggle('hidden', !state.settings.showAdminControls);
+  if (!state.settings.showAdminControls && !$('controlPanel').classList.contains('hidden')) setTab('settings');
   playMusicOnDeviceInput.checked = state.settings.playMusicOnDevice;
   nameChangeInput.value = state.name || nameInput.value || '';
   renderProfileControls();
@@ -1062,6 +1169,9 @@ function clearStoredRoom() {
   state.displayCode = null;
   state.playerId = null;
   state.playerToken = null;
+  state.inputSlots = [];
+  state.playerColors = [];
+  state.screenInfo = null;
 }
 
 function stopClientHeartbeat() {
@@ -1084,12 +1194,110 @@ function clearSongFullListRequestTimer() {
 
 function startClientHeartbeat() {
   stopClientHeartbeat();
+  state.clientHeartbeatStartedMs = performance.now();
   state.clientHeartbeatTimer = setInterval(() => {
-    send({ type: 'client.heartbeat' });
+    const lastReply = state.lastClientHeartbeatAckMs || state.clientHeartbeatStartedMs;
+    if (!state.relayRecovering && performance.now() - lastReply > 15000) {
+      reconnectRelay();
+      return;
+    }
+    if (sendRelay({type:'client.heartbeat',clientSendUs:clientNowUs()})) {
+      state.lastClientHeartbeatSentMs = performance.now();
+    }
+    state.pcmSender?.probe();
+    if (state.pcmSender?.confirmed() && performance.now() - Number(state.lastAudioTimingLogMs || 0) >= 10000) {
+      state.lastAudioTimingLogMs = performance.now();
+      const timing=state.pcmSender.timings();
+      clientLog('audio.timing', {gameState:state.gameState,route:state.pcmSender.usingServer()?'server':'direct',
+        relayHeartbeatAckAgeMs:state.lastClientHeartbeatAckMs ? Math.round(performance.now()-state.lastClientHeartbeatAckMs) : null,
+        relayBufferedBytes:state.ws?.bufferedAmount || 0,
+        networkRoundTripMs:JSON.stringify(timing.networkRoundTripMs),
+        audioToGameRoundTripMs:JSON.stringify(timing.audioToGameRoundTripMs)});
+    }
   }, 2000);
 }
 
+function renderHostRecoveryNotice() {
+  const notice = $('hostRecoveryNotice');
+  if (notice) notice.textContent = state.relayRecovering ? 'Connection lost. Reconnecting…' : 'Game disconnected. Reconnecting…';
+  if (notice) notice.classList.toggle('hidden', !state.hostRecovering);
+}
+
+function cancelRelayRecovery() {
+  window.clearTimeout(state.relayRetryTimer);
+  window.clearTimeout(state.relayJoinTimer);
+  state.relayRetryTimer = state.relayJoinTimer = null;
+  state.relayRecovering = false;
+  state.relayRecoveryStarted = 0;
+  state.relayRecoveryAttempts = 0;
+}
+
+function reconnectRelay() {
+  if (state.pageUnloading || !state.roomId || !state.playerId || !state.playerToken) return;
+  if (state.relayRetryTimer) return;
+  state.relayRecoveryStarted ||= performance.now();
+  if (performance.now() - state.relayRecoveryStarted > 60000) {
+    leaveClosedRoom('Could not reconnect. Rejoin the room to try again.');
+    return;
+  }
+  state.relayRecovering = true;
+  waitForGameReconnect();
+  renderHostRecoveryNotice();
+  stopClientHeartbeat();
+  window.clearTimeout(state.relayJoinTimer);
+  const old = state.ws;
+  state.ws = null;
+  old?.close();
+  const delay = Math.min(4000, 300 * 2 ** Math.min(4, state.relayRecoveryAttempts || 0));
+  state.relayRecoveryAttempts = (state.relayRecoveryAttempts || 0) + 1;
+  state.relayRetryTimer = window.setTimeout(() => {
+    state.relayRetryTimer = null;
+    if (!state.relayRecovering || !state.roomId) return;
+    connectAndJoin(state.displayCode, state.name, {playerId:state.playerId,playerToken:state.playerToken,slot:state.slot});
+  }, delay);
+}
+
+function waitForGameReconnect() {
+  if (state.hostRecovering || !state.roomId || !state.playerId) return;
+  state.hostRecovering = true;
+  digitalCalibration.cancel(true);
+  closeP2p(false);
+  apiRequests.disconnect();
+  state.nativeSongLoadId = null;
+  state.songCatalogInFlight = false;
+  stopDeviceMusic('Waiting for the game to reconnect.');
+  state.hostSongStartUs = state.hostScoringStartUs = null;
+  state.mediaStartUs = 0;
+  state.currentSongMessage = state.currentLyricsMessage = null;
+  resetClockSync();
+  resetSongMediaClock();
+  clearPitchQueue('Microphone delivery paused while the game reconnects.');
+  renderHostRecoveryNotice();
+  updateGameStateView();
+  renderSongSelectState();
+}
+
+function resumeAfterGameReconnect() {
+  if (!state.hostRecovering || !state.roomId || !state.playerId) return;
+  state.hostRecovering = false;
+  state.songCatalogRequestedForRoom = '';
+  state.lastPersistentLikeSyncKey = '';
+  renderHostRecoveryNotice();
+  resetClockSync();
+  startP2p();
+  sendClockPing();
+  requestSongState();
+  ensureCatalogRequested('host-resumed');
+  persistSettings();
+  updateGameStateView();
+  renderSongSelectState();
+}
+
 function leaveClosedRoom(reason = 'Room closed') {
+  cancelRelayRecovery();
+  state.hostRecovering = false;
+  renderHostRecoveryNotice();
+  void stopMic();
   closeP2p(false);
   const ws = state.ws;
   state.ws = null;
@@ -1100,6 +1308,7 @@ function leaveClosedRoom(reason = 'Room closed') {
   clearSongFullListRequestTimer();
   stopDeviceMusic('Device music stopped: game disconnected.');
   state.hostSongStartUs = null;
+  state.hostScoringStartUs = null;
   state.mediaStartUs = 0;
   state.songDurationSec = null;
   resetSongMediaClock();
@@ -1126,6 +1335,9 @@ function leaveClosedRoom(reason = 'Room closed') {
 }
 
 function showJoinScreenForRoomChange() {
+  cancelRelayRecovery();
+  state.hostRecovering = false;
+  renderHostRecoveryNotice();
   closeP2p(true);
   if (state.ws) {
     state.ws.close();
@@ -1216,22 +1428,69 @@ function clientLog(event, data = {}) {
   }).catch(() => {});
 }
 
+function renderAudioTiming() {
+  const sender = state.pcmSender;
+  const timing = audioTimingView(sender?.timings(), Boolean(sender?.confirmed()));
+  const status = $('audioLatencyStatus');
+  const calibration = digitalCalibration.view();
+  if (status) {
+    status.hidden = !calibration && !timing;
+    status.textContent = calibration?.label || timing?.label || '';
+    status.title = calibration?.detail || timing?.detail || '';
+  }
+  const delay=$('digitalDelayValue');
+  if(delay) {delay.textContent=calibration?.label || 'Waiting for an idle microphone';delay.title=calibration?.detail || '';}
+  const delayDetail=$('digitalDelayDetail');
+  if(delayDetail) delayDetail.textContent=calibration?.detail || 'Digital calibration runs while idle after audio starts; microphone hardware and browser capture buffers are excluded.';
+  const audio = $('audioRoundTripValue'), network = $('audioNetworkRoundTripValue');
+  if (audio) audio.textContent = timing?.audio || 'Not measured';
+  if (network) network.textContent = timing?.network || 'Not measured';
+}
+
 function renderConnectionState() {
+  digitalCalibration.update({roomId:state.roomId,playerId:state.playerId,slot:Number(state.slot),
+    supported:state.audioCalibrationV1, input:state.audioInput,
+    running:Boolean(!state.hostRecovering && state.audioInput && (state.audioInput.synthetic ||
+      (state.audioContext?.state==='running' && state.pcmWorklet))),
+    idle:!['singing','paused','boot'].includes(state.gameState),
+    route:state.pcmSender?.confirmed()&&!state.pcmSender.usingServer()?'direct':'server',
+    clock:{...state.clock,mappingUncertaintyMs:state.audioContext?128000/state.audioContext.sampleRate:1}});
+  renderAudioTiming();
+  const direct = state.rawPcmV1 ? nativeAudioActive() && state.pcmSender &&
+    !state.pcmSender.usingServer() : state.p2p.connected;
+  const warning = $('routeWarning');
+  if (warning) {
+    warning.hidden = state.hostRecovering || !state.roomId || !state.audioInput || (!state.audioInput.synthetic && state.audioContext?.state !== 'running') || Number(state.slot) <= 0 || !state.ws || state.ws.readyState !== WebSocket.OPEN;
+    warning.querySelector('svg').style.display = direct ? 'none' : '';
+    warning.lastChild.textContent = direct ? ' Direct' : ' Server';
+    warning.style.background = direct ? '#12382c' : '#422f08';
+    warning.style.color = direct ? '#a7f3d0' : '#fcd34d';
+    warning.title = direct ? 'Direct microphone audio confirmed by the game.' :
+      'Microphone audio uses the server while direct audio is unconfirmed; latency may be higher.';
+  }
   if (!connectionState) return;
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
     connectionState.textContent = 'disconnected';
     return;
   }
-  connectionState.textContent = state.p2p.connected ? 'connected direct' : 'connected relay';
+  connectionState.textContent = state.hostRecovering ? 'waiting for game' : direct ? 'connected direct' : 'connected relay';
 }
 
 function sendRelay(message) {
+  if (state.hostRecovering && (message.type === 'control.command' || message.type === 'clock.sync.ping' ||
+      String(message.type).startsWith('audio.') || String(message.type).startsWith('p2p.'))) return false;
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return false;
   state.ws.send(JSON.stringify({ protocol, roomId: state.roomId, playerId: state.playerId, ...message }));
   return true;
 }
 
+function directClockReady() {
+  return state.p2p.dc?.readyState === 'open' && (!state.rawPcmV1 ||
+    (state.pcmSender?.confirmed() && !state.pcmSender.usingServer()));
+}
+
 function sendDirect(message) {
+  if (state.rawPcmV1 && (message.type !== 'clock.sync.ping' || !directClockReady())) return false;
   const dc = state.p2p.dc;
   if (!dc || dc.readyState !== 'open') return false;
   try {
@@ -1252,6 +1511,9 @@ function shortRequestId(prefix = 'req') {
 }
 
 function closeP2p(notify = false) {
+  state.pcmSender?.reset();
+  if (state.p2p.negotiationTimer) window.clearTimeout(state.p2p.negotiationTimer);
+  state.p2p.negotiationTimer = null;
   if (state.p2p.reconnectTimer) window.clearTimeout(state.p2p.reconnectTimer);
   state.p2p.reconnectTimer = null;
   const dc = state.p2p.dc;
@@ -1268,10 +1530,8 @@ function closeP2p(notify = false) {
 }
 
 function scheduleP2pReconnect() {
-  if (!state.p2p.enabled || !state.roomId || state.p2p.reconnectTimer) return;
-  state.p2p.connected = false;
-  state.p2p.connecting = false;
-  renderConnectionState();
+  if (state.hostRecovering || !state.p2p.enabled || !state.roomId || state.p2p.reconnectTimer) return;
+  closeP2p(true);
   state.p2p.reconnectTimer = window.setTimeout(() => {
     state.p2p.reconnectTimer = null;
     startP2p();
@@ -1291,26 +1551,40 @@ function p2pCandidatePayload(candidate) {
 function attachP2pDataChannel(dc, attempt) {
   state.p2p.dc = dc;
   dc.addEventListener('open', () => {
-    if (state.p2p.attempt !== attempt) return;
+    if (state.p2p.attempt !== attempt || state.p2p.dc !== dc) return;
+    if (state.p2p.negotiationTimer) window.clearTimeout(state.p2p.negotiationTimer);
+    state.p2p.negotiationTimer = null;
     state.p2p.connecting = false;
     state.p2p.connected = true;
     renderConnectionState();
     logLine('direct channel open');
   });
   dc.addEventListener('close', () => {
-    if (state.p2p.attempt !== attempt) return;
+    if (state.p2p.attempt !== attempt || state.p2p.dc !== dc) return;
     state.p2p.connected = false;
     renderConnectionState();
     scheduleP2pReconnect();
   });
   dc.addEventListener('error', () => {
-    if (state.p2p.attempt !== attempt) return;
+    if (state.p2p.attempt !== attempt || state.p2p.dc !== dc) return;
     state.p2p.connected = false;
     renderConnectionState();
+    scheduleP2pReconnect();
   });
   dc.addEventListener('message', (event) => {
+    if (state.p2p.attempt !== attempt || state.p2p.dc !== dc) return;
     try {
-      handleMessage(JSON.parse(event.data)).catch((error) => {
+      const message = JSON.parse(event.data);
+      if (message.type === 'clock.sync.pong') {
+        handleClockPong(message, 'direct');
+        return;
+      }
+      if (state.rawPcmV1 && ['audio.pcm.ack','latency.ping'].includes(message.type)) {
+        state.pcmSender?.acknowledge(message);
+        renderConnectionState();
+        return;
+      }
+      handleMessage(message).catch((error) => {
         clientLog('direct.message.error', { error: error?.message || String(error) });
       });
     } catch {
@@ -1345,7 +1619,7 @@ async function handleP2pSignal(message) {
       await drainP2pCandidates();
     } catch (error) {
       logLine(`direct answer failed: ${error.message || 'error'}`);
-      scheduleP2pReconnect();
+      if (state.p2p.pc === pc) scheduleP2pReconnect();
     }
     return;
   }
@@ -1371,6 +1645,11 @@ async function handleP2pSignal(message) {
     return;
   }
 
+  if (message.type === 'p2p.close' || (message.type === 'p2p.state' && message.state === 'closed')) {
+    scheduleP2pReconnect();
+    return;
+  }
+
   if (message.type === 'p2p.error') {
     logLine(`direct failed: ${message.code || message.reason || 'error'}`);
     scheduleP2pReconnect();
@@ -1378,6 +1657,8 @@ async function handleP2pSignal(message) {
 }
 
 async function startP2p() {
+  if (state.hostRecovering) return;
+  if (state.rawPcmV1 && !nativeAudioActive()) return;
   if (!state.p2p.enabled || !state.roomId || state.p2p.connecting || state.p2p.connected) return;
   const PeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
   if (!PeerConnection) {
@@ -1390,24 +1671,35 @@ async function startP2p() {
   const attempt = state.p2p.attempt + 1;
   state.p2p.attempt = attempt;
   state.p2p.connecting = true;
+  let pc;
   try {
-    const pc = new PeerConnection({ iceServers: state.p2p.iceServers || [] });
+    pc = new PeerConnection({ iceServers: state.p2p.iceServers || [] });
     state.p2p.pc = pc;
+    state.p2p.negotiationTimer = window.setTimeout(() => {
+      if (state.p2p.pc !== pc || state.p2p.connected) return;
+      logLine('direct negotiation timed out; retrying via relay signaling');
+      scheduleP2pReconnect();
+    }, 15000);
     pc.addEventListener('icecandidate', (event) => {
+      if (state.p2p.pc !== pc) return;
       const candidate = p2pCandidatePayload(event.candidate);
       if (candidate) sendRelay({ type: 'p2p.ice', attempt, candidate });
     });
     pc.addEventListener('connectionstatechange', () => {
-      if (state.p2p.attempt !== attempt) return;
+      if (state.p2p.pc !== pc) return;
       if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) scheduleP2pReconnect();
     });
     pc.addEventListener('iceconnectionstatechange', () => {
-      if (state.p2p.attempt !== attempt) return;
+      if (state.p2p.pc !== pc) return;
       if (['failed', 'closed', 'disconnected'].includes(pc.iceConnectionState)) scheduleP2pReconnect();
     });
-    attachP2pDataChannel(pc.createDataChannel('usdx-remote', { ordered: true }), attempt);
+    attachP2pDataChannel(state.rawPcmV1
+      ? pc.createDataChannel('usce-pcm-v1', { ordered: false, maxRetransmits: 0 })
+      : pc.createDataChannel('usdx-remote', { ordered: true }), attempt);
     const offer = await pc.createOffer();
+    if (state.p2p.pc !== pc) return;
     await pc.setLocalDescription(offer);
+    if (state.p2p.pc !== pc) return;
     sendRelay({
       type: 'p2p.offer',
       attempt,
@@ -1418,8 +1710,9 @@ async function startP2p() {
     });
     renderConnectionState();
   } catch (error) {
+    if (state.p2p.attempt !== attempt || (pc && state.p2p.pc !== pc)) return;
     logLine(`direct setup failed: ${error.message || 'error'}`);
-    closeP2p(false);
+    scheduleP2pReconnect();
   }
 }
 
@@ -1453,13 +1746,26 @@ function trackCommandButton(commandId, button) {
   state.pendingCommands.set(commandId, { button, timeoutId });
 }
 
-function finishCommandFeedback(commandId, accepted) {
+function finishCommandFeedback(commandId, accepted, reason = '') {
   const pending = state.pendingCommands.get(commandId);
   if (!pending) return;
   state.pendingCommands.delete(commandId);
   if (pending.timeoutId) window.clearTimeout(pending.timeoutId);
   clearButtonFeedback(pending.button);
   pending.button.classList.add(accepted ? 'feedback-ok' : 'feedback-error');
+  const form = pending.button.closest?.('form');
+  if (form) {
+    let status = form.nextElementSibling;
+    if (!status?.classList.contains('command-status')) {
+      status = document.createElement('p');
+      status.className = 'fine command-status';
+      status.setAttribute('role', 'status');
+      form.after(status);
+    }
+    status.textContent = accepted ? '' : `Could not complete this action: ${reason || 'the game rejected the request'}.`;
+    status.hidden = accepted;
+  }
+
   window.setTimeout(() => {
     pending.button.classList.remove('feedback-ok', 'feedback-error');
   }, accepted ? 620 : 1100);
@@ -1479,7 +1785,7 @@ function displaySlot() {
 function updateIdentity() {
   const slot = displaySlot();
   setTextIfChanged(roomSettingsLabel, `Room ${state.displayCode || '----'} - ${slotLabelText(slot)} - ${state.role || '-'}`);
-  setTextIfChanged(controllerStatusLabel, 'all players can control');
+  setTextIfChanged(controllerStatusLabel, 'Shared game controls');
   if (releaseControllerButton) {
     releaseControllerButton.disabled = true;
     releaseControllerButton.classList.add('hidden');
@@ -1496,7 +1802,8 @@ function renderPauseRestartButton() {
   const signature = `${state.gameState || ''}|${paused ? 1 : 0}|${singing ? 1 : 0}|${singMode ? 1 : 0}`;
   if (!shouldRenderSignature('pauseRestart', signature)) return;
   if (pauseRestartButton) {
-    setTextIfChanged(pauseRestartButton, paused ? 'Resume' : 'Pause');
+    setActionLabel(pauseRestartButton, paused ? 'Resume' : 'Pause', paused ? 'play' : 'pause');
+    pauseRestartButton.disabled = !singMode;
     pauseRestartButton.dataset.command = paused ? 'game.resume' : 'game.pause';
     pauseRestartButton.classList.toggle('state-paused', paused);
   }
@@ -1514,6 +1821,7 @@ function renderLockIdentity() {
   if (lockPanel) {
     lockPanel.classList.remove(...slotColorClasses.filter(Boolean), 'mic-lobby');
     lockPanel.classList.add(colorClass);
+    applySlotColor(lockPanel,slot);
   }
   renderLockLyrics();
 }
@@ -1648,24 +1956,34 @@ function renderLyricsInto(container, entry, songUs) {
   const text = String(entry?.text || '').trim();
   const notes = Array.isArray(entry?.notes) ? entry.notes : [];
   const activeIndex = activeLyricIndex(notes, songUs);
-  container.replaceChildren();
-
-  if (notes.length) {
+  const signature = JSON.stringify([text, notes.map(note => [note.text, note.startUs, note.endUs])]);
+  if (container.dataset.lyrics !== signature) {
+    container.dataset.lyrics = signature;
+    container.replaceChildren();
+    if (notes.length) {
     for (let index = 0; index < notes.length; index += 1) {
       const note = notes[index];
       const syllable = String(note.text || '');
       if (!syllable) continue;
       const span = document.createElement('span');
       span.className = `lyric-syllable ${classifyLyricNote(note, index, activeIndex, songUs)}`;
+      span.dataset.noteIndex = String(index);
       if (index === activeIndex) span.style.setProperty('--lyric-progress', `${Math.round(lyricProgress(note, songUs) * 100)}%`);
       span.textContent = syllable;
       container.append(span);
     }
-  } else if (text) {
+    } else if (text) {
     const span = document.createElement('span');
     span.className = 'lyric-syllable upcoming';
     span.textContent = text;
     container.append(span);
+    }
+  }
+  for (const span of container.children) {
+    const index = Number(span.dataset.noteIndex);
+    if (!notes[index]) continue;
+    span.className = `lyric-syllable ${classifyLyricNote(notes[index], index, activeIndex, songUs)}`;
+    if (index === activeIndex) span.style.setProperty('--lyric-progress', `${Math.round(lyricProgress(notes[index], songUs) * 100)}%`);
   }
 
   container.classList.toggle('hidden', !container.textContent.trim());
@@ -1696,10 +2014,15 @@ function updateSongProgressView() {
   const progressState = currentSongProgressSnapshot();
   const position = progressState.position;
   songPositionValue.textContent = position == null ? (state.hostSongStartUs ? 'syncing' : '--') : formatSongPosition(position);
-  const score = Number(state.playerScore);
+  const score = state.playerScore == null ? NaN : Number(state.playerScore);
   playerScoreValue.textContent = Number.isFinite(score) ? String(score) : '--';
+  songPositionValue.parentElement?.classList.toggle('hidden', !state.hostSongStartUs);
+  playerScoreValue.parentElement?.classList.toggle('hidden', !Number.isFinite(score));
   renderLockIdentity();
-  if (lockScoreLabel) lockScoreLabel.textContent = Number.isFinite(score) ? String(score) : '--';
+  if (lockScoreLabel) {
+    lockScoreLabel.textContent = Number.isFinite(score) ? String(score) : '--';
+    lockScoreLabel.classList.toggle('hidden', !Number.isFinite(score));
+  }
   if (lockSongLabel) {
     const remainingText = progressState.remaining == null
       ? (position == null ? (state.hostSongStartUs ? 'syncing' : '--:--') : formatSongPosition(position))
@@ -1708,7 +2031,45 @@ function updateSongProgressView() {
   }
   if (lockProgressFill) lockProgressFill.style.width = `${Math.round(progressState.progress * 1000) / 10}%`;
   if (lockProgressLabel) lockProgressLabel.textContent = progressState.duration == null ? 'Progress --' : `${Math.round(progressState.progress * 100)}%`;
+  const showProgress = ['singing','paused'].includes(state.gameState) && progressState.duration != null;
+  lockProgressFill?.parentElement?.classList.toggle('hidden', !showProgress);
+  lockProgressLabel?.classList.toggle('hidden', !showProgress);
   renderLockLyrics();
+  renderLockGameInfo();
+}
+
+function renderLockGameInfo() {
+  const panel = $('lockGameInfo');
+  if (!panel) return;
+  const info = state.screenInfo?.screen === state.gameState ? state.screenInfo : null;
+  const results = ['results', 'high_scores'].includes(state.gameState);
+  if (lockSongLabel && !['singing', 'paused'].includes(state.gameState)) {
+    const labels = { song_select: 'Choose a song', song_ended: 'Song finished', results: 'Results', high_scores: 'High scores', lobby: 'Waiting for the game' };
+    lockSongLabel.textContent = labels[state.gameState] || 'Waiting for the game';
+  }
+  const signature = JSON.stringify(info);
+  if (panel.dataset.content !== signature) {
+    panel.dataset.content = signature;
+    panel.replaceChildren();
+    if (info) {
+      const title = document.createElement('strong');
+      title.textContent = [info.artist, info.title].filter(Boolean).join(' — ');
+      panel.append(title);
+      if (info.difficulty) {
+        const difficulty = document.createElement('p');
+        difficulty.textContent = info.difficulty;
+        panel.append(difficulty);
+      }
+      const list = document.createElement('ol');
+      for (const entry of (info.entries || []).slice(0, 20)) {
+        const row = document.createElement('li');
+        row.textContent = `${entry.name || `Mic ${entry.slot}`} · ${Math.round(Number(entry.score) || 0)}`;
+        list.append(row);
+      }
+      panel.append(list);
+    }
+  }
+  panel.classList.toggle('hidden', !results || !info);
 }
 
 function renderLockLevel(level, label) {
@@ -1775,6 +2136,7 @@ function ownLikedSongIds() {
 
 function bridgeOwnLikedSongIds() {
   const ids = new Set();
+  if (state.party?.libraryHash && state.party.libraryHash !== state.songSelect?.libraryHash) return ids;
   const likedByPlayer = state.party?.likedSongIdsByPlayer;
   if (likedByPlayer && typeof likedByPlayer === 'object') {
     const ownIds = Array.isArray(likedByPlayer[state.playerId]) ? likedByPlayer[state.playerId] : [];
@@ -1794,6 +2156,7 @@ function bridgeOwnLikedSongIds() {
 }
 
 function syncLocalLikedSongsFromParty() {
+  if (state.songLibraryHash && state.songSelect?.libraryHash !== state.songLibraryHash) return;
   if (performance.now() < Number(state.partyLikePendingUntilMs || 0)) return;
   const liked = persistentLikedSongIdsForLibrary();
   let imported = false;
@@ -1826,7 +2189,9 @@ function sendPartyLikeSong(song, sourceButton = null) {
     return;
   }
   const liked = playerLikedSong(songId);
-  const songForStorage = songById(songId) || song;
+  const indexedSong = songById(songId);
+  const songForStorage = song.catalogKey && song.catalogKey !== indexedSong?.catalogKey
+    ? song : (indexedSong || song);
   if (liked) {
     state.localLikedSongIds.delete(songId);
     forgetPersistentLikedSong(songForStorage);
@@ -1840,38 +2205,51 @@ function sendPartyLikeSong(song, sourceButton = null) {
   const ok = send({
     type: liked ? 'party.unlike' : 'party.like',
     songId,
+    catalogKey: songForStorage.catalogKey,
     title: song.title || '',
     artist: song.artist || ''
   });
   markFireAndForgetButton(sourceButton, ok);
 }
 
-function sendPartyLikeMatchedSongs(sourceButton = null) {
+async function sendPartyLikeMatchedSongs(sourceButton = null, liked = true) {
+  const catalogHash = state.songSelect?.libraryHash || state.songLibraryHash;
   const songs = visibleSongResults()
     .map((song) => ({
       songId: Number(song.songId),
+      catalogKey: song.catalogKey,
       title: song.title || '',
       artist: song.artist || ''
     }))
-    .filter((song) => Number.isInteger(song.songId) && song.songId >= 0 && !playerLikedSong(song.songId));
+    .filter((song) => Number.isInteger(song.songId) && song.songId >= 0 && playerLikedSong(song.songId) !== liked);
   if (!songs.length) {
     markFireAndForgetButton(sourceButton, false);
-    if (partyNotice) partyNotice.textContent = 'All matching songs are already liked.';
+    if (partyNotice) partyNotice.textContent = liked ? 'All matching songs are already liked.' : 'No matching songs are liked.';
     return;
   }
+  if (songs.length > 80 && !await confirmAction(`${liked ? 'Like' : 'Unlike'} ${songs.length} songs at once? This affects all matching songs, including those outside the current page.`, liked ? 'Like songs' : 'Unlike songs')) return;
+  if (catalogHash !== (state.songSelect?.libraryHash || state.songLibraryHash)) return;
   for (const song of songs) {
-    state.localLikedSongIds.add(Number(song.songId));
-    rememberPersistentLikedSong(songById(song.songId) || song, { force: true, save: false });
+    if (liked) {
+      state.localLikedSongIds.add(Number(song.songId));
+      rememberPersistentLikedSong(songById(song.songId) || song, { force: true, save: false });
+    } else {
+      state.localLikedSongIds.delete(Number(song.songId));
+      forgetPersistentLikedSong(songById(song.songId) || song, { save: false });
+    }
   }
   savePersistentLikedSongs();
   holdLocalPartyLikes();
   scheduleSongSelectRender();
   renderPartyState();
-  const ok = send({ type: 'party.likeShown', songs });
+  let ok = true;
+  for (let offset = 0; offset < songs.length; offset += 500) {
+    ok = send({ type: liked ? 'party.likeShown' : 'party.unlikeShown', songs: songs.slice(offset, offset + 500) }) && ok;
+  }
   markFireAndForgetButton(sourceButton, ok);
   if (partyNotice) partyNotice.textContent = ok
-    ? `Liked ${songs.length} matching songs.`
-    : `Saved ${songs.length} likes on this phone; reconnect to sync party mode.`;
+    ? `${liked ? 'Liked' : 'Unliked'} ${songs.length} matching songs.`
+    : 'Saved on this phone; reconnect to sync party mode.';
 }
 
 function partyPhaseText(party) {
@@ -1881,7 +2259,9 @@ function partyPhaseText(party) {
     collecting_votes: 'Collecting votes',
     calling_players: 'Calling players',
     singing: 'Singing',
-    scoring: 'Scoring',
+    scoring: 'Song results',
+    highscores: 'High scores',
+    paused: 'Paused',
     next_countdown: 'Next song countdown'
   };
   const base = labels[phase] || phase.replace(/_/g, ' ');
@@ -1922,30 +2302,33 @@ function renderPartyState() {
   const matches = Array.isArray(party.matches) ? party.matches : [];
   const leaderboard = Array.isArray(party.leaderboard) ? party.leaderboard : [];
   const formLocked = Boolean(state.partySettingsDirty) || Date.now() < Number(state.partySettingsPendingUntilMs || 0);
-  if (partyStatusLabel) partyStatusLabel.textContent = party.statusText || (party.enabled ? 'Running' : 'Idle');
+  if (partyStatusLabel) partyStatusLabel.textContent = party.enabled ? partyPhaseText(party) : 'Idle';
   if (partyMinPlayersInput && !formLocked && document.activeElement !== partyMinPlayersInput) {
-    partyMinPlayersInput.value = String(Math.max(2, Math.min(12, Number(party.minPlayers || 2))));
+    partyMinPlayersInput.value = String(Math.max(1, Math.min(12, Number(party.minPlayers || 2))));
   }
   if (partyEndlessInput && !formLocked) partyEndlessInput.checked = Boolean(party.endless);
-  if (partyCountdownInput && !formLocked && document.activeElement !== partyCountdownInput) {
-    partyCountdownInput.value = String(Math.max(1, Math.min(120, Number(party.countdownSeconds || 15))));
+  for (const input of partyPlaybackInputs) {
+    if (!formLocked && document.activeElement !== input) {
+      input.value = party[input.dataset.partyPlayback] == null ? '' : String(party[input.dataset.partyPlayback]);
+    }
   }
   if (partySourceInput && !formLocked && document.activeElement !== partySourceInput) {
     partySourceInput.value = party.source === 'playlist' ? 'playlist' : 'all';
   }
-  const partyReady = Boolean(state.roomId);
+  const partyReady = Boolean(state.roomId && party.available);
   if (partyStartButton) partyStartButton.disabled = !partyReady;
   if (partyFindMatchButton) partyFindMatchButton.disabled = !partyReady || !party.enabled;
   if (partyStopButton) partyStopButton.disabled = !partyReady || !party.enabled;
   if (partySaveButton) partySaveButton.disabled = !partyReady;
-  if (partySkipButton) partySkipButton.disabled = !partyReady;
+  if (partySkipButton) partySkipButton.disabled = !partyReady || !party.enabled ||
+    !['singing', 'paused', 'calling_players', 'scoring', 'highscores'].includes(party.phase);
   if (partyResetLeaderboardButton) partyResetLeaderboardButton.disabled = !partyReady;
   const likedSongsTotal = Number.isFinite(Number(party.likedSongsTotal)) ? Number(party.likedSongsTotal) : likedSongs.length;
   const matchesTotal = Number.isFinite(Number(party.matchesTotal)) ? Number(party.matchesTotal) : matches.length;
   if (partyUpvoteCountLabel) partyUpvoteCountLabel.textContent = `${likedSongsTotal}`;
   if (partyMatchCountLabel) partyMatchCountLabel.textContent = `${matchesTotal}`;
   if (partyPhaseLabel) partyPhaseLabel.textContent = partyPhaseText(party);
-  if (partyNotice && party.notice) partyNotice.textContent = party.notice;
+  if (partyNotice) partyNotice.textContent = party.notice || '';
 
   if (partyQueueList) {
     const queue = Array.isArray(party.queue) ? party.queue : [];
@@ -2029,7 +2412,7 @@ function renderPartyState() {
         const meta = document.createElement('span');
         const score = document.createElement('strong');
         name.textContent = entry.name || 'Player';
-        meta.textContent = `${entry.rounds || 0} rounds`;
+        meta.textContent = `${entry.rounds || 0} ${Number(entry.rounds) === 1 ? 'round' : 'rounds'}`;
         score.textContent = String(entry.points || 0);
         label.append(name, meta);
         item.append(label, score);
@@ -2078,6 +2461,7 @@ function updateGameStateView() {
     name.textContent = player.name || 'Player';
     meta.textContent = `${slotLabelText(player.slot)} - ${player.role || 'viewer'}`;
     badge.className = player.connected === false ? 'badge offline' : `badge ${slotColorClass(player.slot)}`;
+    if (player.connected !== false) applySlotColor(badge,player.slot);
     badge.textContent = player.connected === false ? 'offline' : 'online';
     item.append(name, meta, badge);
     playerList.append(item);
@@ -2110,18 +2494,27 @@ function renderControlPlayers() {
     const name = document.createElement('strong');
     const meta = document.createElement('span');
     row.className = `control-player ${slotColorClass(player.slot)}`;
+    applySlotColor(row,player.slot);
     name.textContent = player.name || 'Player';
     meta.textContent = `${slotLabelText(player.slot)} - ${player.role || 'viewer'}`;
     label.append(name, meta);
     row.append(label);
 
-    if (state.role === 'controller' && player.playerId !== state.playerId) {
+    if (player.playerId === state.playerId) {
+      meta.textContent = `${slotLabelText(player.slot)} - You`;
+    } else if (state.role === 'controller') {
       const actions = document.createElement('div');
       const kick = document.createElement('button');
       actions.className = 'inline-actions';
       kick.type = 'button';
-      kick.textContent = 'Kick';
-      kick.addEventListener('click', () => sendControl('player.kick', { playerId: player.playerId }, kick));
+      kick.textContent = 'Remove';
+      kick.title = 'Disconnect this player from the room';
+      kick.addEventListener('click', async () => {
+        const roomId = state.roomId;
+        if (await confirmAction(`Remove ${player.name || 'this player'} from the room?`, 'Remove') && state.roomId === roomId) {
+          sendControl('player.kick', { playerId: player.playerId }, kick);
+        }
+      });
       actions.append(kick);
       row.append(actions);
     }
@@ -2167,6 +2560,7 @@ function sendSlotProfile(slot, sourceButton) {
     profile: currentProfile()
   });
   if (ok && requestedSlot !== Number(state.slot)) {
+    if (state.rawPcmV1) closeP2p(false);
     state.pendingPreviousSlot = state.slot;
     state.pendingSlot = requestedSlot;
     state.pendingSlotUntilMs = performance.now() + 2500;
@@ -2174,13 +2568,14 @@ function sendSlotProfile(slot, sourceButton) {
     const self = state.players.find((player) => player.playerId === state.playerId);
     if (self) self.slot = requestedSlot;
     rememberLastMicSlot(requestedSlot);
-    if (micStatus) micStatus.textContent = requestedSlot > 0 ? `Mic ${requestedSlot} selected.` : 'Lobby selected.';
+    if (micStatus) micStatus.textContent = state.audioInput?.synthetic ? '' : state.audioInput ? 'Audio running.' : '';
     updateIdentity();
     updateGameStateView();
   } else if (!ok && micStatus) {
     micStatus.textContent = 'Not connected to the relay; reconnect to switch mic rooms.';
   }
-  if (ok) autoStartMicForSlot(requestedSlot);
+  if (ok && requestedSlot <= 0) void stopMic();
+  else if (ok) autoStartMicForSlot(requestedSlot);
   markFireAndForgetButton(sourceButton, ok);
   return ok;
 }
@@ -2194,12 +2589,17 @@ function renderMicRooms() {
     maxPlayers,
     shownSlot,
     state.playerId || '',
-    playersUiSignature(players)
+    playersUiSignature(players),
+    JSON.stringify(state.inputSlots || [])
   ].join('|');
   if (!shouldRenderSignature('micRooms', signature)) return;
 
   micRoomList.replaceChildren();
-  const assigned = players.filter((player) => Number(player.slot) > 0).length;
+  micRoomList.classList.toggle('many-mics', maxPlayers > 6);
+  const assigned = new Set([
+    ...players.filter(player => Number(player.slot) > 0).map(player => Number(player.slot)),
+    ...(state.inputSlots || []).filter(input => input.local && input.slot <= maxPlayers).map(input => input.slot)
+  ]).size;
   setTextIfChanged(micRoomCountLabel, `${assigned}/${maxPlayers} mics`);
 
   const lobbyOccupants = players.filter((player) => Number(player.slot) <= 0);
@@ -2222,17 +2622,24 @@ function renderMicRooms() {
     lobbyMeta.textContent = 'No one in lobby';
   }
   lobbyButton.append(lobbyTitle, lobbyMeta);
-  micRoomList.append(lobbyButton);
+  lobbyButton.classList.toggle('empty-lobby', !lobbyOccupants.length);
+  if (!lobbyOccupants.length) {
+    lobbyTitle.textContent = shownSlot > 0 ? 'Leave mic · Lobby' : 'Lobby';
+    lobbyMeta.hidden = true;
+  }
 
   for (let slot = 1; slot <= maxPlayers; slot += 1) {
+    const localInput = state.inputSlots?.find(input=>input.local&&input.slot===slot);
     const occupant = players.find((player) => Number(player.slot) === slot && player.connected !== false)
-      || players.find((player) => Number(player.slot) === slot && player.playerId === state.playerId);
+      || players.find((player) => Number(player.slot) === slot && player.playerId === state.playerId)
+      || (localInput ? {playerId:`local:${slot}`,name:localInput.name||'Local mic',role:'local',connected:true} : null);
     const button = document.createElement('button');
     const title = document.createElement('strong');
     const meta = document.createElement('span');
     const metaWrap = document.createElement('span');
     button.type = 'button';
     button.className = `mic-room ${slotColorClass(slot)}`;
+    applySlotColor(button,slot);
     button.dataset.slot = String(slot);
     if (shownSlot === slot) button.classList.add('active-room');
     const occupiedByOther = Boolean(occupant && occupant.connected !== false && occupant.playerId !== state.playerId);
@@ -2243,12 +2650,13 @@ function renderMicRooms() {
     meta.textContent = occupant && occupant.connected !== false ? (occupant.name || 'Singer') : 'available';
     const detail = document.createElement('small');
     detail.textContent = occupant && occupant.connected !== false
-      ? `${difficultyLabel(occupant.difficulty)} - ${occupant.connected === false ? 'offline' : occupant.role || 'singer'}`
-      : 'Default avatar - Medium';
+      ? difficultyLabel(occupant.difficulty)
+      : '';
     metaWrap.append(meta, detail);
     button.append(createRoomAvatar(occupant && occupant.connected !== false ? occupant : null, slot), title, metaWrap);
     micRoomList.append(button);
   }
+  micRoomList.append(lobbyButton);
 }
 
 function sendControl(command, args = {}, sourceButton = null) {
@@ -2311,7 +2719,7 @@ function playlistKey(playlist) {
 function selectedPlaylist() {
   const playlists = Array.isArray(state.songSelect?.playlists) ? state.songSelect.playlists : [];
   let playlist = state.songPlaylistIndex == null ? null : playlistByIndex(state.songPlaylistIndex);
-  if (!playlist && state.songPlaylistKey) {
+  if (state.songPlaylistKey && (!playlist || playlistKey(playlist) !== state.songPlaylistKey)) {
     playlist = playlists.find((item) => playlistKey(item) === state.songPlaylistKey) || null;
     if (playlist) state.songPlaylistIndex = Number(playlist.index);
   }
@@ -2355,9 +2763,17 @@ function addOverlayTargetToPlaylist(playlistIndex, sourceButton = null) {
   closePlaylistOverlay();
 }
 
+function playlistEditingAvailable() {
+  if (state.hostRecovering) return false;
+  return ['main_menu', 'song_select'].includes(state.gameState);
+}
+
 function renderPlaylistOverlay() {
   if (!playlistOverlay || playlistOverlay.classList.contains('hidden')) return;
   const target = state.playlistOverlayTarget;
+  const editable = playlistEditingAvailable();
+  playlistOverlayCreateButton.disabled = !editable;
+  playlistOverlayCreateInput.disabled = !editable;
   const data = state.songSelect || {};
   const playlists = Array.isArray(data.playlists) ? data.playlists : [];
   playlistOverlayTitle.textContent = target?.mode === 'results' ? 'Add all matching songs' : 'Add song';
@@ -2369,7 +2785,7 @@ function renderPlaylistOverlay() {
   if (!playlists.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-player';
-    empty.textContent = 'No playlists found. Create one below, then choose it after USDX refreshes.';
+    empty.textContent = 'No playlists found. Create one below, then choose it after the game refreshes.';
     playlistOverlayList.append(empty);
     return;
   }
@@ -2380,6 +2796,7 @@ function renderPlaylistOverlay() {
     const meta = document.createElement('span');
     button.type = 'button';
     button.className = 'playlist-choice';
+    button.disabled = !editable;
     name.textContent = playlist.name || `Playlist ${Number(playlist.index) + 1}`;
     meta.textContent = `${playlist.size || 0} songs - ${playlist.fixedOrder ? 'ordered' : 'random'}`;
     button.append(name, meta);
@@ -2389,6 +2806,13 @@ function renderPlaylistOverlay() {
 }
 
 function stopPhonePreview() {
+  state.previewAbort?.abort();
+  state.previewAbort = null;
+  if (state.previewPendingButton) {
+    state.previewPendingButton.disabled = false;
+    state.previewPendingButton.textContent = 'Preview';
+    state.previewPendingButton = null;
+  }
   if (state.previewAudio) {
     state.previewAudio.pause();
     state.previewAudio.src = '';
@@ -2541,9 +2965,6 @@ function showPlaylistSongs(playlist, sourceButton = null) {
   state.songPlaylistKey = playlistKey(target);
   state.showLikedSongsOnly = false;
   resetSongPage();
-  if (Number.isInteger(Number(state.songPlaylistIndex)) && Number(state.songPlaylistIndex) >= 0) {
-    sendControl('playlist.load', { playlistIndex: Number(state.songPlaylistIndex) }, sourceButton);
-  }
   renderSongSelectState();
 }
 
@@ -2680,95 +3101,44 @@ async function requestSongState(options = {}) {
   return ok;
 }
 
-async function requestCatalog(options = {}) {
-  if (state.songLibraryTransfer && !options.forceFull) return false;
-  const now = performance.now();
-  if (state.songCatalogInFlight && !options.forceFull) return false;
-  if (state.songCatalogInFlight && now - Number(state.songFullListLastRequestMs || 0) < 1500) return false;
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !state.playerId) {
-    if (songLibraryLabel) songLibraryLabel.textContent = 'Connect to a room before loading the song catalog.';
-    return false;
-  }
-
-  const forceFull = Boolean(options.forceFull);
-  const requestedCatalogId = String(options.catalogId || state.songLibraryHash || cachedSongLibraryHash() || '');
-  let knownCatalogId = '';
-  if (!forceFull && requestedCatalogId) {
-    const cached = await loadCachedSongLibrary(requestedCatalogId);
-    if (cached) knownCatalogId = requestedCatalogId;
-  }
-
-  const expectedTotal = Number(state.songCatalogManifest?.totalSongs || state.songLibraryProgress?.indexedSongs || state.songSelect?.totalSongs || state.songSelect?.visibleSongs || 0);
-  const requestReason = String(options.reason || (forceFull ? 'catalog-transfer' : 'catalog-request'));
-  const requestCount = Number(state.songFullListRequestCount || 0) + 1;
-  const forceTransfer = forceFull || !knownCatalogId;
-  const requestId = String(options.requestId || shortRequestId('catalog'));
-  const ok = sendRelay({
-    type: 'catalog.request',
-    requestId,
-    knownCatalogId,
-    catalogId: requestedCatalogId,
-    forceTransfer
-  });
-  if (!ok) {
-    state.songCatalogInFlight = false;
-    if (songLibraryLabel) songLibraryLabel.textContent = 'Could not send catalog request; reconnect to load songs.';
-    logLine('catalog request send failed');
-    return false;
-  }
-
+const apiRequests = createApiRequests({send, nextId: () => state.commandId++});
+async function requestNativeSongs() {
+  if (state.hostRecovering) return false;
+  if (state.songCatalogInFlight) return false;
   state.songCatalogInFlight = true;
-  state.songFullListLastRequestMs = now;
-  state.songFullListRequestCount = requestCount;
-  state.songFullListRequestReason = requestReason;
-  state.songCatalogRequestId = requestId;
-  state.songLibraryProgress = {
-    ...(state.songLibraryProgress || {}),
-    type: 'song.library.progress',
-    status: forceTransfer ? 'requesting_full' : 'requesting',
-    indexedSongs: expectedTotal,
-    transferReceived: 0,
-    transferTotal: expectedTotal,
-    message: knownCatalogId
-      ? 'Checking cached song catalog'
-      : `Requesting song catalog (${state.songFullListRequestReason})`
-  };
-  renderSongSelectState();
-  clientLog('catalog.request', {
-    reason: state.songFullListRequestReason,
-    requestCount: state.songFullListRequestCount,
-    requestId,
-    knownCatalogId: knownCatalogId ? knownCatalogId.slice(0, 12) : '',
-    requestedCatalogId: requestedCatalogId ? requestedCatalogId.slice(0, 12) : '',
-    forceFull
-  });
-  logLine(`catalog request sent ${requestId} ${forceTransfer ? 'transfer' : 'manifest'} ${requestedCatalogId ? requestedCatalogId.slice(0, 8) : 'new'}`);
-
-  if (forceTransfer) {
-    if (state.songCatalogRequestTimer) window.clearTimeout(state.songCatalogRequestTimer);
-    state.songCatalogRequestTimer = window.setTimeout(() => {
-      state.songCatalogRequestTimer = null;
-      const hasLibrary = Array.isArray(state.songSelect?.library) && state.songSelect.library.length;
-      if (hasLibrary || state.songLibraryTransfer) return;
-      state.songCatalogInFlight = false;
-      state.songLibraryProgress = {
-        ...(state.songLibraryProgress || {}),
-        status: 'catalog_timeout',
-        message: 'Catalog request reached the server, but no catalog transfer started. Restart the bridge and check server logs for catalog.request.forwarded and catalog.request.received.'
-      };
-      clientLog('catalog.timeout', {
-        reason: state.songFullListRequestReason,
-        requestId,
-        requestedCatalogId: requestedCatalogId ? requestedCatalogId.slice(0, 12) : '',
-        knownCatalogId: knownCatalogId ? knownCatalogId.slice(0, 12) : ''
-      });
+  const roomId = state.roomId;
+  const loadId = {};
+  state.nativeSongLoadId = loadId;
+  try {
+    const result = await loadSongs(apiRequests.request);
+    if (state.roomId !== roomId || state.nativeSongLoadId !== loadId) return false;
+    state.songLibraryTransfer = {libraryHash:result.snapshotId, chunks:result.songs};
+    await finishSongLibraryTransfer({libraryHash:result.snapshotId, total:result.songs.length,
+      state: {...state.songSelect}});
+    return true;
+  } catch (error) {
+    if (state.roomId === roomId && state.nativeSongLoadId === loadId) {
+      state.songLibraryProgress = {status:'error',message:`Song loading failed: ${error.message}`};
       renderSongSelectState();
-    }, 10000);
+    }
+    return false;
+  } finally { if (state.nativeSongLoadId === loadId) state.songCatalogInFlight = false; }
+}
+async function requestCatalog(options = {}) {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !state.playerId) {
+    if (songLibraryLabel) songLibraryLabel.textContent = 'Connect to a room before loading songs.';
+    return false;
   }
-  return true;
+  return requestNativeSongs();
+}
+
+function songCatalogComplete(data = state.songSelect) {
+  return Boolean(data?.libraryHash && Array.isArray(data.library) &&
+    state.completedSongLibraryHash === data.libraryHash);
 }
 
 function scheduleFullSongListRequest(reason = '', delayMs = 1200) {
+  if (songCatalogComplete()) return;
   if (state.songLibraryTransfer || state.songFullListRequestTimer) return;
   if (state.songCatalogInFlight && performance.now() - Number(state.songFullListLastRequestMs || 0) < 10000) return;
   const library = Array.isArray(state.songSelect?.library) ? state.songSelect.library : [];
@@ -2776,7 +3146,7 @@ function scheduleFullSongListRequest(reason = '', delayMs = 1200) {
   state.songFullListRequestTimer = window.setTimeout(() => {
     state.songFullListRequestTimer = null;
     const stillMissing = !Array.isArray(state.songSelect?.library) || !state.songSelect.library.length;
-    if (!stillMissing || state.songLibraryTransfer) return;
+    if (!stillMissing || state.songLibraryTransfer || songCatalogComplete()) return;
     const now = performance.now();
     if (state.songCatalogInFlight && now - Number(state.songFullListLastRequestMs || 0) < 10000) return;
     if (now - Number(state.songFullListLastRequestMs || 0) < 2500) {
@@ -2789,55 +3159,22 @@ function scheduleFullSongListRequest(reason = '', delayMs = 1200) {
 
 function ensureCatalogRequested(reason = 'ensure-catalog') {
   if (!state.roomId || !state.playerId) return;
-  if (Array.isArray(state.songSelect?.library) && state.songSelect.library.length) return;
   if (state.songLibraryTransfer || state.songCatalogInFlight) return;
-  const key = `${state.roomId}:${cachedSongLibraryHash() || state.songLibraryHash || 'new'}`;
+  const key = state.roomId;
   if (state.songCatalogRequestedForRoom === key) return;
   state.songCatalogRequestedForRoom = key;
   requestCatalog({ reason });
 }
 
-async function hydrateCachedCatalog(reason = 'cache') {
-  const hash = cachedSongLibraryHash();
-  if (!hash) return false;
-  const cached = await loadCachedSongLibrary(hash);
-  if (!cached?.library?.length) return false;
-  state.songLibraryHash = hash;
-  state.songCatalogInFlight = false;
-  state.songFullListLastRequestMs = 0;
-  state.songLibraryProgress = {
-    type: 'song.library.progress',
-    status: 'ready',
-    indexedSongs: cached.library.length,
-    transferReceived: cached.library.length,
-    transferTotal: cached.library.length,
-    message: `Loaded cached song catalog (${reason})`
-  };
-  state.songSelect = await mergeSongSelectState(state.songSelect, {
-    type: 'song.select.state',
-    source: 'cache',
-    libraryHash: hash,
-    selectedSongId: state.songSelect?.selectedSongId ?? -1,
-    visibleSongs: cached.library.length,
-    totalSongs: cached.library.length,
-    library: cached.library,
-    results: Array.isArray(state.songSelect?.results) ? state.songSelect.results : cached.library.slice(0, 30),
-    playlists: Array.isArray(state.songSelect?.playlists) ? state.songSelect.playlists : []
-  });
-  state.localLikedSongIds = persistentLikedSongIdsForLibrary(cached.library);
-  syncPersistentLikesToBridge(`cache-${reason}`);
-  renderSongSelectState();
-  logLine(`catalog loaded from cache ${hash.slice(0, 8)} ${cached.library.length}`);
-  return true;
-}
-
 async function mergeSongSelectState(previous, message) {
   const incoming = { ...message };
+  const libraryChanged = Boolean(incoming.libraryHash && previous?.libraryHash && incoming.libraryHash !== previous.libraryHash);
   if (incoming.libraryHash) state.songLibraryHash = String(incoming.libraryHash);
   if (Array.isArray(incoming.library) && incoming.libraryHash) {
     saveCachedSongLibrary(String(incoming.libraryHash), incoming.library);
   } else if (!Array.isArray(incoming.library) && incoming.libraryHash) {
-    const cached = await loadCachedSongLibrary(String(incoming.libraryHash));
+    const cached = previous?.libraryHash === incoming.libraryHash && Array.isArray(previous.library)
+      ? { library: previous.library } : await loadCachedSongLibrary(String(incoming.libraryHash));
     if (cached) {
       incoming.library = cached.library;
       state.songLibraryCacheUsable = true;
@@ -2850,8 +3187,10 @@ async function mergeSongSelectState(previous, message) {
   if (!previous || typeof previous !== 'object') return incoming;
   const merged = { ...previous, ...incoming };
   for (const field of ['library', 'results', 'playlists', 'playlistItems']) {
-    if (!Array.isArray(incoming[field]) && Array.isArray(previous[field])) {
+    if (!Array.isArray(incoming[field]) && Array.isArray(previous[field]) && !libraryChanged) {
       merged[field] = previous[field];
+    } else if (!Array.isArray(incoming[field]) && libraryChanged) {
+      merged[field] = [];
     }
   }
   for (const field of ['source', 'visibleSongs', 'totalSongs', 'searchActive', 'playlistActive', 'curPlaylist', 'libraryProgress']) {
@@ -2864,7 +3203,7 @@ async function mergeSongSelectState(previous, message) {
     for (const field of ['library', 'results']) {
       if (!Array.isArray(merged[field])) continue;
       const index = merged[field].findIndex((song) => Number(song.songId) === currentSongId);
-      if (index >= 0) {
+      if (index >= 0 && Object.entries(merged.currentSong).some(([key, value]) => merged[field][index][key] !== value)) {
         merged[field] = merged[field].slice();
         merged[field][index] = { ...merged[field][index], ...merged.currentSong };
       }
@@ -3055,6 +3394,7 @@ async function applyCatalogManifest(message) {
       libraryCached: true
     };
     state.songSelect = await mergeSongSelectState(state.songSelect, incoming);
+    state.completedSongLibraryHash = catalogId;
     state.localLikedSongIds = persistentLikedSongIdsForLibrary(cached.library);
     send({ type: 'catalog.ready', catalogId, songLibraryHash: catalogId, songCount: cached.library.length });
     syncPersistentLikesToBridge('catalog-manifest-cache');
@@ -3103,6 +3443,7 @@ async function finishSongLibraryTransfer(message) {
   };
   state.songCatalogInFlight = false;
   state.songSelect = await mergeSongSelectState(state.songSelect, incoming);
+  state.completedSongLibraryHash = incoming.libraryHash;
   state.localLikedSongIds = persistentLikedSongIdsForLibrary(library);
   syncPersistentLikesToBridge('catalog-transfer');
   renderSongSelectState();
@@ -3129,14 +3470,21 @@ async function startPhonePreview(song, button, slider) {
   }
 
   stopPhonePreview();
+  phonePreviewStatus.textContent = '';
+  phonePreviewStatus.hidden = true;
   button.disabled = true;
   button.textContent = 'Loading';
+  const controller = new AbortController();
+  state.previewAbort = controller;
+  state.previewPendingButton = button;
+  const timeout = setTimeout(() => controller.abort(), 15000);
   try {
     const response = await fetch(`/api/song-preview?roomId=${encodeURIComponent(state.roomId)}&songId=${songId}`, {
-      cache: 'no-store'
+      signal: controller.signal, cache: 'no-store'
     });
     if (!response.ok) throw new Error(await response.text() || 'preview unavailable');
     const blob = await response.blob();
+    if (state.previewAbort !== controller) return;
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     state.previewAudio = audio;
@@ -3163,16 +3511,28 @@ async function startPhonePreview(song, button, slider) {
     };
     await audio.play();
   } catch (error) {
-    button.textContent = 'Preview';
-    controlStatus.textContent = `Preview failed: ${error.message || 'unavailable'}`;
-    stopPhonePreview();
+    if (state.previewAbort === controller) {
+      button.textContent = 'Preview';
+      phonePreviewStatus.textContent = error.name === 'AbortError'
+        ? 'Preview timed out. Try again.'
+        : `Preview failed: ${error.message || 'unavailable'}`;
+      phonePreviewStatus.hidden = false;
+      stopPhonePreview();
+    }
   } finally {
-    button.disabled = false;
+    clearTimeout(timeout);
+    if (state.previewAbort === controller || state.previewPendingButton !== button) {
+      if (state.previewPendingButton === button) state.previewPendingButton = null;
+      button.disabled = false;
+    }
   }
 }
 
 function stopDeviceMusic(status = 'Device music is off.') {
   const errorStatus = isDeviceMusicErrorStatus(status);
+  // Invalidate first: pause/load events and pending play promises may fire while stopping.
+  const audio = state.deviceMusicAudio;
+  state.deviceMusicAudio = null;
   if (state.deviceMusicTimer) {
     clearTimeout(state.deviceMusicTimer);
     state.deviceMusicTimer = null;
@@ -3189,14 +3549,14 @@ function stopDeviceMusic(status = 'Device music is off.') {
     clearInterval(state.deviceMusicSyncTimer);
     state.deviceMusicSyncTimer = null;
   }
-  if (state.deviceMusicAudio) {
-    state.deviceMusicAudio.pause();
-    try { state.deviceMusicAudio.playbackRate = 1; } catch {}
+  if (audio) {
+    audio.pause();
+    try { audio.playbackRate = 1; } catch {}
     try {
-      state.deviceMusicAudio.removeAttribute('src');
-      state.deviceMusicAudio.load();
+      audio.removeAttribute('src');
+      audio.load();
     } catch {
-      state.deviceMusicAudio.src = '';
+      audio.src = '';
     }
   }
   if (state.deviceMusicAbortController) {
@@ -3379,6 +3739,12 @@ function updateMicTransportStatus(force = false) {
   if (!force && now - state.pitchLastStatusMs < 1000) return;
   state.pitchLastStatusMs = now;
   if (!state.audioContext) return;
+  if (nativeAudioActive()) {
+    const pcm = state.pcmSender;
+    micStatus.textContent = `Mic ${state.slot}: audio to game; ${pcm?.usingServer() === false ? 'direct' : 'via server'}; ` +
+      `${pcm?.sent || 0} direct / ${pcm?.relayed || 0} server packets, ${pcm?.dropped || 0} dropped before send.`;
+    return;
+  }
 
   const slot = Number(state.slot || 0);
   if (slot <= 0) {
@@ -3490,6 +3856,9 @@ function updateSongMediaAnchor(message = {}, source = '') {
 }
 
 function updateSongClockFromMessage(message = {}, source = '') {
+  if (Number.isFinite(Number(message.scoringSongTimeUs)) && Number.isFinite(Number(message.hostStateUs))) {
+    state.hostScoringStartUs = Number(message.hostStateUs) - Number(message.scoringSongTimeUs);
+  }
   noteSongDurationFromMessage(message);
   const songSeq = Number(message.songSeq || state.songSeq || 0);
   if (Number.isFinite(songSeq) && songSeq > 0) {
@@ -3536,10 +3905,7 @@ function updateSongClockFromMessage(message = {}, source = '') {
 function desiredDeviceMusicPositionSec(clientUs = clientNowUs()) {
   const position = currentGameAudioPositionSec(clientUs);
   if (position == null) return 0;
-  const initialLead = performance.now() < Number(state.deviceMusicInitialLeadUntilMs || 0)
-    ? deviceMusicInitialLeadSec
-    : 0;
-  return Math.max(0, position + deviceMusicOutputLeadSec + state.settings.targetDriftMs / 1000 + initialLead);
+  return Math.max(0, position + deviceMusicOutputLeadSec + state.settings.targetDriftMs / 1000);
 }
 
 function deviceMusicGameTargetEnded(clientUs = clientNowUs()) {
@@ -3719,14 +4085,15 @@ function deviceMusicPlaybackRateForDrift(drift) {
   if (absDrift <= deviceMusicSoftSyncThresholdSec) return deviceMusicNominalPlaybackRate;
 
   const effectiveDrift = absDrift - deviceMusicSoftSyncThresholdSec;
-  const strength = 1 - Math.exp(-effectiveDrift / deviceMusicRateCurveScaleSec);
-  const correction = Math.sign(drift) * deviceMusicMaxPlaybackRateDeviation * strength;
+  const correction = Math.sign(drift) * Math.min(deviceMusicMaxPlaybackRateDeviation,
+    effectiveDrift / deviceMusicRateCurveScaleSec);
   return deviceMusicNominalPlaybackRate + correction;
 }
 
 function syncDeviceMusicAudio(audio, force = false) {
   if (state.deviceMusicAudio !== audio) return null;
   if (audio.readyState < HTMLMediaElement.HAVE_METADATA) return null;
+  if (audio.seeking) return null;
   if (stopDeviceMusicAtGameEnd(audio)) return null;
   const sampleClientUs = clientNowUs();
   const desiredMedia = desiredDeviceMusicPositionSec(sampleClientUs);
@@ -3735,13 +4102,16 @@ function syncDeviceMusicAudio(audio, force = false) {
   if (phone == null) return null;
   const drift = desired - phone;
   const canInitialSeek = state.deviceMusicInitialSeekPending && (force || Math.abs(drift) > deviceMusicHardSeekThresholdSec);
-  if (canInitialSeek) {
+  const canRecoverSeek = Math.abs(drift) > deviceMusicHardSeekThresholdSec &&
+    performance.now() - (state.deviceMusicLastSeekMs ?? -Infinity) >= 2000;
+  if (canInitialSeek || canRecoverSeek) {
     if (canSeekDeviceMusic(audio, desired)) {
       try {
         audio.currentTime = desired;
         audio.playbackRate = deviceMusicNominalPlaybackRate;
         resetDeviceMusicPositionAnchor(audio, sampleClientUs, desired);
         state.deviceMusicInitialSeekPending = false;
+        state.deviceMusicLastSeekMs = performance.now();
       } catch {
         return null;
       }
@@ -3757,23 +4127,9 @@ function syncDeviceMusicAudio(audio, force = false) {
 }
 
 function forceDeviceMusicSeekToGame(audio) {
-  if (state.deviceMusicAudio !== audio) return null;
-  if (audio.readyState < HTMLMediaElement.HAVE_METADATA) return null;
-  if (stopDeviceMusicAtGameEnd(audio)) return null;
-  if (!state.deviceMusicInitialSeekPending) return syncDeviceMusicAudio(audio, false);
-  const sampleClientUs = clientNowUs();
-  const desired = clampDeviceMusicPosition(audio, desiredDeviceMusicPositionSec(sampleClientUs));
-  if (!canSeekDeviceMusic(audio, desired)) return syncDeviceMusicAudio(audio, false);
-  try {
-    audio.currentTime = desired;
-    audio.playbackRate = deviceMusicNominalPlaybackRate;
-    resetDeviceMusicPositionAnchor(audio, sampleClientUs, desired);
-    state.deviceMusicInitialSeekPending = false;
-    return desired;
-  } catch {
-    return null;
-  }
+  return syncDeviceMusicAudio(audio, true);
 }
+
 
 function startDeviceMusicSync(audio) {
   if (state.deviceMusicSyncTimer) clearInterval(state.deviceMusicSyncTimer);
@@ -3784,7 +4140,7 @@ function startDeviceMusicSync(audio) {
     if (drift != null) {
       setDeviceMusicStatus(`Device music playing. Target drift ${Math.round(drift * 1000)} ms.`, 'state-playing');
     }
-  }, 750);
+  }, 250);
 }
 
 function playDeviceMusicAudio(reason = '') {
@@ -3804,11 +4160,13 @@ function playDeviceMusicAudio(reason = '') {
   syncDeviceMusicAudio(audio, audio.paused);
   audio.play()
     .then(() => {
+      if (state.deviceMusicAudio !== audio || !['song_select', 'singing'].includes(state.gameState)) { audio.pause(); return; }
       state.deviceMusicBlocked = false;
       startDeviceMusicSync(audio);
       setDeviceMusicStatus('Device music playing. Synced to game clock.', 'state-playing');
     })
     .catch(() => {
+      if (state.deviceMusicAudio !== audio) return;
       state.deviceMusicBlocked = true;
       setDeviceMusicStatus('Device music starting...', 'state-buffering');
   });
@@ -3841,7 +4199,9 @@ function scheduleDeviceMusicRetry(message = {}, delayMs = 1000) {
 }
 
 function maybeStartDeviceMusic(message = {}) {
+  if (state.hostRecovering) return;
   if (!state.settings.playMusicOnDevice) return;
+  if (!['song_select', 'singing'].includes(state.gameState)) return;
   if (message && Object.keys(message).length) updateSongClockFromMessage(message, message.type || 'device music');
   if (state.gameState === 'song_select') {
     if (deviceMusicTargetKey() === 'select:-1') {
@@ -3982,6 +4342,7 @@ async function probeDeviceMusicMedia(audioUrl, fileLabel = '') {
 
 async function startDeviceMusic(message = {}, recoveryAttempt = 0, extensionAttempt = 0, extensionFallbacksOverride = null) {
   if (!state.settings.playMusicOnDevice) return;
+  if (!['song_select', 'singing'].includes(state.gameState)) return;
   if (recoveryAttempt === 0 && extensionAttempt === 0) state.deviceMusicStickyErrorText = null;
   if (message && Object.keys(message).length) updateSongClockFromMessage(message, message.type || 'device music');
   const isSongSelectPreview = state.gameState === 'song_select';
@@ -3993,7 +4354,7 @@ async function startDeviceMusic(message = {}, recoveryAttempt = 0, extensionAtte
   const songId = Number(song?.songId);
   if (!Number.isInteger(songId) || songId < 0) {
     requestSongState();
-    setDeviceMusicStatus('Device music waiting for song data from USDX.', 'state-buffering');
+    setDeviceMusicStatus('Device music waiting for song data from the game.', 'state-buffering');
     scheduleDeviceMusicRetry(message, 1000);
     return;
   }
@@ -4253,7 +4614,14 @@ async function startDeviceMusic(message = {}, recoveryAttempt = 0, extensionAtte
 }
 
 function reconcileDeviceMusic() {
+  if (state.hostRecovering) return;
   if (!state.settings.playMusicOnDevice) return;
+  if (!['song_select', 'singing', 'paused'].includes(state.gameState)) {
+    if (state.deviceMusicAudio || state.deviceMusicRecoveryTimer || state.deviceMusicAbortController) {
+      stopDeviceMusic('Device music stopped.');
+    }
+    return;
+  }
   if (!state.playerId) {
     setDeviceMusicStatus('Device music enabled. Waiting for game.', 'state-buffering');
     return;
@@ -4316,6 +4684,7 @@ function reconcileDeviceMusic() {
 function activateDeviceMusic(reason = '') {
   if (!state.settings.playMusicOnDevice) return;
   state.deviceMusicBlocked = false;
+  if (!state.deviceMusicAudio) setDeviceMusicStatus('Device music enabled. Waiting for game audio.');
   if (state.deviceMusicAudio) {
     playDeviceMusicAudio(reason);
   } else {
@@ -4324,6 +4693,9 @@ function activateDeviceMusic(reason = '') {
 }
 
 function renderSongSelectState() {
+  // Preview-clock updates continue while controls/microphone are visible;
+  // rebuilding the hidden song catalog must not interrupt live audio.
+  if ($('songsPanel')?.classList.contains('hidden')) return;
   const renderStartMs = performance.now();
   const data = state.songSelect || {};
   if (searchFieldInput && document.activeElement !== searchFieldInput) {
@@ -4334,6 +4706,8 @@ function renderSongSelectState() {
   }
   const progress = activeSongLibraryProgress(data);
   const library = Array.isArray(data.library) ? data.library : [];
+  const catalogComplete = songCatalogComplete(data);
+  const emptyCatalog = catalogComplete && library.length === 0;
   const previewResults = Array.isArray(data.results) ? data.results : [];
   const results = visibleSongResults();
   const playlists = Array.isArray(data.playlists) ? data.playlists : [];
@@ -4364,7 +4738,7 @@ function renderSongSelectState() {
   const scanCounts = progress
     ? `${Number(progress.indexedSongs || 0)} indexed, ${Number(progress.scannedFiles || 0)} files, ${Number(progress.scannedDirs || 0)} folders`
     : '';
-  if (!searchableCount && scanStatus === 'ready' && !state.songLibraryTransfer && !state.songFullListLastRequestMs) {
+  if (!searchableCount && !catalogComplete && scanStatus === 'ready' && !state.songLibraryTransfer && !state.songFullListLastRequestMs) {
     ensureCatalogRequested('ready-without-catalog');
   }
   const fullListRequestAgeSec = state.songFullListLastRequestMs
@@ -4373,11 +4747,15 @@ function renderSongSelectState() {
   const fullListRequestText = fullListRequestAgeSec == null
     ? 'requesting the song catalog'
     : `requested song catalog ${fullListRequestAgeSec}s ago (attempt ${state.songFullListRequestCount || 1})`;
-  if (!searchableCount && scanStatus === 'ready' && !state.songLibraryTransfer) {
+  if (!searchableCount && !catalogComplete && scanStatus === 'ready' && !state.songLibraryTransfer) {
     scheduleFullSongListRequest('ready-without-catalog');
   }
   renderSongLibraryProgress(progress, Boolean(searchableCount));
-  addResultsButton.disabled = !results.length;
+  const playlistsEditable = playlistEditingAvailable();
+  const editHint = $('playlistEditHint');
+  if (editHint) editHint.classList.toggle('hidden', playlistsEditable);
+  for (const input of playlistCreateForm.querySelectorAll('input, button')) input.disabled = !playlistsEditable;
+  addResultsButton.disabled = !results.length || !playlistsEditable;
   if (likeVisibleSongsButton) likeVisibleSongsButton.disabled = !results.length;
   if (likeVisibleSongsButton) likeVisibleSongsButton.title = 'Like all matched songs, not just this page';
   if (downloadSongsCsvButton) downloadSongsCsvButton.disabled = !results.length;
@@ -4388,7 +4766,7 @@ function renderSongSelectState() {
     showAllSongsButton.textContent = 'All Songs';
   }
   if (showLikedSongsButton) {
-    showLikedSongsButton.textContent = state.showLikedSongsOnly ? '\u2665 Liked' : '\u2665 Liked';
+    setActionLabel(showLikedSongsButton, 'Liked songs', 'heart');
     showLikedSongsButton.classList.toggle('active-filter', state.showLikedSongsOnly);
   }
   if (clearSearchButton) {
@@ -4407,15 +4785,19 @@ function renderSongSelectState() {
         : (state.songStateRequested ? '--' : '--'))));
   songLibraryLabel.textContent = searchableCount
     ? (state.showLikedSongsOnly
-      ? `Showing liked songs; ${results.length} matching songs.`
+      ? `Showing liked songs; ${results.length} matching ${results.length === 1 ? 'song' : 'songs'}.`
       : shownPlaylist
-      ? `Showing playlist "${shownPlaylist.name || playlistNameByIndex(shownPlaylist.index)}"; ${results.length} matching songs.`
-      : `${searchableCount} songs indexed from ${data.source === 'bridge-scan' ? 'the bridge scan' : 'USDX'}; ${previewableCount} available for phone preview.`)
+      ? `Showing playlist "${shownPlaylist.name || playlistNameByIndex(shownPlaylist.index)}"; ${results.length} matching ${results.length === 1 ? 'song' : 'songs'}.`
+      : `${searchableCount} ${searchableCount === 1 ? 'song' : 'songs'} indexed from ${data.source === 'bridge-scan' ? 'the bridge scan' : 'the game'}; ${previewableCount} available for phone preview.`)
     : (previewResults.length
         ? `Received ${previewResults.length} preview songs; ${fullListRequestText}.`
     : (progress
       ? `${scanStatus || 'scan'}${scanPercentText ? ` ${scanProgressInfo.label}` : ''}${scanMessage ? `: ${scanMessage}` : ''}${scanCounts ? ` (${scanCounts})` : ''}`
       : (state.songStateRequested ? 'Requesting song data...' : 'No song data yet.')));
+  if (emptyCatalog) {
+    songCountLabel.textContent = '0 songs';
+    songLibraryLabel.textContent = 'No songs are available from this game.';
+  }
   playlistCountLabel.textContent = `${playlists.length}`;
   playlistItemCountLabel.textContent = activePlaylistIndex >= 0
     ? `${playlistItems.length} shown`
@@ -4425,8 +4807,10 @@ function renderSongSelectState() {
   if (!results.length) {
     const item = document.createElement('li');
     item.className = 'empty-player';
-    item.textContent = library.length
-      ? `No matches for "${state.songFilterText}"`
+    item.textContent = emptyCatalog ? 'No songs are available from this game.' : library.length
+      ? (String(state.songFilterText || '').trim()
+        ? `No matches for "${state.songFilterText}"`
+        : (shownPlaylist ? 'This playlist is empty. Use All Songs to add songs.' : 'No songs match this filter.'))
       : (previewResults.length
         ? `Waiting for the song catalog before searching (${fullListRequestText}).`
       : (['receiving', 'requesting', 'requesting_full', 'catalog_accepted', 'catalog_forwarded', 'catalog_timeout'].includes(scanStatus)
@@ -4461,7 +4845,9 @@ function renderSongSelectState() {
       const preview = document.createElement('button');
       const slider = document.createElement('input');
       preview.type = 'button';
-      preview.textContent = 'Preview';
+      preview.textContent = song.previewAvailable === false ? 'No preview' : 'Preview';
+      preview.disabled = state.hostRecovering || song.previewAvailable === false;
+      if (preview.disabled) preview.title = state.hostRecovering ? 'Waiting for the game to reconnect.' : 'No audio preview is available for this song.';
       slider.type = 'range';
       slider.min = '0';
       slider.max = '0';
@@ -4473,6 +4859,8 @@ function renderSongSelectState() {
 
       const playlistAction = document.createElement('button');
       playlistAction.type = 'button';
+      playlistAction.disabled = !playlistsEditable;
+      if (!playlistsEditable) playlistAction.title = 'Edit playlists from the game main menu or song selection.';
       if (hasLoadedPlaylist && loadedPlaylistSongIds.has(songId)) {
         playlistAction.textContent = 'Remove';
         playlistAction.addEventListener('click', () => {
@@ -4522,26 +4910,30 @@ function renderSongSelectState() {
     const meta = document.createElement('span');
     const actions = document.createElement('div');
     name.textContent = playlist.name || `Playlist ${playlist.index + 1}`;
-    meta.textContent = `${playlist.size || 0} songs`;
+    meta.textContent = `${playlist.size || 0} ${Number(playlist.size) === 1 ? 'song' : 'songs'}`;
     label.append(name, meta);
     actions.className = 'inline-actions';
 
     const show = document.createElement('button');
     show.type = 'button';
-    show.textContent = state.songPlaylistIndex === playlist.index ? 'Reload' : 'Show';
+    show.textContent = 'Show';
     show.addEventListener('click', () => showPlaylistSongs(playlist, show));
 
     const del = document.createElement('button');
     del.type = 'button';
     del.textContent = 'Delete';
-    del.addEventListener('click', () => {
+    del.disabled = !playlistsEditable;
+    del.addEventListener('click', async () => {
       const name = playlist.name || `Playlist ${playlist.index + 1}`;
-      if (!window.confirm(`Delete playlist "${name}"?`)) return;
+      const roomId = state.roomId;
+      if (!await confirmAction(`Delete playlist "${name}"?`, 'Delete playlist')) return;
+      if (state.roomId !== roomId || !state.songSelect?.playlists?.some(current => current.index === playlist.index && current.name === playlist.name)) return;
       sendControl('playlist.delete', { playlistIndex: playlist.index }, del);
     });
 
     const order = document.createElement('button');
     order.type = 'button';
+    order.disabled = !playlistsEditable;
     order.textContent = playlist.fixedOrder ? 'Random' : 'Ordered';
     order.title = playlist.fixedOrder ? 'Allow random playlist order' : 'Use fixed playlist order';
     order.addEventListener('click', () => {
@@ -4583,7 +4975,6 @@ function renderSlotButtons() {
   lobbyButton.className = 'slot-button mic-lobby';
   if (Number(state.slot) <= 0) lobbyButton.classList.add('active-slot');
   lobbyButton.addEventListener('click', () => {
-    if (!micRoomsUnlocked()) return;
     sendSlotProfile(0, lobbyButton);
   });
   slotButtons.append(lobbyButton);
@@ -4593,18 +4984,23 @@ function renderSlotButtons() {
     button.type = 'button';
     button.textContent = occupant ? `Mic ${slot} ${occupant.name || ''}`.trim() : `Mic ${slot}`;
     button.className = `slot-button ${slotColorClass(slot)}`;
+    applySlotColor(button,slot);
     if (Number(state.slot) === slot) button.classList.add('active-slot');
     button.disabled = Boolean(occupant && occupant.playerId !== state.playerId);
     button.addEventListener('click', () => {
-      if (!micRoomsUnlocked()) return;
       sendSlotProfile(slot, button);
     });
     slotButtons.append(button);
   }
 }
 
+const tabScrollPositions = new Map();
+let activeTabName = null;
 function setTab(name) {
-  const tabName = ['mic', 'songs', 'party', 'control', 'settings'].includes(name) ? name : 'mic';
+  const tabName = name === 'control' && !state.settings.showAdminControls ? 'settings'
+    : ['mic', 'songs', 'party', 'control', 'settings'].includes(name) ? name : 'mic';
+  const changingTab = tabName !== activeTabName;
+  if (activeTabName && changingTab) tabScrollPositions.set(activeTabName, window.scrollY);
   for (const button of document.querySelectorAll('.tab')) {
     button.classList.toggle('active', button.dataset.tab === tabName);
   }
@@ -4618,6 +5014,8 @@ function setTab(name) {
   } else if (tabName === 'party') {
     renderPartyState();
   }
+  if (changingTab) window.scrollTo(0, tabScrollPositions.get(tabName) || 0);
+  activeTabName = tabName;
 }
 
 function clientNowUs() {
@@ -4682,7 +5080,7 @@ function sendClockPing() {
   send({ type: 'clock.sync.ping', clientSendUs });
 }
 
-function handleClockPong(msg) {
+function handleClockPong(msg, route = 'server') {
   const receivedAtClientUs = clientNowUs();
   const clientSendUs = Number(msg.clientSendUs);
   if (!Number.isFinite(clientSendUs)) return;
@@ -4695,6 +5093,14 @@ function handleClockPong(msg) {
   const rttUs = Math.max(0, receivedAtClientUs - clientSendUs - Math.max(0, hostSendUs - hostReceiveUs));
   if (rttUs > 2_000_000) return;
   const offsetUs = Math.round(((hostReceiveUs - clientSendUs) + (hostSendUs - receivedAtClientUs)) / 2);
+  const preferredRoute = directClockReady() ? 'direct' : 'server';
+  if (route !== preferredRoute) return;
+  if (state.clock.route !== route) {
+    state.clock.route = route;
+    state.clock.samples = [];
+    state.clock.rttUs = null;
+    state.clock.synced = false;
+  }
   const previousRtt = state.clock.rttUs;
   const wasSynced = state.clock.synced;
   state.clock.samples.push({ offsetUs, rttUs, receivedAtClientUs });
@@ -4720,7 +5126,7 @@ function handleClockPong(msg) {
   state.clock.jitterUs = previousRtt == null ? 0 : Math.round(Math.abs(rttUs - previousRtt));
   state.clock.confidence = Math.max(0, Math.min(1, 1 - state.clock.rttUs / 500_000));
   state.clock.synced = true;
-  rttValue.textContent = `${Math.round(state.clock.rttUs / 1000)} ms`;
+  rttValue.textContent = `${Math.round(state.clock.rttUs / 1000)} ms · ${route === 'direct' ? 'direct' : 'via server'}`;
   offsetValue.textContent = `${Math.round(state.clock.offsetUs / 1000)} ms`;
   if (state.hostSongStartUs && state.settings.playMusicOnDevice && !state.deviceMusicAudio) {
     maybeStartDeviceMusic();
@@ -4739,17 +5145,52 @@ function showPartyTurnNotification(message) {
   }
   if ('vibrate' in navigator) navigator.vibrate?.([180, 80, 180]);
   if ('Notification' in window && Notification.permission === 'granted') {
-    new Notification('USDX Party', { body: text });
+    new Notification('UltraStar Party', { body: text });
   }
 }
 
 async function handleMessage(message) {
+  if(digitalCalibration.handle(message)) {renderAudioTiming();return;}
   if (String(message.type || '').startsWith('p2p.')) {
     handleP2pSignal(message);
     return;
   }
 
+  if (message.type === 'client.heartbeat.ack') {
+    if (Number.isFinite(message.clientSendUs) && message.clientSendUs <= clientNowUs()) {
+      state.lastClientHeartbeatAckMs = performance.now();
+    }
+    return;
+  }
+
   if (message.type === 'client.joined') {
+    const recoveredTransport = Boolean(state.relayRecovering);
+    cancelRelayRecovery();
+    if (state.roomId !== message.roomId) {
+      // Numeric song IDs belong to one game's snapshot. Never restore votes
+      // from an unvalidated last-room cache before querying the joined game.
+      state.songSelect = null;
+      state.party = null;
+      state.localLikedSongIds = new Set();
+      state.songLibraryHash = '';
+      state.completedSongLibraryHash = '';
+      state.songLibraryTransfer = null;
+      state.songCatalogInFlight = false;
+      state.nativeSongLoadId = null;
+      state.songCatalogRequestedForRoom = '';
+      state.lastPersistentLikeSyncKey = '';
+    }
+    state.lastClientHeartbeatSentMs = 0;
+    state.lastClientHeartbeatAckMs = 0;
+    state.hostRecovering = false;
+    renderHostRecoveryNotice();
+    if (recoveredTransport) {
+      state.songCatalogRequestedForRoom = '';
+      state.lastPersistentLikeSyncKey = '';
+      requestSongState();
+    }
+    state.rawPcmV1 = Boolean(message.rawPcmV1);
+    state.audioCalibrationV1 = Boolean(message.audioCalibrationV1);
     Object.assign(state, {
       roomId: message.roomId,
       displayCode: message.displayCode,
@@ -4761,6 +5202,9 @@ async function handleMessage(message) {
       name: message.name || nameInput.value || state.name || ''
     });
     state.renderSignatures = {};
+    if (message.gameState && typeof message.gameState === 'object') {
+      await handleMessage({...message.gameState, type: 'game.state'});
+    }
     applyOwnProfileFromMessage(message);
     state.p2p.enabled = Boolean(message.p2p?.enabled);
     state.p2p.iceServers = Array.isArray(message.p2p?.iceServers) ? message.p2p.iceServers : [];
@@ -4780,16 +5224,17 @@ async function handleMessage(message) {
     persistSettings();
     startP2p();
     logLine(message.resumed ? `rejoined room ${message.displayCode}` : `joined room ${message.displayCode}`);
-    window.setTimeout(async () => {
-      if (await hydrateCachedCatalog(message.resumed ? 'resume' : 'join')) return;
-      ensureCatalogRequested('client-joined');
-    }, 0);
+    window.setTimeout(() => ensureCatalogRequested('client-joined'), 0);
     return;
   }
 
   if (message.type === 'host.disconnected') {
-    closeP2p(false);
-    leaveClosedRoom('Game disconnected.');
+    waitForGameReconnect();
+    return;
+  }
+
+  if (message.type === 'host.resumed') {
+    if (message.roomId === state.roomId) resumeAfterGameReconnect();
     return;
   }
 
@@ -4821,7 +5266,10 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'player.assigned' && message.playerId === state.playerId) {
+    if (state.rawPcmV1 && state.slot !== message.slot) closeP2p(true);
     state.slot = message.slot;
+    if (Number(state.slot) <= 0) void stopMic();
+    if (state.rawPcmV1) startP2p();
     state.role = message.role;
     state.pendingSlot = null;
     state.pendingPreviousSlot = null;
@@ -4919,18 +5367,17 @@ async function handleMessage(message) {
     const nextSongSeq = staleSingingOverSongSelect
       ? Number(state.songSeq || 0)
       : Number(message.songSeq || state.songSeq || 0);
-    const sameActiveSong = ['singing', 'paused'].includes(previousGameState)
-      && !['singing', 'paused', 'song_ended'].includes(incomingGameState)
-      && Number(state.songSeq || 0) > 0
-      && (!Number.isFinite(nextSongSeq) || nextSongSeq <= 0 || nextSongSeq === Number(state.songSeq || 0));
     if (Number.isFinite(nextSongSeq) && nextSongSeq > 0) {
       if (state.songSeq && nextSongSeq !== state.songSeq) {
         clearPitchQueue('Microphone queue reset for new song.');
       }
       state.songSeq = nextSongSeq;
     }
-    state.gameState = sameActiveSong ? previousGameState : incomingGameState;
+    state.gameState = incomingGameState;
+    if (previousGameState !== state.gameState) renderSongSelectState();
     state.maxPlayers = Number(message.maxPlayers || state.maxPlayers || 6);
+    if(Array.isArray(message.inputs)) state.inputSlots=message.inputs;
+    if(Array.isArray(message.playerColors)) state.playerColors=message.playerColors;
     if (Array.isArray(message.players)) {
       state.players = message.players.map((player) => mergeProfileIntoPlayer({ ...player }, player));
       const self = state.players.find((player) => player.playerId === state.playerId);
@@ -4961,33 +5408,63 @@ async function handleMessage(message) {
     }
     if (['singing', 'paused'].includes(previousGameState) && !['singing', 'paused'].includes(state.gameState)) {
       state.hostSongStartUs = null;
+      state.hostScoringStartUs = null;
       state.mediaStartUs = 0;
       state.songDurationSec = null;
       resetSongMediaClock();
       clearPitchQueue('Microphone queue reset outside song.');
       state.currentSongMessage = null;
       state.currentLyricsMessage = null;
-      pauseDeviceMusicBuffered('Device music stopped.');
-    } else if (sameActiveSong) {
-      keepDeviceMusicPlaying('state correction');
+      stopDeviceMusic('Device music stopped.');
     }
     updateGameStateView();
     logLine(`state ${message.state || 'unknown'} seq ${message.seq || '-'}`);
     return;
   }
 
+  if (message.type === 'api.state') {
+    const previousHash = state.songSelect?.libraryHash;
+    if (previousHash && previousHash !== message.libraryHash) {
+      state.localLikedSongIds = new Set();
+      state.party = null;
+      state.partyLikePendingUntilMs = 0;
+      if (state.partyLikePendingTimer) window.clearTimeout(state.partyLikePendingTimer);
+      state.partyLikePendingTimer = null;
+    }
+    state.songSelect = await mergeSongSelectState(state.songSelect, message);
+    if (message.apiCapabilities?.includes('song.list') && !state.songCatalogInFlight &&
+        (previousHash !== message.libraryHash || !songCatalogComplete())) {
+      requestNativeSongs();
+    }
+    renderSongSelectState();
+    return;
+  }
+
   if (message.type === 'song.select.state') {
+    const nativeSongsBecameAvailable = message.apiCapabilities?.includes('song.list') &&
+      !state.songSelect?.apiCapabilities?.includes('song.list');
     state.songStateRequested = false;
-    state.songSelectStateUntilMs = performance.now() + 5000;
     const previousGameState = state.gameState;
     const renderNeeded = songSelectStateNeedsRender(state.songSelect, message);
     state.songSelect = await mergeSongSelectState(state.songSelect, message);
+    if (nativeSongsBecameAvailable) {
+      if (state.songCatalogRequestTimer) window.clearTimeout(state.songCatalogRequestTimer);
+      state.songCatalogRequestTimer = null;
+      if (!state.songCatalogInFlight) requestNativeSongs();
+    }
+    // Catalog snapshots are also delivered while singing or viewing results.
+    if (message.screenActive === false) {
+      if (renderNeeded) renderSongSelectState();
+      return;
+    }
+    state.songSelectStateUntilMs = performance.now() + 5000;
     if (state.gameState !== 'song_select') {
       state.gameState = 'song_select';
       updateGameStateView();
     }
     if (['singing', 'paused'].includes(previousGameState)) {
       state.hostSongStartUs = null;
+      state.hostScoringStartUs = null;
       state.mediaStartUs = 0;
       state.songDurationSec = null;
       resetSongMediaClock();
@@ -5091,6 +5568,7 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'party.state') {
+    if (message.libraryHash && state.songLibraryHash && message.libraryHash !== state.songLibraryHash) return;
     state.party = {
       ...state.party,
       ...message
@@ -5133,7 +5611,7 @@ async function handleMessage(message) {
   if (message.type === 'song.lyrics') {
     if (!['singing', 'paused'].includes(state.gameState)) return;
     const songSeq = Number(message.songSeq || state.songSeq || 0);
-    if (Number.isFinite(songSeq) && songSeq > 0) state.songSeq = songSeq;
+    if (songSeq !== Number(state.songSeq)) return;
     state.currentLyricsMessage = message;
     updateSongClockFromMessage(message, 'song.lyrics');
     updateLyricSyncPoints(message);
@@ -5181,8 +5659,24 @@ async function handleMessage(message) {
     return;
   }
 
+  if (message.type === 'screen.info') {
+    state.screenInfo = message;
+    renderLockGameInfo();
+    return;
+  }
+
+  if (message.type === 'audio.stop') {
+    stopDeviceMusic('Device music stopped.');
+    state.selectPreviewAnchorClientUs = null;
+    state.selectPreviewAnchorSec = null;
+    state.selectPreviewAnchorExpiresMs = 0;
+    return;
+  }
+
   if (message.type === 'song.ended') {
+    if (Number(message.songSeq || state.songSeq) !== Number(state.songSeq)) return;
     state.hostSongStartUs = null;
+    state.hostScoringStartUs = null;
     state.mediaStartUs = 0;
     state.songDurationSec = null;
     resetSongMediaClock();
@@ -5190,7 +5684,7 @@ async function handleMessage(message) {
     state.currentSongMessage = null;
     state.currentLyricsMessage = null;
     state.gameState = 'song_ended';
-    pauseDeviceMusicBuffered('Device music stopped.');
+    stopDeviceMusic('Device music stopped.');
     updateGameStateView();
     logLine('song ended');
     return;
@@ -5202,7 +5696,8 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'ack') {
-    finishCommandFeedback(message.commandId, Boolean(message.accepted));
+    if (apiRequests.accept(message)) return;
+    finishCommandFeedback(message.commandId, Boolean(message.accepted), message.reason);
     controlStatus.textContent = message.accepted ? 'Accepted' : `Rejected: ${message.reason || 'unknown'}`;
     clientLog('control.ack', {
       commandId: message.commandId,
@@ -5214,13 +5709,36 @@ async function handleMessage(message) {
 
   if (message.type === 'error') {
     const text = message.reason || message.code || 'error';
+    if (message.code === 'host.reconnecting' || message.reason === 'heartbeat_timeout') {
+      if (!state.playerId) {
+        joinError.textContent = 'The game is reconnecting. Try joining again shortly.';
+        return;
+      }
+      reconnectRelay();
+      return;
+    }
+    if (message.code === 'client.session_expired') {
+      leaveClosedRoom('Your previous connection expired. Rejoin the room to select a mic.');
+      return;
+    }
+    if (message.code === 'join.bad_code') {
+      const attemptedCode = codeInput.value;
+      leaveClosedRoom('Room not found. Check the four-character code shown in the game.');
+      codeInput.value = attemptedCode;
+      return;
+    }
     if (
       ['join.bad_code', 'room.closed'].includes(message.code) ||
       ['host_disconnected', 'expired', 'heartbeat_timeout'].includes(message.reason)
     ) {
-      const roomClosedText = message.reason === 'host_disconnected' || message.reason === 'expired'
-        ? 'Game timed out.'
-        : text;
+      const roomClosedText = message.reason === 'heartbeat_timeout'
+        ? 'Connection to the relay timed out. Rejoin the room to reconnect.'
+        : message.reason === 'host_disconnected' || message.reason === 'expired'
+          ? 'Game timed out.' : message.code === 'room.closed' ? 'Game closed the room.' : text;
+      if (message.reason === 'heartbeat_timeout') clientLog('relay.heartbeat_expired', {
+        lastSentAgeMs:state.lastClientHeartbeatSentMs ? Math.round(performance.now()-state.lastClientHeartbeatSentMs) : null,
+        lastAckAgeMs:state.lastClientHeartbeatAckMs ? Math.round(performance.now()-state.lastClientHeartbeatAckMs) : null,
+        bufferedBytes:state.ws?.bufferedAmount || 0, readyState:state.ws?.readyState});
       leaveClosedRoom(roomClosedText);
       return;
     }
@@ -5246,8 +5764,12 @@ function connectAndJoin(displayCode, name, resume = null) {
   const preferredSlot = Number(resume?.slot || 0);
   const ws = new WebSocket(wsUrl('/ws/client'));
   state.ws = ws;
+  if (state.relayRecovering) state.relayJoinTimer = window.setTimeout(() => {
+    if (state.ws === ws && state.relayRecovering) reconnectRelay();
+  }, 6000);
   connectionState.textContent = 'connecting';
   ws.addEventListener('open', () => {
+    if (state.ws !== ws) { ws.close(); return; }
     renderConnectionState();
     ws.send(JSON.stringify({
       type: 'client.join',
@@ -5267,6 +5789,7 @@ function connectAndJoin(displayCode, name, resume = null) {
     }));
   });
   ws.addEventListener('message', (event) => {
+    if (state.ws !== ws) return;
     const message = JSON.parse(event.data);
     handleMessage(message).catch((error) => {
       clientLog('message.error', { type: message?.type || '', error: error?.message || String(error) });
@@ -5274,6 +5797,7 @@ function connectAndJoin(displayCode, name, resume = null) {
   });
   ws.addEventListener('close', () => {
     if (state.ws !== ws) return;
+    apiRequests.disconnect();
     if (state.pageUnloading) {
       saveSessionForReload();
       return;
@@ -5283,32 +5807,117 @@ function connectAndJoin(displayCode, name, resume = null) {
     stopClientHeartbeat();
     renderConnectionState();
     if (!appScreen.classList.contains('hidden')) {
-      leaveClosedRoom('Game connection timed out.');
+      reconnectRelay();
       return;
     }
     logLine('socket closed');
   });
   ws.addEventListener('error', () => {
+    if (state.ws !== ws) return;
     joinError.textContent = 'Connection failed';
     connectionState.textContent = 'error';
   });
 }
 
+function nativeAudioActive() { return Boolean(!state.hostRecovering && state.rawPcmV1 && Number(state.slot) >= 1 && Number(state.slot) <= 12 && state.roomId); }
+
+async function stopMic() {
+  digitalCalibration.cancel(true);
+  const context = state.audioContext;
+  state.audioContext = null;
+  state.audioInput?.stop();
+  state.audioInput = null;
+  state.micStream = null;
+  if (state.pcmWorklet) state.pcmWorklet.port.onmessage = null;
+  if (state.worklet) state.worklet.port.onmessage = null;
+  state.pcmWorklet = state.worklet = state.pcmSender = state.audioSink = null;
+  state.audioContextPerfBaseUs = null;
+  state.micInputLatencyUs = 0;
+  state.pitchTimestampLagUs = null;
+  $('testAudioStatus').hidden = true;
+  micStatus.textContent = 'Audio stopped.';
+  micButton.disabled = false;
+  if (context) await context.close().catch(() => {});
+  renderMicEntryFlow();
+  updateGameStateView();
+}
+
+function startCalibrationWave(spec) {
+  if(state.audioInput?.synthetic) return state.audioInput.calibrate(spec);
+  const context=state.audioContext;
+  if(!state.pcmWorklet || context?.state!=='running') return false;
+  state.pcmWorklet.port.postMessage({type:'calibration.start',id:spec.id,notes:spec.notes,
+    startContextTime:context.currentTime+(spec.startClientMs-performance.now())/1000});
+  return true;
+}
+
+function stopCalibrationWave() {
+  state.audioInput?.calibrate?.(null);
+  state.pcmWorklet?.port.postMessage({type:'calibration.cancel'});
+}
+
+function resumeMicAudio(context) {
+  context.resume().then(() => {
+    if (state.audioContext !== context) return;
+    renderMicEntryFlow();
+    updateGameStateView();
+  }).catch(error => {
+    if (state.audioContext !== context) return;
+    clientLog('mic.audio_resume_failed', { state: context.state, sampleRate: context.sampleRate,
+      name: error?.name || '', error: error?.message || String(error) });
+    micStatus.textContent = `Microphone audio could not start: ${error?.message || 'audio device unavailable'}. Tap Start Mic to retry.`;
+    micButton.disabled = false;
+  });
+}
+
 async function startMic() {
-  if (state.audioContext) {
-    try {
-      await state.audioContext.resume();
-    } catch {
-      // Keep the existing status below.
+  const frequency = Number($('testAudioInput').value);
+  if (frequency) {
+    if (state.audioInput?.synthetic) return;
+    if (!state.rawPcmV1) {
+      micStatus.textContent = 'Test audio needs a game with native PCM support.';
+      return;
     }
+    await stopMic();
+    state.pcmSender = new NativePcmSender({active: nativeAudioActive,
+      channel: () => state.p2p.dc,
+      relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message)});
+    state.audioInput = startSyntheticPcm({frequency,
+      songTimeUs: clientMs => state.gameState === 'singing' && state.clock.synced && state.hostScoringStartUs
+        ? hostClockEstimateUs(Math.round(clientMs * 1000)) - state.hostScoringStartUs : null,
+      transition: event => clientLog('audio.transition', {...event, songSeq:state.songSeq,
+        generatedHostUs:hostClockEstimateUs(Math.round(event.generatedClientMs * 1000)),
+        clockRttUs:state.clock.rttUs}),
+      submit: packet => {
+      state.pcmSender?.submit(packet);
+      if (new DataView(packet).getUint32(0, true) === 0x31504155 &&
+          performance.now() - state.pitchLastUiMs >= pitchUiUpdateMs) {
+        let energy = 0;
+        for (const sample of new Int16Array(packet, 20)) energy += sample * sample;
+        handlePitchFrame({rmsDb:energy ? 10 * Math.log10(energy / (480 * 32768 ** 2)) : -120});
+      }
+    }});
+    $('testAudioStatus').textContent = state.audioInput.label;
+    $('testAudioStatus').hidden = false;
+    micStatus.textContent = '';
+    sampleRateValue.textContent = '48000 Hz (synthetic)';
+    channelValue.textContent = '1';
+    processingValue.textContent = 'Game-side pitch detection; synthetic PCM';
+    clientLog('mic.synthetic_started', {frequency, microphone: false});
+    renderMicEntryFlow();
+    updateGameStateView();
+    return;
+  }
+  if (state.audioContext) {
+    resumeMicAudio(state.audioContext);
     if (state.audioContext.state === 'running') {
-      micButton.textContent = 'Mic Running';
+      setActionLabel(micButton, 'Mic Running', 'microphone');
       micButton.disabled = true;
-      micStatus.textContent = state.micStream
-        ? 'Microphone running.'
+      micStatus.textContent = state.audioInput
+        ? `Input: ${state.audioInput.label}`
         : 'Audio is running; waiting for microphone input.';
     } else {
-      micButton.textContent = 'Start Mic';
+      setActionLabel(micButton, 'Start Mic', 'microphone');
       micButton.disabled = false;
       micStatus.textContent = 'Microphone is ready; tap Start Mic again to unlock audio.';
     }
@@ -5316,7 +5925,7 @@ async function startMic() {
     updateGameStateView();
     return;
   }
-  if (state.settings.controlOnly) {
+  if (state.settings.controlOnly && !Number($('testAudioInput').value)) {
     micStatus.textContent = 'Control-only mode is enabled in Settings.';
     return;
   }
@@ -5325,67 +5934,101 @@ async function startMic() {
   let stream = null;
   try {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    audioContext = new AudioContextClass();
+    audioContext = new AudioContextClass({ latencyHint: 'interactive' });
     state.audioContext = audioContext;
     renderMicEntryFlow();
     sampleRateValue.textContent = `${audioContext.sampleRate} Hz`;
 
-    try {
-      await audioContext.resume();
-    } catch {
-      // Some browsers still require the final resume after getUserMedia.
-    }
+    // Request permission even when Firefox keeps resume pending until an input exists.
+    // Calling resume in this gesture still unlocks browsers which require it here.
+    resumeMicAudio(audioContext);
 
-    stream = await navigator.mediaDevices.getUserMedia({
+    micStatus.textContent = 'Requesting microphone access…';
+    const input = await createAudioInput(audioContext, {
+      frequency: Number($('testAudioInput').value),
+      mediaDevices: navigator.mediaDevices,
+      constraints: {
       audio: {
         channelCount: 1,
         echoCancellation: state.settings.echoCancellation,
         noiseSuppression: state.settings.noiseSuppression,
         autoGainControl: state.settings.autoGain
       },
-      video: false
+      video: false }
     });
+    if (state.audioContext !== audioContext) {
+      input.stop();
+      return;
+    }
+    state.audioInput = input;
+    stream = input.stream;
     state.micStream = stream;
-    const track = stream.getAudioTracks()[0];
-    const settings = track.getSettings ? track.getSettings() : {};
+    const settings = input.settings;
+    $('testAudioStatus').hidden = !input.synthetic;
+    $('testAudioStatus').textContent = input.synthetic ? input.label : '';
     const reportedInputLatencySec = Number(settings.latency);
     state.micInputLatencyUs = Number.isFinite(reportedInputLatencySec) && reportedInputLatencySec > 0
       ? Math.min(pitchReportedInputLatencyMaxUs, Math.round(reportedInputLatencySec * 1_000_000))
       : 0;
     state.pitchTimestampLagUs = null;
     channelValue.textContent = settings.channelCount || 'unknown';
-    micStatus.textContent = `Input: ${track.label || 'microphone'}`;
+    micStatus.textContent = `Input: ${input.label}`;
 
     // AudioWorklet `currentTime` is relative to the AudioContext, while clock
     // sync uses performance.now(). Keep an explicit local monotonic mapping.
     state.audioContextPerfBaseUs = clientNowUs() - Math.round(audioContext.currentTime * 1_000_000);
-    await audioContext.audioWorklet.addModule(`/pitch-worklet.js?v=${encodeURIComponent(appVersion)}`);
-    const source = audioContext.createMediaStreamSource(stream);
-    const worklet = new AudioWorkletNode(audioContext, 'usdx-pitch-processor');
+    const source = input.source;
     const silentSink = audioContext.createGain();
     silentSink.gain.value = 0;
-    state.worklet = worklet;
     state.audioSink = silentSink;
-    worklet.port.onmessage = (event) => handlePitchFrame(event.data);
-    source.connect(worklet);
-    worklet.connect(silentSink);
     silentSink.connect(audioContext.destination);
-    if (audioContext.state !== 'running') {
-      await audioContext.resume();
+    if (!state.rawPcmV1) {
+      await audioContext.audioWorklet.addModule(`/pitch-worklet.js?v=${encodeURIComponent(appVersion)}`);
+      if (state.audioContext !== audioContext) return;
+      const worklet = new AudioWorkletNode(audioContext, 'usdx-pitch-processor');
+      state.worklet = worklet;
+      worklet.port.onmessage = (event) => handlePitchFrame(event.data);
+      source.connect(worklet).connect(silentSink);
     }
-    processingValue.textContent = 'AudioWorklet';
+    if (state.rawPcmV1 || audioContext.sampleRate === 48000) {
+      micStatus.textContent = 'Preparing microphone audio…';
+      state.pcmSender = new NativePcmSender({ active: nativeAudioActive,
+        channel: () => state.p2p.dc,
+        relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message) });
+      await audioContext.audioWorklet.addModule('/pcm-worklet.js?v=3');
+      if (state.audioContext !== audioContext) return;
+      state.pcmWorklet = new AudioWorkletNode(audioContext, 'usce-pcm');
+      state.pcmWorklet.port.onmessage = event => {
+        state.pcmSender.submit(event.data);
+        if (new DataView(event.data).getUint32(0, true) === 0x31504155 &&
+            state.rawPcmV1 && performance.now() - state.pitchLastUiMs >= pitchUiUpdateMs) {
+          const samples = new Int16Array(event.data, 20);
+          let sum = 0;
+          for (const sample of samples) sum += (sample / 32768) ** 2;
+          handlePitchFrame({ rmsDb: 10 * Math.log10(Math.max(1e-12, sum / samples.length)) });
+        }
+      };
+      source.connect(state.pcmWorklet).connect(silentSink);
+    }
+    if (audioContext.state !== 'running') {
+      resumeMicAudio(audioContext);
+    }
+    processingValue.textContent = state.rawPcmV1 ? 'Game-side pitch detection' : 'AudioWorklet';
     if (audioContext.state === 'running') {
-      micButton.textContent = 'Mic Running';
+      setActionLabel(micButton, 'Mic Running', 'microphone');
       micButton.disabled = true;
-      micStatus.textContent = `Input: ${track.label || 'microphone'}; echoCancellation=${settings.echoCancellation ?? 'n/a'}, noiseSuppression=${settings.noiseSuppression ?? 'n/a'}, autoGainControl=${settings.autoGainControl ?? 'n/a'}`;
+      micStatus.textContent = `Input: ${input.label}`;
     } else {
-      micButton.textContent = 'Start Mic';
+      setActionLabel(micButton, 'Start Mic', 'microphone');
       micButton.disabled = false;
       micStatus.textContent = 'Microphone is ready; tap Start Mic again to unlock audio.';
     }
     renderMicEntryFlow();
     updateGameStateView();
   } catch (error) {
+    if (state.audioContext !== audioContext) return;
+    state.audioInput?.stop();
+    state.audioInput = null;
     if (stream) stream.getTracks().forEach((track) => track.stop());
     if (audioContext) {
       try {
@@ -5522,15 +6165,12 @@ function handlePitchFrame(frame) {
     const meterCeilingDb = -6;
     const level = Math.max(0, Math.min(1, (frame.rmsDb - meterFloorDb) / (meterCeilingDb - meterFloorDb)));
     volumeFill.style.width = `${Math.round(level * 100)}%`;
-    pitchValue.textContent = frame.voiced ? `${frame.f0Hz.toFixed(1)} Hz` : '--';
-    confidenceValue.textContent = frame.confidence.toFixed(2);
-    voicedValue.textContent = frame.voiced ? 'voiced' : 'noise';
     if (!lockOverlay.classList.contains('hidden')) {
-      renderLockLevel(level, frame.voiced ? `${frame.f0Hz.toFixed(1)} Hz - ${frame.confidence.toFixed(2)}` : `-- - ${frame.confidence.toFixed(2)}`);
+      renderLockLevel(level, 'Microphone level');
     }
   }
 
-  if (!hasActiveSongClock()) {
+  if (state.rawPcmV1 || !hasActiveSongClock()) {
     if (state.pitchQueue.length || state.pitchVoteBucket) clearPitchQueue();
     updateMicTransportStatus(false);
     return;
@@ -5552,6 +6192,7 @@ function handlePitchFrame(frame) {
 }
 
 function flushPitchBatch() {
+  if (nativeAudioActive()) { clearPitchQueue(); return; }
   const nowMs = performance.now();
   const relayMode = !state.p2p.connected;
   const minFlushMs = relayMode ? 100 : 10;
@@ -5744,6 +6385,7 @@ pauseRestartButton?.addEventListener('click', (event) => {
 
 searchForm.addEventListener('submit', (event) => {
   event.preventDefault();
+  searchInput.blur();
   state.songFilterText = searchInput.value.trim();
   state.songSearchField = normalizeSongSearchField(searchFieldInput?.value);
   resetSongPage();
@@ -5770,10 +6412,12 @@ clearSearchButton?.addEventListener('click', clearSongSearch);
 showAllSongsButton?.addEventListener('click', showAllSongs);
 downloadSongsCsvButton?.addEventListener('click', downloadSongsCsv);
 likeVisibleSongsButton?.addEventListener('click', () => sendPartyLikeMatchedSongs(likeVisibleSongsButton));
+$('unlikeVisibleSongsButton')?.addEventListener('click', (event) => sendPartyLikeMatchedSongs(event.currentTarget, false));
 showLikedSongsButton?.addEventListener('click', showLikedSongs);
 
 controlTextForm.addEventListener('submit', (event) => {
   event.preventDefault();
+  controlTextInput.blur();
   sendControl('search.setText', { text: controlTextInput.value.trim() }, event.submitter);
 });
 
@@ -5816,8 +6460,13 @@ for (const button of document.querySelectorAll('.tab')) {
 }
 
 micButton.addEventListener('click', startMic);
+$('testAudioInput').addEventListener('change', async () => {
+  await stopMic();
+  $('testAudioStartButton').disabled = !Number($('testAudioInput').value);
+});
+$('testAudioStartButton').addEventListener('click', startMic);
+$('stopAudioButton').addEventListener('click', stopMic);
 micRoomList?.addEventListener('click', (event) => {
-  if (!micRoomsUnlocked()) return;
   const button = event.target.closest?.('.mic-room[data-slot]');
   if (!button || !micRoomList.contains(button) || button.disabled) return;
   event.preventDefault();
@@ -5831,6 +6480,8 @@ for (const [input, key] of [
   [wakeLockInput, 'wakeLock'],
   [lockMicBarInput, 'lockMicBar'],
   [controlOnlyInput, 'controlOnly'],
+  [showAdminControlsInput, 'showAdminControls'],
+  [preferTextLabelsInput, 'preferTextLabels'],
   [playMusicOnDeviceInput, 'playMusicOnDevice']
 ]) {
   input.addEventListener('change', () => {
@@ -6037,9 +6688,9 @@ function currentPartyArgs() {
     ? Number(state.songPlaylistIndex)
     : Number(state.songSelect?.curPlaylist ?? -1);
   return {
-    minPlayers: Math.max(2, Math.min(12, Math.round(Number(partyMinPlayersInput.value || 2)))),
+    minPlayers: Math.max(1, Math.min(12, Math.round(Number(partyMinPlayersInput.value || 2)))),
     endless: Boolean(partyEndlessInput.checked),
-    countdownSeconds: Math.max(1, Math.min(120, Math.round(Number(partyCountdownInput?.value || 15)))),
+    ...Object.fromEntries(partyPlaybackInputs.map(input => [input.dataset.partyPlayback, input.value === '' ? null : Number(input.value)])),
     source: partySourceInput?.value === 'playlist' ? 'playlist' : 'all',
     playlistIndex: Number.isInteger(selectedPlaylist) ? selectedPlaylist : -1,
     mode: 'matchmaking'
@@ -6072,7 +6723,7 @@ function sendPartySettingsControl(command, sourceButton, label) {
   return sendPartyControl(command, args, sourceButton, label);
 }
 
-for (const input of [partyMinPlayersInput, partyEndlessInput, partyCountdownInput, partySourceInput]) {
+for (const input of [partyMinPlayersInput, partyEndlessInput, ...partyPlaybackInputs, partySourceInput]) {
   input?.addEventListener('input', markPartySettingsDirty);
   input?.addEventListener('change', markPartySettingsDirty);
 }
@@ -6091,6 +6742,7 @@ partySaveButton?.addEventListener('click', () => {
 partyResetLeaderboardButton?.addEventListener('click', () => sendPartyControl('party.resetLeaderboard', {}, partyResetLeaderboardButton, 'Resetting leaderboard...'));
 
 setInterval(sendClockPing, 1000);
+setInterval(() => { if (state.rawPcmV1) renderConnectionState(); }, 100);
 setInterval(flushPitchBatch, 10);
 setInterval(renderRemoteLyrics, 100);
 setInterval(updateSongProgressView, 500);
@@ -6103,11 +6755,17 @@ setInterval(() => {
   }
 }, 1000);
 
+for (const [button, icon] of [[likeVisibleSongsButton,'heart'],[$('unlikeVisibleSongsButton'),'thumbs-down'],[partyStartButton,'play'],[partySkipButton,'forward-step'],[partyStopButton,'stop'],[partyFindMatchButton,'magnifying-glass'],[$('controlTextForm')?.querySelector('button[type="submit"]'),'magnifying-glass']]) {
+  if (button) setActionLabel(button, button.textContent.trim(), icon);
+}
 loadPersistentLikedSongs();
 loadProfile();
 resolveStoredAvatar();
 loadSettings();
 renderSettings();
+setDeviceMusicStatus(state.settings.playMusicOnDevice
+  ? 'Device music enabled. Waiting for game audio.'
+  : 'Device music is off.');
 setTab(localStorage.getItem(tabKey) || 'mic');
 applyWakeLock();
 

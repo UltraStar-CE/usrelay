@@ -1,3 +1,5 @@
+import {createApiRequests} from '/api-requests.js';
+import {loadSongs} from '/song-query.js';
 const protocol = 1;
 const sessionKey = 'usdx.remote.session.v1';
 const nameKey = 'usdx.remote.name.v1';
@@ -180,6 +182,8 @@ function wsUrl(pathname) {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   return url.toString();
 }
+
+const apiRequests = createApiRequests({send, nextId:()=>++state.commandId});
 
 function send(message) {
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return false;
@@ -1567,63 +1571,28 @@ async function hydrateCachedCatalog() {
   return true;
 }
 
-function requestCatalog(options = {}) {
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !state.playerId) return false;
-  if (state.catalogInFlight && !options.forceFull) return false;
-  const requestId = shortRequestId('catalog');
-  const knownCatalogId = options.forceFull ? '' : cachedSongLibraryHash();
-  const catalogId = String(options.catalogId || state.libraryHash || knownCatalogId || '');
-  const forceTransfer = Boolean(options.forceFull || !knownCatalogId);
+async function requestCatalog(options = {}) {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !state.playerId || state.catalogInFlight) return false;
+  const roomId = state.roomId;
+  const requestId = shortRequestId('songs');
   state.requestId = requestId;
   state.catalogInFlight = true;
-  state.progress = {
-    status: forceTransfer ? 'requesting_full' : 'requesting',
-    transferReceived: 0,
-    transferTotal: Number(state.songSelect?.totalSongs || state.songSelect?.visibleSongs || songLibrary().length || 0),
-    message: forceTransfer ? 'Requesting song catalog' : 'Checking catalog'
-  };
+  state.progress = {status:'receiving', message:'Loading songs'};
   render();
-  send({
-    type: 'catalog.request',
-    requestId,
-    knownCatalogId,
-    catalogId,
-    forceTransfer
-  });
-  return true;
-}
-
-function startCatalogTransfer(message) {
-  const catalogId = String(message.catalogId || message.libraryHash || '');
-  state.transfer = {
-    catalogId,
-    total: Number(message.totalSongs || message.total || 0),
-    received: 0,
-    chunks: []
-  };
-  state.progress = {
-    status: 'receiving',
-    transferReceived: 0,
-    transferTotal: state.transfer.total,
-    message: 'Receiving song catalog'
-  };
-  render();
-}
-
-function appendCatalogTransferChunk(message) {
-  const catalogId = String(message.catalogId || message.libraryHash || '');
-  if (!state.transfer || state.transfer.catalogId !== catalogId) startCatalogTransfer(message);
-  const songs = Array.isArray(message.songs) ? message.songs : (Array.isArray(message.library) ? message.library : []);
-  state.transfer.chunks.push(...songs);
-  state.transfer.received += songs.length;
-  state.progress = {
-    ...state.progress,
-    status: 'receiving',
-    transferReceived: state.transfer.received,
-    transferTotal: state.transfer.total,
-    message: 'Receiving song catalog'
-  };
-  render();
+  try {
+    const result = await loadSongs(apiRequests.request);
+    if (state.roomId !== roomId || state.requestId !== requestId) return false;
+    state.transfer = {catalogId:result.snapshotId, chunks:result.songs};
+    await finishCatalogTransfer({catalogId:result.snapshotId, state:{...state.songSelect}});
+    return true;
+  } catch (error) {
+    if (state.roomId !== roomId || state.requestId !== requestId) return false;
+    state.catalogInFlight = false;
+    state.progress = {status:'error', message:error.message || 'Songs unavailable'};
+    updateStatus(state.progress.message);
+    render();
+    return false;
+  }
 }
 
 async function finishCatalogTransfer(message) {
@@ -1648,35 +1617,6 @@ async function finishCatalogTransfer(message) {
     library
   });
   await saveCachedSongLibrary(catalogId, library);
-  render();
-}
-
-async function applyCatalogManifest(message) {
-  const catalogId = String(message.catalogId || message.libraryHash || '');
-  if (!catalogId) return;
-  const cached = await loadCachedSongLibrary(catalogId);
-  if (!cached?.library?.length) {
-    state.catalogInFlight = false;
-    requestCatalog({ forceFull: true, catalogId, reason: 'manifest-cache-miss' });
-    return;
-  }
-  setLibraryHash(catalogId);
-  state.catalogInFlight = false;
-  state.progress = {
-    status: 'ready',
-    indexedSongs: cached.library.length,
-    transferReceived: cached.library.length,
-    transferTotal: cached.library.length,
-    message: `Loaded ${cached.library.length} cached songs`
-  };
-  state.songSelect = await mergeSongSelectState(state.songSelect, {
-    ...(message.state && typeof message.state === 'object' ? message.state : {}),
-    type: 'song.select.state',
-    libraryHash: catalogId,
-    library: cached.library,
-    libraryCached: true
-  });
-  send({ type: 'catalog.ready', catalogId, songLibraryHash: catalogId, songCount: cached.library.length });
   render();
 }
 
@@ -1719,46 +1659,8 @@ async function handleMessage(message) {
     return;
   }
 
-  if (message.type === 'catalog.request.accepted') {
-    state.progress = {
-      ...state.progress,
-      status: message.hostConnected ? 'catalog_accepted' : 'host_disconnected',
-      message: message.hostConnected ? 'Catalog request accepted' : 'Game bridge disconnected'
-    };
-    render();
-    return;
-  }
-
-  if (message.type === 'catalog.manifest') {
-    await applyCatalogManifest(message);
-    return;
-  }
-
-  if (message.type === 'catalog.transfer.start') {
-    startCatalogTransfer(message);
-    return;
-  }
-
-  if (message.type === 'catalog.transfer.chunk') {
-    appendCatalogTransferChunk(message);
-    return;
-  }
-
-  if (message.type === 'catalog.transfer.end') {
-    await finishCatalogTransfer(message);
-    return;
-  }
-
-  if (message.type === 'catalog.error') {
-    state.catalogInFlight = false;
-    state.transfer = null;
-    state.progress = { status: 'error', message: message.message || message.code || 'Catalog unavailable' };
-    updateStatus(state.progress.message);
-    render();
-    return;
-  }
-
   if (message.type === 'ack') {
+    if (apiRequests.accept(message)) return;
     const pending = state.pendingCommands.get(message.commandId);
     if (pending) {
       pending.button.disabled = false;
@@ -1800,6 +1702,8 @@ function stopHeartbeat() {
 }
 
 function leaveClosedRoom(reason = 'Game disconnected') {
+  apiRequests.disconnect();
+  state.requestId = '';
   stopPreview();
   stopHeartbeat();
   const ws = state.ws;
@@ -1856,6 +1760,9 @@ function connectAndJoin(displayCode, name, resume = null) {
   localStorage.setItem(nameKey, state.name);
   ui.joinError.textContent = '';
   updateStatus('Connecting');
+  apiRequests.disconnect();
+  state.catalogInFlight = false;
+  state.requestId = '';
   if (state.ws) state.ws.close();
   const ws = new WebSocket(wsUrl('/ws/client'));
   state.ws = ws;
@@ -1884,6 +1791,9 @@ function connectAndJoin(displayCode, name, resume = null) {
   });
   ws.addEventListener('close', () => {
     if (state.ws !== ws) return;
+    apiRequests.disconnect();
+    state.catalogInFlight = false;
+    state.requestId = '';
     state.ws = null;
     stopHeartbeat();
     updateStatus('Disconnected');

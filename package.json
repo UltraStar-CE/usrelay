@@ -1,9 +1,10 @@
 {
-  "name": "usdx-remote-mvp",
+  "name": "usrelay",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node --test",
     "start": "node server.js",
     "dev": "USDX_BIND=127.0.0.1 USDX_PORT=8080 node server.js"
   },

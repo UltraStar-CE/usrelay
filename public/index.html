@@ -3,13 +3,13 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>USDX Remote</title>
+    <title>UltraStar Relay</title>
     <link rel="stylesheet" href="/style.css">
   </head>
   <body>
     <main class="shell">
       <section id="joinScreen" class="screen">
-        <div class="brand">USDX Remote</div>
+        <div class="brand">UltraStar Relay</div>
         <form id="joinForm" class="join-form">
           <label>
             Room code
@@ -32,32 +32,33 @@
       </section>
 
       <section id="appScreen" class="screen hidden">
+        <div id="hostRecoveryNotice" class="host-recovery hidden" role="status">Game disconnected. Reconnecting…</div>
         <div class="tabs">
-          <button type="button" class="tab active" data-tab="mic">Microphone</button>
-          <button type="button" class="tab" data-tab="songs">Songs</button>
-          <button type="button" class="tab" data-tab="party">Party</button>
-          <button type="button" class="tab" data-tab="control">Control</button>
-          <button type="button" class="tab" data-tab="settings">Settings</button>
+          <button type="button" class="tab active" data-tab="mic"><img class="action-icon" src="/icons/microphone.svg" alt=""><span class="action-label">Mic</span><span id="routeWarning" class="route-status" role="status" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2 23 22H1Z"/><path stroke="#422f08" stroke-width="2" d="M12 9v6m0 2v2"/></svg> Server</span></button>
+          <button type="button" class="tab" data-tab="songs"><img class="action-icon" src="/icons/music.svg" alt=""><span class="action-label">Songs</span></button>
+          <button type="button" class="tab" data-tab="party"><img class="action-icon" src="/icons/users.svg" alt=""><span class="action-label">Party</span></button>
+          <button type="button" class="tab hidden" data-tab="control"><img class="action-icon" src="/icons/gamepad.svg" alt=""><span class="action-label">Control</span></button>
+          <button type="button" class="tab" data-tab="settings"><img class="action-icon" src="/icons/gear.svg" alt=""><span class="action-label">Settings</span></button>
+          <button type="button" id="lockBar" class="lock-bar icon-action hidden" aria-label="Lock screen" title="Lock screen"><img class="action-icon" src="/icons/lock.svg" alt=""><span class="action-label">Lock</span></button>
         </div>
 
         <section id="micPanel" class="panel tab-panel">
+          <button type="button" id="micButton">Start Mic</button>
+          <p id="testAudioStatus" class="fine" role="status" hidden></p>
+          <div class="meter"><span id="volumeFill"></span></div>
+          <dl class="metrics mic-stats">
+            <div><dt>Position</dt><dd id="songPositionValue">--</dd></div>
+            <div><dt>Score</dt><dd id="playerScoreValue">--</dd></div>
+          </dl>
+          <div id="micLyricsPanel" class="remote-lyrics hidden" aria-live="polite"></div>
+          <p id="micStatus" class="fine">Choose a mic to start. Your browser will ask for microphone access.</p>
+          <p id="audioLatencyStatus" class="fine" hidden></p>
           <div class="section-head">
             <strong>Mic Rooms</strong>
             <span id="micRoomCountLabel" class="muted">--</span>
           </div>
           <div id="micRoomList" class="mic-room-list"></div>
           <ul id="playerList" class="player-list compact-list hidden" aria-label="Players"></ul>
-          <button type="button" id="micButton">Start Mic</button>
-          <div class="meter"><span id="volumeFill"></span></div>
-          <dl class="metrics">
-            <div><dt>Pitch</dt><dd id="pitchValue">--</dd></div>
-            <div><dt>Confidence</dt><dd id="confidenceValue">--</dd></div>
-            <div><dt>Decision</dt><dd id="voicedValue">--</dd></div>
-            <div><dt>Position</dt><dd id="songPositionValue">--</dd></div>
-            <div><dt>Score</dt><dd id="playerScoreValue">--</dd></div>
-          </dl>
-          <div id="micLyricsPanel" class="remote-lyrics hidden" aria-live="polite"></div>
-          <p id="micStatus" class="fine">Microphone permission is requested only after you start the mic.</p>
         </section>
 
         <section id="songsPanel" class="panel tab-panel hidden">
@@ -76,7 +77,8 @@
             <input id="searchInput" name="search" autocomplete="off" maxlength="80" placeholder="Search: Artist or title">
             <button type="button" id="clearSearchButton" class="clear-search-button" aria-label="Clear song search" title="Clear song search">X</button>
           </form>
-          <p id="songLibraryLabel" class="fine song-library-summary">No song data from USDX yet.</p>
+          <p id="songLibraryLabel" class="fine song-library-summary">No song data from the game yet.</p>
+          <p id="phonePreviewStatus" class="fine" role="status" hidden></p>
           <div id="songLibraryProgressWrap" class="song-library-progress hidden" aria-hidden="true">
             <span id="songLibraryProgressFill"></span>
             <strong id="songLibraryProgressText">0%</strong>
@@ -89,7 +91,8 @@
             <div class="song-command-row">
               <button type="button" id="showAllSongsButton" class="secondary hidden">All Songs</button>
               <button type="button" id="addResultsButton">Add Results</button>
-              <button type="button" id="likeVisibleSongsButton" class="secondary">♥ All</button>
+              <button type="button" id="likeVisibleSongsButton" class="secondary"><img class="action-icon" src="/icons/heart.svg" alt="">Like all</button>
+              <button type="button" id="unlikeVisibleSongsButton" class="secondary"><img class="action-icon" src="/icons/thumbs-down.svg" alt="">Unlike all</button>
               <button type="button" id="showLikedSongsButton" class="secondary">♥ Liked</button>
               <button type="button" id="downloadSongsCsvButton" class="secondary">Export CSV</button>
             </div>
@@ -101,6 +104,7 @@
               <strong>Playlists</strong>
               <span id="playlistCountLabel" class="muted">--</span>
             </div>
+            <p id="playlistEditHint" class="muted hidden">Browse and like songs anytime. Edit playlists from the game main menu or song selection.</p>
             <form id="playlistCreateForm" class="song-search-form compact">
               <input id="playlistNameInput" name="playlistName" autocomplete="off" maxlength="48" placeholder="New playlist">
               <button type="submit">Create</button>
@@ -128,17 +132,26 @@
             </div>
             <label class="input-row">
               Match players
-              <input id="partyMinPlayersInput" type="number" min="2" max="12" step="1" value="2">
+              <input id="partyMinPlayersInput" type="number" min="1" max="12" step="1" value="2">
             </label>
             <label class="check-row">
               <input id="partyEndlessInput" type="checkbox">
               Endless random songs
             </label>
-            <label class="input-row">
-              Next song countdown
-              <input id="partyCountdownInput" type="number" min="1" max="120" step="1" value="15">
-            </label>
-            <label class="input-row">
+            <details class="party-playback-options">
+              <summary>Continuous playback</summary>
+              <p class="fine">The game manages each screen and advances to the next song. Manual waits for you to continue; Skip hides the screen. Changes apply when the next session starts.</p>
+              <label class="input-row select-row">Player setup <select id="partyPlayerSetupInput" data-party-playback="playerSetupSeconds"></select></label>
+              <label class="input-row select-row">Song results <select id="partyResultsInput" data-party-playback="resultSeconds"></select></label>
+              <label class="input-row select-row">High scores <select id="partyHighScoresInput" data-party-playback="highScoreSeconds"></select></label>
+              <label class="input-row select-row">Song display <select id="partySongDisplayInput" data-party-playback="songDisplay">
+                <option value="">Use game setting</option><option value="0">Lyrics + progress</option><option value="1">Lyrics only</option><option value="2">Progress only</option><option value="3">Nothing</option>
+              </select></label>
+              <label class="input-row select-row">Singing display <select id="partySingingDisplayInput" data-party-playback="singingDisplay">
+                <option value="">Use game setting</option><option value="0">Full</option><option value="1">Notes + player info</option><option value="2">Notes only</option><option value="3">Player info only</option><option value="4">Nothing</option>
+              </select></label>
+            </details>
+            <label class="input-row select-row">
               Random source
               <select id="partySourceInput">
                 <option value="all">All Songs</option>
@@ -174,7 +187,7 @@
           <section class="remote-list">
             <div class="section-head">
               <strong>Leaderboard</strong>
-              <span class="muted">winner gets 1 point</span>
+              <span class="muted">total singing score</span>
             </div>
             <ul id="partyLeaderboardList" class="playlist-item-list"></ul>
           </section>
@@ -247,7 +260,7 @@
           <section class="remote-list">
             <div class="section-head">
               <strong>Players</strong>
-              <span class="muted">controller tools</span>
+              <span class="muted">Remove other players from this room</span>
             </div>
             <div id="controlPlayerList" class="control-player-list"></div>
           </section>
@@ -255,6 +268,9 @@
         </section>
 
         <section id="settingsPanel" class="panel tab-panel hidden">
+          <details class="remote-list">
+            <summary>Advanced microphone and timing</summary>
+            <p class="fine">Normally no adjustment is needed. Change these only to troubleshoot your microphone or device playback.</p>
           <section class="remote-list">
             <div class="section-head">
               <strong>Audio</strong>
@@ -272,6 +288,18 @@
               <input id="autoGainInput" type="checkbox">
               Auto gain control
             </label>
+            <label>Test audio source
+              <select id="testAudioInput">
+                <option value="0">Real microphone</option>
+                <option value="65">Test tone: 65 Hz (deep voice)</option>
+                <option value="220">Test tone: 220 Hz</option>
+                <option value="440">Test tone: 440 Hz</option>
+                <option value="-1">Alignment test: C2 ↔ F2 with song</option>
+              </select>
+            </label>
+            <p class="fine">Test tones use the normal audio path without microphone access, so screen sharing can stay on. This choice resets when the page reloads. Test scores are synthetic.</p>
+            <button type="button" id="testAudioStartButton" disabled>Start test audio</button>
+            <button type="button" id="stopAudioButton" class="secondary">Stop audio</button>
           </section>
           <section class="remote-list">
             <div class="section-head">
@@ -286,15 +314,17 @@
           </section>
           <section class="remote-list">
             <div class="section-head">
-              <strong>Mic Delay</strong>
+              <strong>Microphone timing trim</strong>
               <span id="micDelayValueLabel" class="muted">0 ms</span>
             </div>
             <div class="delay-row">
               <button type="button" id="micDelayMinusButton">-</button>
-              <input id="micDelayInput" type="number" min="-500" max="500" step="10" value="0">
+              <input id="micDelayInput" aria-label="Microphone timing trim" type="number" min="-500" max="500" step="10" value="0">
               <button type="button" id="micDelayPlusButton">+</button>
             </div>
+            <p class="fine">Normally leave at 0 ms. This per-player adjustment is added once to the game's automatic compensation. Positive values compensate extra input delay; negative values reduce it.</p>
           </section>
+          </details>
           <section class="remote-list">
             <div class="section-head">
               <strong>Phone</strong>
@@ -351,13 +381,23 @@
             </label>
             <label class="check-row">
               <input id="controlOnlyInput" type="checkbox">
-              Control only
+              Use without a microphone
+            </label>
+            <label class="check-row">
+              <input id="showAdminControlsInput" type="checkbox">
+              Show admin Control tab
+            </label>
+            <label class="check-row">
+              <input id="preferTextLabelsInput" type="checkbox">
+              Prefer text labels
             </label>
             <label class="check-row">
               <input id="playMusicOnDeviceInput" type="checkbox">
               Play music on device as well
             </label>
             <p id="deviceMusicStatus" class="fine">Device music is off.</p>
+            <details>
+              <summary>Device playback details</summary>
             <dl class="metrics device-music-diagnostics">
               <div><dt>Music state</dt><dd id="deviceMusicStateValue">off</dd></div>
               <div><dt>Phone remaining</dt><dd id="deviceMusicPhonePositionValue">--</dd></div>
@@ -368,6 +408,7 @@
               <div><dt>Download</dt><dd id="deviceMusicDownloadValue">--</dd></div>
               <div><dt>Buffer</dt><dd id="deviceMusicReadyValue">--</dd></div>
             </dl>
+            </details>
           </section>
           <section class="remote-list">
             <div class="section-head">
@@ -383,7 +424,12 @@
               <span id="connectionState" class="muted">disconnected</span>
             </div>
             <dl class="metrics">
-              <div><dt>RTT</dt><dd id="rttValue">--</dd></div>
+              <div><dt>Clock round trip</dt><dd id="rttValue">--</dd></div>
+              <div><dt>Audio round trip</dt><dd id="audioRoundTripValue">Not measured</dd></div>
+              <div><dt>Automatic delay</dt><dd id="digitalDelayValue">Waiting for an idle microphone</dd></div>
+              <div><dt>Delay scope</dt><dd id="digitalDelayDetail">Digital calibration runs while idle after audio starts; microphone hardware and browser capture buffers are excluded.</dd></div>
+              <div><dt>Audio network RTT</dt><dd id="audioNetworkRoundTripValue">Not measured</dd></div>
+              <div><dt>Round-trip scope</dt><dd>Round trips include the return path. Microphone capture and hardware are excluded; these are not compensation values.</dd></div>
               <div><dt>Clock offset</dt><dd id="offsetValue">--</dd></div>
               <div><dt>Sample rate</dt><dd id="sampleRateValue">--</dd></div>
               <div><dt>Channels</dt><dd id="channelValue">--</dd></div>
@@ -418,7 +464,6 @@
         <button type="button" id="partyTurnAckButton">OK</button>
       </div>
     </div>
-    <button type="button" id="lockBar" class="lock-bar hidden">Lock Screen</button>
     <div id="lockOverlay" class="lock-overlay hidden" aria-hidden="true">
       <div id="lockPanel" class="lock-panel">
         <div class="lock-title">Screen locked</div>
@@ -428,6 +473,7 @@
         <div class="lock-progress" aria-hidden="true"><span id="lockProgressFill"></span></div>
         <div id="lockProgressLabel" class="lock-meta">0%</div>
         <div id="lockLyricsLabel" class="lock-lyrics hidden"></div>
+        <div id="lockGameInfo" class="lock-game-info hidden" aria-live="polite"></div>
         <div id="lockLevel" class="lock-level"><span></span></div>
         <div id="lockPitchLabel" class="lock-meta">Mic idle</div>
         <div id="unlockTrack" class="unlock-track">
@@ -437,7 +483,7 @@
         </div>
       </div>
     </div>
-    <div id="appVersion" class="app-version">v260505034500-browser-liked-songs</div>
-    <script src="/app.js" type="module"></script>
+    <div id="appVersion" class="app-version">v20261026-native-inputs-party</div>
+    <script src="/app.js?v=20261027-phone-recovery" type="module"></script>
   </body>
 </html>

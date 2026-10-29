@@ -1,3 +1,4 @@
+import {HostedParty} from './hosted-party.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -368,6 +369,7 @@ function publicRoom(room) {
     hostConnected: Boolean(room.host),
     maxPlayers: room.maxPlayers,
     gamePlayerCount: activeGamePlayerCount(room),
+    playerColors: room.playerColors || [],
     players: [...room.players.values()].filter((player) => isLivePlayer(player)).map((player) => ({
       playerId: player.playerId,
       name: player.name,
@@ -572,6 +574,8 @@ function resumeRoom(hostConn, hello, webApp) {
   for (const player of room.players.values()) {
     hostConn.sendJson(playerAssignedMessage(room, player, { type: 'player.joined', resumed: true }));
   }
+  broadcastPlayers(room, {type:'host.resumed',protocol:protocolVersion,
+    roomId:room.roomId,displayCode:room.displayCode});
   updateRoomGameState(room);
   broadcastPlaylistAutomation(room);
   log('room.resumed', { roomId: room.roomId, displayCode: room.displayCode, players: room.players.size, webApp: room.webApp || 'default' });
@@ -663,6 +667,8 @@ function removeRoom(room, reason) {
   for (const [requestId, request] of previewRequests) {
     if (request.room === room) endPreviewRequest(requestId, 410, 'room closed');
   }
+  room.hostedParty?.close();
+  room.hostedParty = null;
   const host = room.host;
   room.host = null;
   host?.close();
@@ -676,6 +682,7 @@ function markHostDisconnected(room, reason = 'disconnect') {
     scheduleHostDisconnectExpiry(room);
     return;
   }
+  room.hostedParty?.suspend();
   const host = room.host;
   room.host = null;
   room.hostDisconnectedAtMs = Date.now();
@@ -747,8 +754,9 @@ function highestOccupiedSlot(room) {
 }
 
 function activeGamePlayerCount(room) {
+  if (Array.isArray(room.inputs)) return room.inputs.reduce((highest,input)=>Math.max(highest,input.slot),0);
   const highest = highestOccupiedSlot(room);
-  if (highest <= 0) return 1;
+  if (highest <= 0) return 0;
   return highest === 5 ? 6 : highest;
 }
 
@@ -779,8 +787,11 @@ function updateRoomGameState(room, options = {}) {
     players: [...room.players.values()].filter((player) => isLivePlayer(player)).map((player) => publicPlayer(player)),
     maxPlayers: room.maxPlayers,
     gamePlayerCount: activeGamePlayerCount(room),
-    controllerPlayerId: room.controllerPlayerId
+    controllerPlayerId: room.controllerPlayerId,
+    inputs: room.inputs || [],
+    playerColors: room.playerColors || []
   };
+  room.hostedParty?.rosterChanged();
   if (options.broadcast !== true) return;
   broadcastRoom(room, room.gameState);
 }
@@ -1043,7 +1054,7 @@ function songSelectForPlayer(message, player = null) {
 
 function sendSongSelectSnapshot(conn, room, player = conn.player) {
   if (room.lastCatalogManifest) conn.sendJson({ ...room.lastCatalogManifest, playerId: player?.playerId || null });
-  if (room.lastSongSelectState) conn.sendJson(songSelectForPlayer(room.lastSongSelectState, player));
+  if (room.lastSongSelectState) conn.sendJson(songSelectForPlayer({ ...room.lastSongSelectState, screenActive: room.gameState?.state === 'song_select' }, player));
   if (room.lastSongLibraryProgress) conn.sendJson(room.lastSongLibraryProgress);
 }
 
@@ -1093,7 +1104,7 @@ function requestSongStateFromHost(conn, room, player, options = {}) {
 
 function broadcastSongSelectState(room, message) {
   for (const player of room.players.values()) {
-    player.conn?.sendJson(songSelectForPlayer(message, player));
+    player.conn?.sendJson(songSelectForPlayer({ ...message, screenActive: room.gameState?.state === 'song_select' }, player));
   }
 }
 
@@ -1233,8 +1244,10 @@ function requestCatalogFromHost(conn, room, player, options = {}) {
 }
 
 function sendSongRuntimeSnapshot(conn, room) {
+  if (room.lastApiState) conn.sendJson(room.lastApiState);
   if (room.lastSongStarted) conn.sendJson(room.lastSongStarted);
   if (room.lastSongLyrics) conn.sendJson(room.lastSongLyrics);
+  if (room.lastScreenInfo) conn.sendJson(room.lastScreenInfo);
 }
 
 function endPreviewRequest(requestId, status = 504, message = 'preview unavailable') {
@@ -1402,6 +1415,24 @@ function handleHostMessage(conn, msg) {
     return;
   }
   room.lastSeenMs = Date.now();
+  if (['api.state','song.select.state'].includes(msg.type) && msg.apiCapabilities?.includes('continuous.start') && !room.hostedParty) {
+    room.hostedParty = new HostedParty({room,
+      sendHost:message=>Boolean(room.host && !room.host.closed && room.host.sendJson(message) !== false),
+      sendClient:(id,message)=>room.players.get(id)?.conn?.sendJson({...message,protocol:protocolVersion}),
+      broadcast:message=>broadcastPlayers(room,{...message,protocol:protocolVersion})});
+  }
+  if (room.hostedParty) queueMicrotask(()=>room.hostedParty?.observe(msg));
+
+  if (msg.type === 'api.state') {
+    room.lastApiState = {...msg, protocol:protocolVersion};
+    if (room.lastSongSelectState) {
+      for (const field of ['playlists', 'playlistItems', 'curPlaylist']) {
+        if (Object.hasOwn(msg, field)) room.lastSongSelectState[field] = msg[field];
+      }
+    }
+    broadcastPlayers(room, room.lastApiState);
+    return;
+  }
 
   if (msg.type === 'host.heartbeat') {
     conn.sendJson({ type: 'ack', protocol: protocolVersion, accepted: true, reason: null });
@@ -1422,17 +1453,36 @@ function handleHostMessage(conn, msg) {
     if (handlePreviewHostMessage(room, msg)) return;
   }
 
+  if (msg.type === 'input.state') {
+    room.playerColors = (Array.isArray(msg.playerColors) ? msg.playerColors : []).slice(0,24)
+      .map(color => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color) ? color : null);
+    room.inputs = (Array.isArray(msg.inputs) ? msg.inputs : []).filter(input=>
+      Number.isInteger(input.slot)&&input.slot>=1&&input.slot<=(input.local===true?24:12)).map(input=>({slot:input.slot,
+        local:input.local===true,source:['local','direct','server'].includes(input.source)?input.source:'server',
+        name:String(input.name||'').slice(0,80)}));
+    room.maxPlayers=Math.max(room.maxPlayers,Math.min(12,activeGamePlayerCount(room)));
+    updateRoomGameState(room,{broadcast:true});
+    return;
+  }
   if (msg.type === 'game.state') {
+    if (room.lastScreenInfo?.screen !== msg.state) room.lastScreenInfo = null;
+    if (!['singing', 'paused'].includes(msg.state)) {
+      room.lastSongStarted = null;
+      room.lastSongLyrics = null;
+    }
     room.gameState = {
       ...msg,
+      seq: Math.max(Number(room.gameState?.seq) || 0, Number(msg.seq) || 0) + 1,
       protocol: protocolVersion,
       players: mergeHostPlayersWithRoomSlots(room, msg.players),
       controllerPlayerId: msg.controllerPlayerId !== undefined && msg.controllerPlayerId !== null
         ? msg.controllerPlayerId
         : room.controllerPlayerId,
       maxPlayers: room.maxPlayers,
-      gamePlayerCount: Number.isFinite(Number(msg.gamePlayerCount))
-        ? Math.max(1, Math.min(12, Math.round(Number(msg.gamePlayerCount))))
+      inputs: room.inputs || [],
+      playerColors: room.playerColors || [],
+      gamePlayerCount: Array.isArray(room.inputs) ? activeGamePlayerCount(room) : Number.isFinite(Number(msg.gamePlayerCount))
+        ? Math.max(0, Math.min(24, Math.round(Number(msg.gamePlayerCount))))
         : activeGamePlayerCount(room)
     };
     broadcastRoom(room, room.gameState);
@@ -1482,7 +1532,14 @@ function handleHostMessage(conn, msg) {
     return;
   }
 
-  if (msg.type === 'song.started') {
+  if (['audio.calibration.started', 'audio.calibration.result'].includes(msg.type) && msg.playerId) {
+    room.players.get(msg.playerId)?.conn?.sendJson({...msg, protocol:protocolVersion});
+    return;
+  }
+
+  if (msg.type === 'screen.info') {
+    room.lastScreenInfo = { ...msg, protocol: protocolVersion };
+  } else if (msg.type === 'song.started') {
     room.lastSongStarted = { ...msg, protocol: protocolVersion };
     room.lastSongLyrics = null;
   } else if (msg.type === 'song.lyrics') {
@@ -1491,7 +1548,7 @@ function handleHostMessage(conn, msg) {
     room.lastSongStarted = null;
     room.lastSongLyrics = null;
   } else if (msg.type === 'song.select.state') {
-    room.lastSongSelectState = { ...msg, protocol: protocolVersion };
+    room.lastSongSelectState = { ...room.lastSongSelectState, ...msg, protocol: protocolVersion };
   } else if (msg.type === 'song.library.progress') {
     room.lastSongLibraryProgress = { ...msg, protocol: protocolVersion };
   } else if (msg.type === 'catalog.manifest') {
@@ -1522,11 +1579,15 @@ function handleHostMessage(conn, msg) {
     return;
   }
 
-  if (['song.starting', 'song.started', 'song.paused', 'song.position', 'song.lyrics', 'song.resumed', 'song.ended', 'score.snapshot'].includes(msg.type)) {
+  if (['audio.stop', 'song.starting', 'song.started', 'song.paused', 'song.position', 'song.lyrics', 'song.resumed', 'song.ended', 'score.snapshot', 'screen.info'].includes(msg.type)) {
     broadcastPlayers(room, { ...msg, protocol: protocolVersion });
     return;
   }
 
+  if (msg.type === 'party.state' && msg.targetPlayerId) {
+    room.players.get(String(msg.targetPlayerId))?.conn?.sendJson({...msg,protocol:protocolVersion});
+    return;
+  }
   if (['song.library.progress', 'playlist.state', 'playlist.automation.event', 'party.state', 'party.notification', 'error'].includes(msg.type)) {
     broadcastRoom(room, { ...msg, protocol: protocolVersion });
     return;
@@ -1574,7 +1635,7 @@ function handleClientJoin(conn, msg) {
     conn.sendJson({
       type: 'error',
       protocol: protocolVersion,
-      code: 'room.closed',
+      code: 'host.reconnecting',
       reason: 'host_disconnected'
     });
     conn.close();
@@ -1582,6 +1643,10 @@ function handleClientJoin(conn, msg) {
   }
 
   const resumed = findResumePlayer(room, msg);
+  if (!resumed && (msg.playerId || msg.playerToken)) {
+    conn.sendJson({type:'error',protocol:protocolVersion,code:'client.session_expired'});
+    return;
+  }
   if (resumed) {
     if (resumed.resumeTimer) clearTimeout(resumed.resumeTimer);
     resumed.resumeTimer = null;
@@ -1620,6 +1685,8 @@ function handleClientJoin(conn, msg) {
       controllerPlayerId: room.controllerPlayerId,
       gameState: room.gameState,
       webApp: room.webApp || 'default',
+      rawPcmV1: room.capabilities.includes('rawPcmV1'),
+      audioCalibrationV1: room.capabilities.includes('audioCalibrationV1'),
       p2p: publicP2pConfig(room),
       resumed: true
     });
@@ -1635,6 +1702,7 @@ function handleClientJoin(conn, msg) {
   const preferredSlotAvailable = Number.isInteger(requestedSlot) &&
     requestedSlot > 0 &&
     requestedSlot <= room.maxPlayers &&
+    !room.inputs?.some(input=>input.local&&input.slot===requestedSlot) &&
     ![...room.players.values()].some((candidate) => isLivePlayer(candidate) && Number(candidate.slot) === requestedSlot);
   const slot = preferredSlotAvailable ? requestedSlot : 0;
 
@@ -1690,6 +1758,8 @@ function handleClientJoin(conn, msg) {
     controllerPlayerId: room.controllerPlayerId,
     gameState: room.gameState,
     webApp: room.webApp || 'default',
+    rawPcmV1: room.capabilities.includes('rawPcmV1'),
+      audioCalibrationV1: room.capabilities.includes('audioCalibrationV1'),
     p2p: publicP2pConfig(room)
   });
   sendSongRuntimeSnapshot(conn, room);
@@ -1721,10 +1791,51 @@ async function handleClientMessage(conn, msg) {
     conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'client.not_joined' });
     return;
   }
-  room.lastSeenMs = Date.now();
   player.lastSeenMs = Date.now();
 
   if (msg.type === 'client.heartbeat') {
+    player.lastHeartbeatMs = player.lastSeenMs;
+    conn.sendJson({type:'client.heartbeat.ack', protocol:protocolVersion,
+      clientSendUs:Number.isFinite(msg.clientSendUs) ? msg.clientSendUs : null});
+    return;
+  }
+
+  if (msg.type === 'audio.calibration.request' || msg.type === 'audio.calibration.cancel') {
+    const cancel=msg.type==='audio.calibration.cancel';
+    const slot=cancel ? (player.calibrationSession?.requestId===msg.requestId ? player.calibrationSession.slot : 0) : player.slot;
+    if(cancel && !slot) return; // Ignore obsolete cancellation, including after a room change.
+    if (!room.capabilities.includes('audioCalibrationV1') || slot < 1 ||
+        slot > room.maxPlayers || typeof msg.requestId !== 'string' ||
+        !msg.requestId || msg.requestId.length > 64 ||
+        (msg.type === 'audio.calibration.request' &&
+         (!Number.isInteger(msg.clockUncertaintyMs) || msg.clockUncertaintyMs < 0 || msg.clockUncertaintyMs > 100))) {
+      conn.sendJson({type:'error', protocol:protocolVersion, code:'calibration.unavailable'});
+      return;
+    }
+    if(!cancel) player.calibrationSession={requestId:msg.requestId,slot};
+    room.host?.sendJson({type:msg.type, protocol:protocolVersion, roomId:room.roomId,
+      playerId:player.playerId, slot, requestId:msg.requestId,
+      clockUncertaintyMs:msg.clockUncertaintyMs});
+    return;
+  }
+
+  if (msg.type === 'audio.pcm' || msg.type === 'audio.calibration.pcm') {
+    // Optional native PCM experiment. Never forward audio to unrelated rooms.
+    const pcm = typeof msg.pcm === 'string' ? msg.pcm : '';
+    if (!room.capabilities.includes('rawPcmV1') || player.slot < 1 || player.slot > room.maxPlayers ||
+        pcm.length !== 1308 || !/^[A-Za-z0-9+/]+=$/.test(pcm)) {
+      conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'audio.invalid' });
+      return;
+    }
+    const packet = Buffer.from(pcm, 'base64');
+    const calibration = msg.type === 'audio.calibration.pcm';
+    if (packet.length !== 980 || packet.toString('ascii', 0, 4) !== (calibration ? 'UAC1' : 'UAP1') ||
+        packet.readUInt32LE(8) !== 48000 || packet.readUInt32LE(12) !== 480) {
+      conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'audio.invalid' });
+      return;
+    }
+    room.host?.sendJson({ type: msg.type, protocol: protocolVersion,
+      roomId: room.roomId, playerId: player.playerId, slot: player.slot, pcm });
     return;
   }
 
@@ -1870,11 +1981,12 @@ async function handleClientMessage(conn, msg) {
     return;
   }
 
-  if (msg.type === 'party.like' || msg.type === 'party.unlike' || msg.type === 'party.likeShown') {
+  if (msg.type === 'party.like' || msg.type === 'party.unlike' || msg.type === 'party.likeShown' || msg.type === 'party.unlikeShown') {
     if (!room.host || room.host.closed) {
       conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'host_disconnected' });
       return;
     }
+    if (room.hostedParty?.handle({...msg,playerId:player.playerId,slot:player.slot,role:player.role})) return;
     room.host.sendJson({
       ...msg,
       protocol: protocolVersion,
@@ -1956,8 +2068,9 @@ async function handleClientMessage(conn, msg) {
     if (![
       'menu.up', 'menu.down', 'menu.left', 'menu.right', 'menu.select', 'menu.back',
       'game.pause', 'game.resume', 'song.skipIntro', 'song.restart',
+      'continuous.start', 'continuous.queue', 'continuous.stop', 'continuous.skip',
       'song.menu', 'song.playlistMenu', 'song.jumpTo', 'song.random',
-      'song.select', 'song.start', 'song.skip',
+      'song.select', 'song.start', 'song.skip', 'song.list',
       'preview.start', 'preview.stop',
       'search.setText',
       'playlist.load', 'playlist.create', 'playlist.delete',
@@ -1981,6 +2094,7 @@ async function handleClientMessage(conn, msg) {
       return;
     }
     log('control.forwarded', { roomId: room.roomId, playerId: player.playerId, command, commandId: msg.commandId });
+    if (partyCommand && room.hostedParty?.handle({...msg,playerId:player.playerId,slot:player.slot,role:player.role})) return;
     if (command === 'playlist.automation.set') {
       setPlaylistAutomation(room, msg.args || {});
       conn.sendJson({
@@ -2050,7 +2164,7 @@ async function handleClientMessage(conn, msg) {
     const occupied = [...room.players.values()].find((candidate) =>
       requestedSlot > 0 && candidate.playerId !== player.playerId && isLivePlayer(candidate) && candidate.slot === requestedSlot
     );
-    if (occupied) {
+    if (occupied || room.inputs?.some(input=>input.local&&input.slot===requestedSlot)) {
       conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'player.slot_taken' });
       return;
     }
@@ -2080,7 +2194,7 @@ async function handleClientMessage(conn, msg) {
     const occupied = [...room.players.values()].find((candidate) =>
       requestedSlot > 0 && candidate.playerId !== player.playerId && isLivePlayer(candidate) && candidate.slot === requestedSlot
     );
-    if (occupied) {
+    if (occupied || room.inputs?.some(input=>input.local&&input.slot===requestedSlot)) {
       conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'player.slot_taken' });
       return;
     }
@@ -2418,6 +2532,7 @@ class WebSocketConnection {
     if (this.kind === 'host' && this.room) {
       const room = this.room;
       if (room.host === this) {
+        room.hostedParty?.suspend();
         room.host = null;
         room.hostDisconnectedAtMs = Date.now();
         room.lastSeenMs = Date.now();
@@ -2441,6 +2556,7 @@ class WebSocketConnection {
         return;
       }
       player.conn = null;
+      room.hostedParty?.rosterChanged();
       if (player.resumeTimer) clearTimeout(player.resumeTimer);
       player.resumeTimer = setTimeout(() => {
         room.players.delete(player.playerId);
@@ -2518,7 +2634,7 @@ function sendDebugPage(res) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>USDX Remote Debug</title>
+  <title>UltraStar Relay Debug</title>
   <style>
     body { font-family: system-ui, sans-serif; margin: 24px; background: #f8f9fa; color: #202124; }
     table { width: 100%; border-collapse: collapse; background: #fff; }
@@ -2528,7 +2644,7 @@ function sendDebugPage(res) {
   </style>
 </head>
 <body>
-  <h1>USDX Remote Debug</h1>
+  <h1>UltraStar Relay Debug</h1>
   <p>Local-only snapshot. Tokens and pitch data are not included.</p>
   <table>
     <thead><tr><th>Code</th><th>App</th><th>Host</th><th>Players</th><th>Controller</th><th>State</th><th>Playlist</th><th>Expires</th></tr></thead>
@@ -2780,8 +2896,12 @@ setInterval(() => {
     }
     for (const player of [...room.players.values()]) {
       if (playerHeartbeatExpired(player, now)) {
-        log('player.heartbeat_expired', { roomId: room.roomId, playerId: player.playerId, lastSeenMs: player.lastSeenMs });
-        removePlayerFromRoom(room, player, 'heartbeat_timeout');
+        log('player.heartbeat_expired', { roomId: room.roomId, playerId: player.playerId,
+          lastSeenMs: player.lastSeenMs, lastHeartbeatMs: player.lastHeartbeatMs || null,
+          bufferedInputBytes:player.conn.buffer.length, socketBytesRead:player.conn.socket.bytesRead,
+          socketBytesWritten:player.conn.socket.bytesWritten, closing:player.conn.closing });
+        player.conn.sendJson({type:'error',protocol:protocolVersion,reason:'heartbeat_timeout'});
+        player.conn.close();
       }
     }
   }
