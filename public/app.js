@@ -1,3 +1,4 @@
+import {createPerformanceRequests} from './performance-requests.js';
 import {audioTimingView} from './audio-timing.js';
 import {DigitalCalibration} from './digital-calibration.js';
 import {loadSongs} from './song-query.js';
@@ -4890,7 +4891,10 @@ function renderSongSelectState() {
         artist: song.artist || ''
       }, like));
 
-      actions.append(previewBox, playlistAction, like);
+      const request = document.createElement('button');
+      request.type = 'button'; request.textContent = 'Request'; request.disabled = !song.catalogKey || state.hostRecovering;
+      request.addEventListener('click',()=>sendRelay({type:'request.add',catalogKey:song.catalogKey}));
+      actions.append(previewBox, playlistAction, like, request);
       item.append(label, actions);
       songResultList.append(item);
     }
@@ -5149,7 +5153,10 @@ function showPartyTurnNotification(message) {
   }
 }
 
+const performanceRequests = createPerformanceRequests({document,storage:localStorage,state:()=>state,send:sendRelay,control:sendControl,confirm:window.confirm.bind(window)});
+
 async function handleMessage(message) {
+  if ((String(message.type).startsWith('request.')||message.type==='client.joined') && performanceRequests.handle(message)) return;
   if(digitalCalibration.handle(message)) {renderAudioTiming();return;}
   if (String(message.type || '').startsWith('p2p.')) {
     handleP2pSignal(message);
