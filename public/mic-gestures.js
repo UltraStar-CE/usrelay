@@ -26,6 +26,12 @@ export function ownershipCommand(text) {
   const value=String(text||'').toLowerCase().trim().replace(/[.!?]+$/,'');
   return value==='take mic'?'take':value==='free mic'?'free':null;
 }
+export function pcmLevel(packet) {
+  if(!(packet instanceof ArrayBuffer)||packet.byteLength<=20||(packet.byteLength-20)%2 || new DataView(packet).getUint32(0,true)!==0x31504155)return null;
+  const samples=new Int16Array(packet,20);let sum=0;
+  for(const sample of samples)sum+=(sample/32768)**2;
+  return 10*Math.log10(Math.max(1e-12,sum/samples.length));
+}
 export function createMicGestures({document,state,control,slot,SpeechRecognition,now=()=>performance.now()}) {
   const enabled=document.getElementById('tapControls');
   const listen=document.getElementById('voiceListen');
@@ -69,9 +75,13 @@ export function createMicGestures({document,state,control,slot,SpeechRecognition
     status.textContent='Listening once: take mic / free mic.';listen.disabled=true;
     try {recognizer.start();}catch{listen.disabled=false;status.textContent='Could not start speech recognition.';}
   });
-  return {sample(db) {
+  function sample(db) {
     const current=state();
     if(!enabled.checked||!['main_menu','song_select'].includes(current.gameState)||current.audioInput?.synthetic) {detector.reset();return;}
     if(detector.sample(db,now()))propose('select','Double tap detected. Confirm menu Select within five seconds.');
+  }
+  return {sample,packet(packet) {
+    if(!enabled.checked)return;
+    const db=pcmLevel(packet);if(db!==null)sample(db);
   }};
 }
