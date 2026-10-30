@@ -15,3 +15,17 @@ test('awards use native scores, unique competitive wins and explicit session res
   assert.ok(awards.summary('a').badges.includes('5 songs'));
   awards.reset();assert.equal(awards.summary('a'),null);
 });
+test('late recovered rounds recompute streaks chronologically and clear absent-player badges',()=>{
+  const awards=new SessionAwards();
+  const round=(a,b,seq)=>awards.record([{playerId:'a',score:a},{playerId:'b',score:b}],seq);
+  round(6000,5000,1);round(6000,5000,3);
+  assert.equal(awards.summary('a').streak,2);
+  round(5000,6000,2);
+  assert.equal(awards.summary('a').streak,1);
+  assert.equal(awards.summary('a').bestStreak,1);
+  assert.equal(awards.summary('b').streak,0);
+  round(7000,5000,4);
+  awards.record([{playerId:'b',score:6000},{playerId:'c',score:5000}],5);
+  assert.equal(awards.summary('a').streak,0);
+  assert.ok(!awards.summary('a').badges.some(b=>b.includes('streak')));
+});

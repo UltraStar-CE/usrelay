@@ -111,7 +111,7 @@ export class PartySession {
       this.leaderboard.set(player.playerId,total);
       awardResults.push({playerId:player.playerId,score:Number(result.scoreTotal)});
     }
-    this.awards.record(awardResults);
+    this.awards.record(awardResults,seq);
     this.dirty=true;
   }
   recoverResults(snapshot) {
