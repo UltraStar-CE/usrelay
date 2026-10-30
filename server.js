@@ -1,4 +1,5 @@
 import {relayCommands, companionContract} from './companion-contract.mjs';
+import {SongWishes} from './song-wishes.mjs';
 import {HostedParty} from './hosted-party.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -1793,6 +1794,14 @@ async function handleClientMessage(conn, msg) {
     return;
   }
   player.lastSeenMs = Date.now();
+
+  if (String(msg.type).startsWith('wish.')) {
+    room.wishes ||= new SongWishes();
+    const result = room.wishes.handle(msg, player);
+    conn.sendJson({type:'wish.ack', protocol:protocolVersion, action:msg.type, ...result});
+    if (result.accepted) broadcastPlayers(room, {type:'wish.state', protocol:protocolVersion, wishes:room.wishes.items});
+    return;
+  }
 
   if (msg.type === 'client.heartbeat') {
     player.lastHeartbeatMs = player.lastSeenMs;
