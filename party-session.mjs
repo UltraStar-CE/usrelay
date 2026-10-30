@@ -1,3 +1,4 @@
+import {SessionAwards} from './session-awards.mjs';
 // catalogKey distinguishes separate files even when artist/title are identical.
 function catalogIdentity(song) {
   return typeof song?.catalogKey==='string' && song.catalogKey ? song.catalogKey : null;
@@ -8,7 +9,7 @@ export class PartySession {
   constructor({players, library, playlist, gameState, send, command, now = Date.now, catalogReady = () => true}) {
     Object.assign(this,{players,library,playlist,gameState,send,command,now,catalogReady});
     this.likes=new Map(); this.played=new Set(); this.leaderboard=new Map();
-    this.scoredRounds=new Set();
+    this.scoredRounds=new Set(); this.awards=new SessionAwards();
     this.enabled=false; this.gameActive=false; this.dirty=true;
     this.minPlayers=2; this.endless=false; this.playback={}; this.source='all';
     this.deadline=0; this.owner=null; this.sequence=1000000000; this.pending=new Map();
@@ -74,7 +75,7 @@ export class PartySession {
       case 'party.skip':
         if(!this.gameActive) { ack(false,'party_not_playing'); return true; }
         this.command({...message,command:'continuous.skip'}); return true;
-      case 'party.resetLeaderboard': this.leaderboard.clear(); this.dirty=true; ack(true); return true;
+      case 'party.resetLeaderboard': this.leaderboard.clear(); this.awards.reset(); this.dirty=true; ack(true); return true;
       default: ack(false,'party_command_unavailable'); return true;
     }
   }
@@ -101,13 +102,16 @@ export class PartySession {
     const seq=Number(message.songSeq);
     if(!Number.isInteger(seq)||seq<0||this.scoredRounds.has(seq))return;
     this.scoredRounds.add(seq);
+    const awardResults=[];
     for(const result of message.players||[]) {
       const player=participants?.get(Number(result.slot));
       if(!player?.playerId)continue;
       const total=this.leaderboard.get(player.playerId)||{playerId:player.playerId,name:player.name,score:0,songs:0};
       total.score+=Number(result.scoreTotal)||0;++total.songs;
       this.leaderboard.set(player.playerId,total);
+      awardResults.push({playerId:player.playerId,score:Number(result.scoreTotal)});
     }
+    this.awards.record(awardResults,seq);
     this.dirty=true;
   }
   recoverResults(snapshot) {
@@ -198,7 +202,7 @@ export class PartySession {
       currentMatch:ready&&this.currentMatch?compact(this.currentMatch):null,
       queue:(ready?this.queue:[]).slice(0,30).map(compact),matches:(ready?this.matches:[]).slice(0,30).map(compact),matchesTotal:ready?this.matches.length:0,
       likedSongs:[...voted.values()].slice(0,30).map(compact),likedSongsTotal:voted.size,
-      leaderboard:[...this.leaderboard.values()].sort((a,b)=>b.score-a.score).map(entry=>({...entry,points:entry.score,rounds:entry.songs}))});
+      leaderboard:[...this.leaderboard.values()].sort((a,b)=>b.score-a.score).map(entry=>({...entry,points:entry.score,rounds:entry.songs,awards:this.awards.summary(entry.playerId)}))});
     for(const [playerId,ids] of this.likes) if(this.players().has(playerId)&&this.players().get(playerId).connected!==false)
       this.send({type:'party.state',targetPlayerId:playerId,likedSongIdsByPlayer:{[playerId]:ready?[...ids]:[]}});
   }

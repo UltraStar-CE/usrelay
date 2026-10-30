@@ -337,6 +337,8 @@ const partyMatchList = $('partyMatchList');
 const partyPhaseLabel = $('partyPhaseLabel');
 const partyQueueList = $('partyQueueList');
 const partyLeaderboardList = $('partyLeaderboardList');
+const partyAwardsInput = $('partyAwardsInput');
+partyAwardsInput?.addEventListener('change', renderPartyState);
 const partyNotice = $('partyNotice');
 const partyTurnOverlay = $('partyTurnOverlay');
 const partyTurnTitle = $('partyTurnTitle');
@@ -2413,6 +2415,10 @@ function renderPartyState() {
         const score = document.createElement('strong');
         name.textContent = entry.name || 'Player';
         meta.textContent = `${entry.rounds || 0} ${Number(entry.rounds) === 1 ? 'round' : 'rounds'}`;
+        if (partyAwardsInput?.checked && entry.awards) {
+          meta.textContent += ` - best ${entry.awards.bestScore}, ${entry.awards.wins} wins`;
+          if (entry.awards.badges?.length) meta.textContent += ` - ${entry.awards.badges.join(', ')}`;
+        }
         score.textContent = String(entry.points || 0);
         label.append(name, meta);
         item.append(label, score);
