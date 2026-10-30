@@ -119,3 +119,17 @@ verified two-song advancement, natural exhaustion, controller replacement and
 resumption after adding a qualifying song to an exhausted playlist-backed queue.
 These tests used synthetic controllers without microphone PCM; they are not
 phone latency or singing-quality measurements.
+
+## Radio and lyrics display
+
+Open `/?view=radio`, join the native game's room, then press Enable music.
+This reuses the existing device-audio decoder, clock synchronization and media
+routes. It shows every native lyric voice, optional native scores, progress,
+pause/resume, previous/next, fullscreen and the existing screen wake-lock option.
+It has a separate reconnect session and never claims a mic slot or captures audio.
+Previous needs UltraStar-CE/USCE#320, stacked on #319 and #168.
+
+This is a browser presentation of a running native game, not standalone browser
+karaoke or a second parser/scoring engine. Native continuous mode supplies the
+queue, timing and results. Running without a native window/display, note-guide
+projection and server-side/headless hosting remain separate work for issue #14.

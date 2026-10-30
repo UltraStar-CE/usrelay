@@ -10,6 +10,7 @@
     <main class="shell">
       <section id="joinScreen" class="screen">
         <div class="brand">UltraStar Relay</div>
+        <p class="fine"><a href="/?view=radio">Open radio / lyrics display</a></p>
         <form id="joinForm" class="join-form">
           <label>
             Room code
@@ -33,6 +34,23 @@
 
       <section id="appScreen" class="screen hidden">
         <div id="hostRecoveryNotice" class="host-recovery hidden" role="status">Game disconnected. Reconnecting…</div>
+        <section id="radioPanel" hidden>
+          <h1 id="radioTitle">Waiting for a song</h1>
+          <div id="radioLyrics" aria-live="polite"></div>
+          <p id="radioScores"></p>
+          <progress id="radioProgress" max="1" value="0" aria-label="Song progress"></progress>
+          <div class="inline-actions">
+            <button type="button" id="radioMusic">Enable music</button>
+            <button type="button" id="radioPrevious">Previous</button>
+            <button type="button" id="radioPause">Pause</button>
+            <button type="button" id="radioNext">Next</button>
+            <button type="button" id="radioFullscreen">Fullscreen</button>
+            <button type="button" id="radioWake">Keep awake on/off</button>
+          </div>
+          <label class="check-row"><input id="radioShowScores" type="checkbox">Show native scores</label>
+          <p id="radioStatus" role="status">The native game supplies playback, lyrics and scores. This view never captures a microphone.</p>
+          <a href="/">Return to Relay</a>
+        </section>
         <div class="tabs">
           <button type="button" class="tab active" data-tab="mic"><img class="action-icon" src="/icons/microphone.svg" alt=""><span class="action-label">Mic</span><span id="routeWarning" class="route-status" role="status" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2 23 22H1Z"/><path stroke="#422f08" stroke-width="2" d="M12 9v6m0 2v2"/></svg> Server</span></button>
           <button type="button" class="tab" data-tab="songs"><img class="action-icon" src="/icons/music.svg" alt=""><span class="action-label">Songs</span></button>
