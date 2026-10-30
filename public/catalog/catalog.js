@@ -1,3 +1,4 @@
+import {songLanguages, songInitial} from '/song-metadata.js';
 import {createApiRequests} from '/api-requests.js';
 import {loadSongs} from '/song-query.js';
 const protocol = 1;
@@ -30,6 +31,7 @@ const ui = {
   searchInput: $('searchInput'),
   searchFieldInput: $('searchFieldInput'),
   sortInput: $('sortInput'),
+  letterInput: $('letterInput'),
   languageInput: $('languageInput'),
   decadeInput: $('decadeInput'),
   playlistInput: $('playlistInput'),
@@ -88,6 +90,7 @@ const state = {
   searchText: '',
   searchField: 'all',
   sortBy: 'artist',
+  letter: '',
   language: '',
   decade: '',
   playlistIndex: '',
@@ -585,7 +588,8 @@ function filteredSongs() {
   const words = normalizeText(state.searchText).split(/\s+/).filter(Boolean);
   let results = sourceSongs().filter((song) => {
     if (state.showFavorites && !isFavorite(song)) return false;
-    if (state.language && String(song.language || '') !== state.language) return false;
+    if (state.language && !songLanguages(song).some(value => value.toLocaleLowerCase() === state.language.toLocaleLowerCase())) return false;
+    if (state.letter && songInitial(song, state.sortBy) !== state.letter) return false;
     if (state.decade && decadeForYear(song.year) !== state.decade) return false;
     if (words.length) {
       const haystack = songHaystack(song, state.searchField);
@@ -635,12 +639,13 @@ function selectedPlaylistIndex(select) {
 
 function renderFilterOptions() {
   const library = songLibrary();
-  const languageOptions = uniqueSorted(library.map((song) => String(song.language || '').trim()));
+  const languageOptions = uniqueSorted(library.flatMap(songLanguages));
   const decadeOptions = uniqueSorted(library.map((song) => decadeForYear(song.year))).sort().reverse();
   const playlistOptions = playlists().map((playlist) => ({
     value: Number(playlist.index),
     label: `${playlist.name || `Playlist ${Number(playlist.index) + 1}`} (${Number(playlist.size || playlist.items?.length || 0)})`
   }));
+  setSelectOptions(ui.letterInput, uniqueSorted(library.map(song => songInitial(song, state.sortBy))), 'All initials', state.letter);
   setSelectOptions(ui.languageInput, languageOptions, 'All languages', state.language);
   setSelectOptions(ui.decadeInput, decadeOptions, 'All decades', state.decade);
   setSelectOptions(ui.playlistInput, playlistOptions, 'All playlists', state.playlistIndex);
@@ -1818,7 +1823,9 @@ function leaveRoom() {
 function applyInputState() {
   state.searchText = ui.searchInput.value;
   state.searchField = ui.searchFieldInput.value;
+  if (state.sortBy !== ui.sortInput.value) ui.letterInput.value = '';
   state.sortBy = ui.sortInput.value;
+  state.letter = ui.letterInput.value;
   state.language = ui.languageInput.value;
   state.decade = ui.decadeInput.value;
   state.playlistIndex = ui.playlistInput.value;
@@ -1840,7 +1847,7 @@ ui.codeInput.addEventListener('input', () => {
   ui.codeInput.value = sanitizeCode(ui.codeInput.value);
 });
 
-for (const input of [ui.searchInput, ui.searchFieldInput, ui.sortInput, ui.languageInput, ui.decadeInput]) {
+for (const input of [ui.searchInput, ui.searchFieldInput, ui.sortInput, ui.letterInput, ui.languageInput, ui.decadeInput]) {
   input.addEventListener('input', applyInputState);
   input.addEventListener('change', applyInputState);
 }
@@ -1871,6 +1878,7 @@ ui.clearFiltersButton.addEventListener('click', () => {
   state.searchText = '';
   state.searchField = 'all';
   state.sortBy = 'artist';
+  state.letter = '';
   state.language = '';
   state.decade = '';
   state.playlistIndex = '';
