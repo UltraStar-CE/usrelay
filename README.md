@@ -119,3 +119,14 @@ verified two-song advancement, natural exhaustion, controller replacement and
 resumption after adding a qualifying song to an exhausted playlist-backed queue.
 These tests used synthetic controllers without microphone PCM; they are not
 phone latency or singing-quality measurements.
+
+## Party session awards
+
+The optional Show session awards checkbox displays session-best scores, unique
+round wins and winning streaks from native result events. A win needs at least
+two scored singers and a unique positive highest score. Ties, solo rounds and
+zero-score rounds do not count as competitive wins; a round without a win ends
+the streak. First-song and 5/10/25/50-song badges mark session participation.
+These are presentation awards, not changes to game scores or difficulty ratings.
+Reset Scores clears the awards as well as totals. Duplicate native results are
+ignored by the existing performance-ID tracking; nothing is saved across rooms.
