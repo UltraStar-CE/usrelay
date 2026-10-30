@@ -367,6 +367,19 @@
                 <button type="button" id="avatarResetButton" class="secondary">Default Avatar</button>
               </div>
             </div>
+            <details>
+              <summary>Experimental microphone controls</summary>
+              <label class="check-row"><input id="tapControls" type="checkbox">Detect double taps in menus</label>
+              <p class="fine">Off by default. Two short loud taps propose menu Select, only outside singing.
+                Confirm with the button below; singing and synthetic test audio never activate it.
+                Real microphone/noise testing is still needed.</p>
+              <p class="fine">Voice commands listen once for English "take mic" or "free mic" and require confirmation.
+                Your browser's speech service may send audio to its provider. Ordinary mic buttons remain available.</p>
+              <button id="voiceListen" type="button" class="secondary">Listen once for mic ownership</button>
+              <p id="gestureStatus" class="fine" role="status"></p>
+              <button id="gestureConfirm" type="button" hidden>Confirm detected action</button>
+              <button id="gestureCancel" type="button" class="secondary" hidden>Cancel</button>
+            </details>
             <div class="room-settings-row">
               <span id="roomSettingsLabel" class="muted">Room ----</span>
               <button type="button" id="changeRoomButton" class="secondary">Change Room</button>
