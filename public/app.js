@@ -1,3 +1,4 @@
+import {createSavedSingers} from './saved-singers.js';
 import {audioTimingView} from './audio-timing.js';
 import {DigitalCalibration} from './digital-calibration.js';
 import {loadSongs} from './song-query.js';
@@ -2423,6 +2424,7 @@ function renderPartyState() {
 }
 
 function updateGameStateView() {
+  savedSingers.render();
   setTextIfChanged(gameStateLabel, state.gameState || 'waiting');
   setTextIfChanged(songSeqLabel, state.songSeq || 0);
   updateSongProgressView();
@@ -5149,7 +5151,10 @@ function showPartyTurnNotification(message) {
   }
 }
 
+const savedSingers = createSavedSingers({document, storage:localStorage, state:()=>state, send:sendRelay});
+
 async function handleMessage(message) {
+  if (message.type === 'roster.ack' && savedSingers.handle(message)) return;
   if(digitalCalibration.handle(message)) {renderAudioTiming();return;}
   if (String(message.type || '').startsWith('p2p.')) {
     handleP2pSignal(message);
