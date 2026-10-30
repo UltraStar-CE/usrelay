@@ -99,6 +99,7 @@ export class PerformanceRequests {
     if(message.type==='continuous.state')this.nativeActive=Boolean(message.active);
     const item=this.items.find(r=>r.status==='starting'||r.status==='playing');
     if(!item)return;
+    if(message.type==='continuous.handoff'&&item.songId===Number(message.songId)) {item.handoffId=message.handoffId;this.changed();}
     if(message.type==='song.started'&&item.songId===Number(message.songId)) {
       item.status='playing';item.songSeq=message.songSeq;this.changed();
     }

@@ -50,9 +50,9 @@ export function createPerformanceRequests({document,storage,state,send,control,c
           button(row,'Down',{type:'request.move',id:item.id,direction:1});
         }
       }
-      if(host&&item.status==='starting') {
+      if(host&&item.status==='starting'&&Number.isInteger(item.handoffId)) {
         const ready=document.createElement('button');ready.type='button';ready.textContent='Confirm player setup';
-        ready.addEventListener('click',()=>control('continuous.confirm',{},ready));row.append(ready);
+        ready.addEventListener('click',()=>control('continuous.confirm',{handoffId:item.handoffId},ready));row.append(ready);
       }
       if(host&&item.status==='uncertain') {
         button(row,'Mark finished',{type:'request.resolve',id:item.id,status:'finished'});
