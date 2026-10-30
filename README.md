@@ -101,7 +101,7 @@ and cancel pending recovery seeks. These behaviors have regression coverage;
 complete feature/slot coverage and latency calibration remain release gates.
 Physical-phone development testing is currently deferred at the owner's request.
 
-Settings → Advanced microphone and timing also provides synthetic 65, 220 and
+Settings â†’ Advanced microphone and timing also provides synthetic 65, 220 and
 440 Hz PCM for screen-share testing. It requests no microphone permission and
 needs no AudioContext; the generated packets use the normal native transport.
 Test audio is clearly labeled and resets on reload. Stop audio releases either
@@ -135,3 +135,11 @@ without adding an offline cache for frontend assets, song libraries, media or
 credentials. Existing catalog/profile storage is unchanged. Updates do not
 force a reload or take over an active microphone session. Reopen the app while
 online to get frontend updates; the normal reconnect flow still owns recovery.
+## Saved singers
+
+Controllers can save up to 24 named singer profiles from Settings / Saved singers,
+then explicitly apply one to a connected player. Names, existing uploaded photo
+references and difficulty are saved on that browser; mic slots and roles are not.
+Upload or change a photo through the existing singer profile controls. Changing
+a photo alone keeps the entered name. Photo references require the original
+relay avatar storage; this is not a cross-server photo backup.
