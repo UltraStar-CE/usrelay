@@ -56,6 +56,10 @@ test('native room hosts Party votes, continuous playback and roster changes with
  const replay=await readLate(m=>m.type==='song.select.state');
  assert.equal(replay.playlists[0].name,'Edited list','late screen replay cannot overwrite newer API playlist edits');
  assert.equal(replay.playlists[0].items[0].songId,7);
+ send({type:'control.command',commandId:33,command:'continuous.confirm',args:{handoffId:12}});
+ const confirmation=await readHost(m=>m.command==='continuous.confirm');
+ assert.equal(confirmation.args.handoffId,12,'confirmation must reach the authenticated native host');
+
 
 });
 
