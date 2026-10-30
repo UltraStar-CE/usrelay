@@ -119,3 +119,19 @@ verified two-song advancement, natural exhaustion, controller replacement and
 resumption after adding a qualifying song to an exhausted playlist-backed queue.
 These tests used synthetic controllers without microphone PCM; they are not
 phone latency or singing-quality measurements.
+
+## Install on a phone
+
+Open the HTTPS relay in the browser, then use Install app / Add to Home Screen
+in Chrome or Edge, or Share / Add to Home Screen in Safari on iPhone/iPad.
+The catalog (`/?app=catalog`) can be installed separately from the microphone
+and remote app. Each installed app opens its normal join screen; use a room
+code or a saved room to reconnect. Permissions and saved profiles belong to
+that browser/origin; another domain or browser does not share them automatically.
+
+Installation needs HTTPS (localhost is allowed for development). It does not
+make the relay work offline. The service worker forwards requests to the network
+without adding an offline cache for frontend assets, song libraries, media or
+credentials. Existing catalog/profile storage is unchanged. Updates do not
+force a reload or take over an active microphone session. Reopen the app while
+online to get frontend updates; the normal reconnect flow still owns recovery.
