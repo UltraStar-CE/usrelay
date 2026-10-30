@@ -4,6 +4,8 @@ import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import net from 'node:net';
 import {singerProfile} from '../public/saved-singers.js';
+import fs from 'node:fs';
+import vm from 'node:vm';
 
 function message(socket, type, predicate = () => true) {
   return new Promise(resolve => {
@@ -41,4 +43,16 @@ test('saved singer changes propagate to game and target without changing slot/au
   phone.send(JSON.stringify({type:'player.roster.apply',protocol:1,targetPlayerId:'missing',profile:{name:'No'}}));
   assert.equal((await bad).reason,'player_unavailable');
   assert.equal(singerProfile({name:'Name',avatarFile:'photo.png',role:'controller'}).role,undefined);
+});
+test('a saved default or different photo discards the target cached upload',()=>{
+  const source=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
+  const start=source.indexOf('function applyOwnProfileFromMessage('),end=source.indexOf('\nasync function ensureCachedAvatarOnServer',start);
+  for(const avatarFile of ['', 'other.jpg']) {
+    const state={name:'Original',avatarDataUrl:'data:old-photo',avatarFile:'old.jpg'};
+    let saved;
+    const context=vm.createContext({state,avatarSource:file=>file,saveProfile:()=>{saved=state.avatarDataUrl;},renderProfileControls(){}});
+    vm.runInContext(source.slice(start,end),context);
+    context.applyOwnProfileFromMessage({name:'Saved',avatarFile,profileSource:'saved-singer'});
+    assert.equal(state.avatarDataUrl,'');assert.equal(saved,'');assert.equal(state.name,'Saved');
+  }
 });

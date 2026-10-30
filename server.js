@@ -2224,7 +2224,7 @@ async function handleClientMessage(conn, msg) {
       !msg.profile || typeof msg.profile.name !== 'string' || !msg.profile.name.trim() ? 'invalid_profile' : null;
     if (!reason) {
       applyPlayerProfile(target, profileFromMessage(msg.profile, target));
-      const updated = playerProfileMessage(room, target);
+      const updated = playerProfileMessage(room, target, {profileSource:'saved-singer'});
       room.host.sendJson(updated);
       broadcastPlayers(room, updated);
       sendRemotePlayersSnapshotToHost(room);
