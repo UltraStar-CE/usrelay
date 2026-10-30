@@ -2216,6 +2216,24 @@ async function handleClientMessage(conn, msg) {
     return;
   }
 
+  if (msg.type === 'player.roster.apply') {
+    const target = room.players.get(String(msg.targetPlayerId || ''));
+    const reason = player.role !== 'controller' ? 'not_controller' :
+      !target || !isLivePlayer(target) ? 'player_unavailable' :
+      !room.host || room.host.closed ? 'host_disconnected' :
+      !msg.profile || typeof msg.profile.name !== 'string' || !msg.profile.name.trim() ? 'invalid_profile' : null;
+    if (!reason) {
+      applyPlayerProfile(target, profileFromMessage(msg.profile, target));
+      const updated = playerProfileMessage(room, target, {profileSource:'saved-singer'});
+      room.host.sendJson(updated);
+      broadcastPlayers(room, updated);
+      sendRemotePlayersSnapshotToHost(room);
+      updateRoomGameState(room, {broadcast:true});
+    }
+    conn.sendJson({type:'roster.ack', protocol:protocolVersion, accepted:!reason, reason});
+    return;
+  }
+
   if (msg.type === 'player.profile.update') {
     applyPlayerProfile(player, profileFromMessage(msg.profile || msg, player));
     const updated = playerProfileMessage(room, player);

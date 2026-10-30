@@ -1,3 +1,4 @@
+import {createSavedSingers} from './saved-singers.js';
 import {audioTimingView} from './audio-timing.js';
 import {DigitalCalibration} from './digital-calibration.js';
 import {loadSongs} from './song-query.js';
@@ -912,6 +913,7 @@ function mergeProfileIntoPlayer(player, profile = {}) {
 }
 
 function applyOwnProfileFromMessage(message = {}) {
+  if (message.profileSource === 'saved-singer') state.avatarDataUrl = '';
   if (message.name !== undefined) state.name = message.name || state.name || '';
   if (message.difficultyMode !== undefined) state.difficultyMode = sanitizeDifficultyMode(message.difficultyMode);
   if (message.difficulty !== undefined) state.difficulty = sanitizeDifficulty(message.difficulty, state.difficultyMode);
@@ -2423,6 +2425,7 @@ function renderPartyState() {
 }
 
 function updateGameStateView() {
+  savedSingers.render();
   setTextIfChanged(gameStateLabel, state.gameState || 'waiting');
   setTextIfChanged(songSeqLabel, state.songSeq || 0);
   updateSongProgressView();
@@ -5149,7 +5152,10 @@ function showPartyTurnNotification(message) {
   }
 }
 
+const savedSingers = createSavedSingers({document, storage:localStorage, state:()=>state, send:sendRelay});
+
 async function handleMessage(message) {
+  if (message.type === 'roster.ack' && savedSingers.handle(message)) return;
   if(digitalCalibration.handle(message)) {renderAudioTiming();return;}
   if (String(message.type || '').startsWith('p2p.')) {
     handleP2pSignal(message);
