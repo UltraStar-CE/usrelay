@@ -1,3 +1,4 @@
+import {relayCommands, companionContract} from './companion-contract.mjs';
 import {HostedParty} from './hosted-party.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -2065,23 +2066,7 @@ async function handleClientMessage(conn, msg) {
       });
       return;
     }
-    if (![
-      'menu.up', 'menu.down', 'menu.left', 'menu.right', 'menu.select', 'menu.back',
-      'game.pause', 'game.resume', 'song.skipIntro', 'song.restart',
-      'continuous.start', 'continuous.queue', 'continuous.stop', 'continuous.skip',
-      'song.menu', 'song.playlistMenu', 'song.jumpTo', 'song.random',
-      'song.select', 'song.start', 'song.skip', 'song.list',
-      'preview.start', 'preview.stop',
-      'search.setText',
-      'playlist.load', 'playlist.create', 'playlist.delete',
-      'playlist.addSelected', 'playlist.removeSelected', 'playlist.removeItem',
-      'playlist.addSongs', 'playlist.removeSong',
-      'playlist.moveItemUp', 'playlist.moveItemDown',
-      'playlist.toggleFixedOrder',
-      'playlist.automation.set', 'playlist.countdown.start', 'playlist.next',
-      'party.configure', 'party.skip', 'party.stop', 'party.resetLeaderboard', 'party.startMatchmaking',
-      'player.kick'
-    ].includes(command)) {
+    if (!relayCommands.includes(command)) {
       log('control.rejected', { roomId: room.roomId, playerId: player.playerId, command, reason: 'unknown_command' });
       conn.sendJson({
         type: 'ack',
@@ -2658,6 +2643,11 @@ function sendDebugPage(res) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (url.pathname === '/api/contract' && ['GET', 'HEAD'].includes(req.method)) {
+    sendJson(res, 200, companionContract);
+    return;
+  }
+
   if (url.pathname === '/api/client-log' && req.method === 'POST') {
     let body = '';
     req.on('data', (chunk) => {
