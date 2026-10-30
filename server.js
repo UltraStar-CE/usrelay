@@ -1417,6 +1417,7 @@ function handleHostMessage(conn, msg) {
     return;
   }
   room.lastSeenMs = Date.now();
+  if (msg.type === 'continuous.state') room.lastContinuousState = {...msg};
   if (['api.state','song.select.state'].includes(msg.type) && msg.apiCapabilities?.includes('continuous.start') && !room.hostedParty) {
     room.hostedParty = new HostedParty({room,
       sendHost:message=>Boolean(room.host && !room.host.closed && room.host.sendJson(message) !== false),
@@ -1581,7 +1582,7 @@ function handleHostMessage(conn, msg) {
     return;
   }
 
-  if (['continuous.handoff', 'audio.stop', 'song.starting', 'song.started', 'song.paused', 'song.position', 'song.lyrics', 'song.resumed', 'song.ended', 'score.snapshot', 'screen.info'].includes(msg.type)) {
+  if (['continuous.handoff', 'continuous.state', 'audio.stop', 'song.starting', 'song.started', 'song.paused', 'song.position', 'song.lyrics', 'song.resumed', 'song.ended', 'score.snapshot', 'screen.info'].includes(msg.type)) {
     broadcastPlayers(room, { ...msg, protocol: protocolVersion });
     return;
   }
@@ -1800,6 +1801,14 @@ async function handleClientMessage(conn, msg) {
     const result = room.wishes.handle(msg, player);
     conn.sendJson({type:'wish.ack', protocol:protocolVersion, action:msg.type, ...result});
     if (result.accepted) broadcastPlayers(room, {type:'wish.state', protocol:protocolVersion, wishes:room.wishes.items});
+    return;
+  }
+
+  if (String(msg.type).startsWith('request.')) {
+    const book=room.hostedParty?.requestBook;
+    const result=book?await book.handle(msg,player):{accepted:false,reason:'requests_unavailable'};
+    conn.sendJson({type:'request.ack',protocol:protocolVersion,action:msg.type,...result});
+    if(book)book.changed();
     return;
   }
 
