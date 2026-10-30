@@ -6001,6 +6001,7 @@ async function startMic() {
       state.pcmWorklet = new AudioWorkletNode(audioContext, 'usce-pcm');
       state.pcmWorklet.port.onmessage = event => {
         state.pcmSender.submit(event.data);
+        if (state.rawPcmV1) micGestures.packet(event.data);
         if (new DataView(event.data).getUint32(0, true) === 0x31504155 &&
             state.rawPcmV1 && performance.now() - state.pitchLastUiMs >= pitchUiUpdateMs) {
           const samples = new Int16Array(event.data, 20);
@@ -6161,7 +6162,7 @@ const micGestures = createMicGestures({document,state:()=>state,control:sendCont
   SpeechRecognition:window.SpeechRecognition||window.webkitSpeechRecognition});
 
 function handlePitchFrame(frame) {
-  micGestures.sample(Number(frame.rmsDb));
+  if (!state.rawPcmV1) micGestures.sample(Number(frame.rmsDb));
   state.pitchFramesCaptured += 1;
   const nowMs = performance.now();
   if (nowMs - state.pitchLastUiMs >= pitchUiUpdateMs) {
