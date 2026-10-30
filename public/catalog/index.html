@@ -40,6 +40,13 @@
             </label>
             <button type="submit" class="primary-action">Join catalog</button>
           </form>
+          <details>
+            <summary>First time here?</summary>
+            <p>Enter the room code shown by the game. Browse songs, use Listen for a preview,
+              and save favorites with the heart. Favorites are preferences, not guaranteed
+              playback requests. Choose a playlist to narrow the collection; filters also
+              work inside it. Starts with follows the Artist / Title sort setting.</p>
+          </details>
           <div id="joinError" class="join-error" role="alert"></div>
         </div>
       </section>
@@ -79,6 +86,10 @@
                     <option value="artist">Artist</option>
                     <option value="title">Title</option>
                   </select>
+                </label>
+                <label>
+                  Starts with
+                  <select id="letterInput"></select>
                 </label>
                 <label>
                   Language
