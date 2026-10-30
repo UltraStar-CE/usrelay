@@ -1333,3 +1333,12 @@ dd {
   color: #fcd34d;
   font-size: 14px;
 }
+
+body.radio-view #appScreen > :not(#radioPanel) { display:none; }
+#radioPanel { padding:1rem; width:100%; background:var(--bg); color:var(--text); }
+#radioPanel:fullscreen { overflow:auto; }
+body.radio-view .shell { max-width:1200px; }
+body.radio-view .app-version { display:none; }
+#radioLyrics { font-size:clamp(1.25rem,3vw,2.6rem); text-align:center; min-height:25vh; }
+#radioLyrics .lyric-syllable.upcoming { color:var(--text); opacity:0.9; }
+#radioProgress { width:100%; }

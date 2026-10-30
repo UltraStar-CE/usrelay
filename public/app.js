@@ -2,6 +2,7 @@ import {createSavedSingers} from './saved-singers.js';
 import {createMicGestures} from './mic-gestures.js';
 import {createSongWishes} from './song-wishes.js';
 import {createPerformanceRequests} from './performance-requests.js';
+import {createRadioDisplay} from './radio-display.js';
 import {audioTimingView} from './audio-timing.js';
 import {DigitalCalibration} from './digital-calibration.js';
 import {loadSongs} from './song-query.js';
@@ -11,7 +12,8 @@ import { createAudioInput, startSyntheticPcm } from './audio-input.js?v=4';
 const protocol = 1;
 const digitalCalibration = new DigitalCalibration({send:message=>sendRelay(message),
   startWave:startCalibrationWave,stopWave:stopCalibrationWave});
-const sessionKey = 'usdx.remote.session.v1';
+const radioView = new URLSearchParams(window.location.search).get('view') === 'radio';
+const sessionKey = radioView ? 'usdx.remote.session.v1.radio' : 'usdx.remote.session.v1';
 const nameKey = 'usdx.remote.name.v1';
 const difficultyModeKey = 'usdx.remote.difficultyMode.v1';
 const difficultyKey = 'usdx.remote.difficulty.v1';
@@ -52,6 +54,7 @@ const pitchWorkletTimestampMaxFutureUs = 50_000;
 const pitchWorkletTimestampMaxStaleUs = 500_000;
 const pitchReportedInputLatencyMaxUs = 250_000;
 const state = {
+  radioView,
   ws: null,
   roomId: null,
   displayCode: null,
@@ -2005,6 +2008,7 @@ function renderRemoteLyrics() {
   const songUs = songPosition == null ? null : Math.round(songPosition * 1_000_000);
   renderLyricsInto(lockLyricsLabel, entry, songUs);
   renderLyricsInto(micLyricsPanel, entry, songUs);
+  if (state.radioView) radioDisplay.render();
 }
 
 function renderLockLyrics() {
@@ -2560,6 +2564,7 @@ function createRoomAvatar(player, slot) {
 }
 
 function autoStartMicForSlot(slot) {
+  if (state.radioView) return;
   if (Number(slot) <= 0 || state.audioContext || state.settings.controlOnly) return;
   startMic().catch((error) => {
     if (micStatus) micStatus.textContent = error?.message || 'Microphone failed';
@@ -5174,6 +5179,12 @@ function showPartyTurnNotification(message) {
 }
 
 const savedSingers = createSavedSingers({document, storage:localStorage, state:()=>state, send:sendRelay});
+const radioDisplay = radioView ? createRadioDisplay({document,state:()=>state,
+  position:()=>Math.round((currentSongPositionSec() || 0)*1000000),progress:()=>currentSongProgressSnapshot().progress,
+  renderLyrics:renderLyricsInto,control:sendControl,
+  music:()=>{if(!playMusicOnDeviceInput.checked)playMusicOnDeviceInput.click();else activateDeviceMusic('radio');},
+  wake:()=>wakeLockInput.click()}) : null;
+if (radioView) {document.body.classList.add('radio-view');document.getElementById('radioPanel').hidden=false;}
 
 const songWishes = createSongWishes({send:sendRelay, identity:()=>state, document});
 
@@ -5795,7 +5806,7 @@ function connectAndJoin(displayCode, name, resume = null) {
   saveProfile();
   saveJoinDraft(displayCode, name);
   resetClockSync();
-  const preferredSlot = Number(resume?.slot || 0);
+  const preferredSlot = state.radioView ? 0 : Number(resume?.slot || 0);
   const ws = new WebSocket(wsUrl('/ws/client'));
   state.ws = ws;
   if (state.relayRecovering) state.relayJoinTimer = window.setTimeout(() => {
@@ -5905,6 +5916,7 @@ function resumeMicAudio(context) {
 }
 
 async function startMic() {
+  if (state.radioView) return;
   const frequency = Number($('testAudioInput').value);
   if (frequency) {
     if (state.audioInput?.synthetic) return;
