@@ -1,3 +1,4 @@
+import {PerformanceRequests} from './performance-requests.mjs';
 // Party orchestration for native-capable rooms; gameplay stays in USCE.
 import {PartySession} from './party-session.mjs';
 import {createApiRequests} from './public/api-requests.js';
@@ -15,9 +16,14 @@ export class HostedParty {
       send:message=>message.targetPlayerId||message.playerId
         ? sendClient(message.targetPlayerId||message.playerId,{...message,libraryHash:this.loaded?this.loadedSnapshotId:this.snapshotId}) : broadcast({...message,libraryHash:this.loaded?this.loadedSnapshotId:this.snapshotId}),
       command:message=>sendHost({...message,protocol:1})});
+    this.requestBook=new PerformanceRequests({library:()=>this.library,ready:()=>this.loaded&&!this.suspended,
+      canStart:()=>!this.party.enabled&&!this.party.gameActive&&['main_menu','song_select'].includes(room.gameState?.state),
+      command:(command,args)=>this.requests.request(command,args),publish:message=>broadcast({...message,protocol:1})});
+    if(room.lastContinuousState)this.requestBook.observe(room.lastContinuousState);
   }
   suspend() {
     if(this.closed||this.suspended)return;
+    this.requestBook.suspend();
     this.suspended=true;this.generation++;this.resumeApi=null;this.resumePlayback=null;this.resumeResults=null;
     this.loaded=false;this.retryAfter=0;this.requests.disconnect();
     this.party.rosterChanged();this.party.tick();
@@ -49,6 +55,7 @@ export class HostedParty {
       if(expectedSnapshot && result.snapshotId!==expectedSnapshot)throw Error('snapshot_changed');
       this.party.reindexLibrary(this.library,result.songs);
       this.library=result.songs;this.loaded=true;this.loadedSnapshotId=result.snapshotId;
+      this.requestBook.changed();
       if(this.pendingResults){this.party.recoverResults(this.pendingResults);this.pendingResults=null;}
       if(this.party.notice.startsWith('Song loading failed:'))this.party.notice='';
       for(const message of this.pendingVotes.splice(0))this.party.handle(message);
@@ -59,6 +66,7 @@ export class HostedParty {
   }
   observe(message) {
     if(this.closed)return;
+    this.requestBook.observe(message);
     if(this.suspended){this.resumeSnapshot(message);return;}
     if(message.type==='song.results') {
       if(this.loaded)this.party.recoverResults(message);else this.pendingResults=message;

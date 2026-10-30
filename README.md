@@ -119,3 +119,34 @@ verified two-song advancement, natural exhaustion, controller replacement and
 resumption after adding a qualifying song to an exhausted playlist-backed queue.
 These tests used synthetic controllers without microphone PCM; they are not
 phone latency or singing-quality measurements.
+
+## Explicit performance requests and recovery
+
+The Songs tab has Request alongside the persistent Like button. Performance
+requests have their own votes and withdrawals. They stay in insertion order;
+votes are visible but never silently reorder the queue. Controllers can move
+requests. A guest can withdraw their queued request; a controller can moderate.
+Each guest has at most five queued requests and the room holds at most 100 items.
+
+Controllers can start one request while Party and native continuous playback
+are idle. It uses native continuous playback with Manual player setup. Confirm
+on the game, or use Confirm player setup with a game supporting
+`continuous.confirm` (UltraStar-CE/USCE#319, stacked on #168). This is a manual
+request handoff, not a second automatic advancement engine.
+
+Save queue checkpoints it on this controller's browser and enables buffered
+updates for that room's saved session. A new room never overwrites the previous
+recovery copy automatically. After a service/game restart, rejoin and explicitly
+Restore saved queue into an empty idle request list. Finished items stay finished;
+interrupted/unknown performances require Mark finished or an explicit Queue again.
+There is no automatic start on restore. Missing/ambiguous catalog keys are
+unavailable. Numeric song IDs and reconnect tokens are not stored in the backup.
+This is browser-backed recovery, not unattended server-side durable rooms.
+
+Provider adapters may use `public/request-adapter.js` with a stable provider
+name, provider event ID and exact native `catalogKey`, then send the resulting
+message through an authenticated room WebSocket. Retried event IDs are
+idempotent within that authenticated participant/session, even after withdrawal.
+No title guessing, extra game HTTP server, downloader or external catalog is
+introduced. Specific provider transports still need adapters against their actual
+protocols; the helper does not claim to implement every fork's protocol.

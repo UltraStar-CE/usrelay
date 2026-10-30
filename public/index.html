@@ -191,6 +191,16 @@
             </div>
             <ul id="partyLeaderboardList" class="playlist-item-list"></ul>
           </section>
+          <details class="remote-list">
+            <summary>Performance requests</summary>
+            <p class="fine">Request a song from Songs. Likes are separate. Requests stay in insertion order;
+              votes are shown but do not reorder them. Controllers can move requests or start one while Party is stopped.
+              Save queue enables buffered updates on this browser for this room. Restore is explicit after a restart.</p>
+            <button type="button" id="requestSave">Save queue</button>
+            <button type="button" id="requestRestore" disabled>Restore saved queue</button>
+            <p id="requestStatus" class="fine" role="status"></p>
+            <ul id="requestList" class="playlist-item-list"></ul>
+          </details>
           <p id="partyNotice" class="fine"></p>
         </section>
 
