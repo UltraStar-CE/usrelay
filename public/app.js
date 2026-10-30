@@ -1,3 +1,4 @@
+import {createMicGestures} from './mic-gestures.js';
 import {audioTimingView} from './audio-timing.js';
 import {DigitalCalibration} from './digital-calibration.js';
 import {loadSongs} from './song-query.js';
@@ -6000,6 +6001,7 @@ async function startMic() {
       state.pcmWorklet = new AudioWorkletNode(audioContext, 'usce-pcm');
       state.pcmWorklet.port.onmessage = event => {
         state.pcmSender.submit(event.data);
+        if (state.rawPcmV1) micGestures.packet(event.data);
         if (new DataView(event.data).getUint32(0, true) === 0x31504155 &&
             state.rawPcmV1 && performance.now() - state.pitchLastUiMs >= pitchUiUpdateMs) {
           const samples = new Int16Array(event.data, 20);
@@ -6156,7 +6158,11 @@ function flushStalePitchVoteBucket() {
   state.pitchVoteBucket = null;
 }
 
+const micGestures = createMicGestures({document,state:()=>state,control:sendControl,slot:sendSlotProfile,
+  SpeechRecognition:window.SpeechRecognition||window.webkitSpeechRecognition});
+
 function handlePitchFrame(frame) {
+  if (!state.rawPcmV1) micGestures.sample(Number(frame.rmsDb));
   state.pitchFramesCaptured += 1;
   const nowMs = performance.now();
   if (nowMs - state.pitchLastUiMs >= pitchUiUpdateMs) {
