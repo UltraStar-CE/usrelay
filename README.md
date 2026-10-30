@@ -101,7 +101,7 @@ and cancel pending recovery seeks. These behaviors have regression coverage;
 complete feature/slot coverage and latency calibration remain release gates.
 Physical-phone development testing is currently deferred at the owner's request.
 
-Settings â†’ Advanced microphone and timing also provides synthetic 65, 220 and
+Settings Ã¢â€ â€™ Advanced microphone and timing also provides synthetic 65, 220 and
 440 Hz PCM for screen-share testing. It requests no microphone permission and
 needs no AudioContext; the generated packets use the normal native transport.
 Test audio is clearly labeled and resets on reload. Stop audio releases either
@@ -143,3 +143,14 @@ references and difficulty are saved on that browser; mic slots and roles are not
 Upload or change a photo through the existing singer profile controls. Changing
 a photo alone keeps the entered name. Photo references require the original
 relay avatar storage; this is not a cross-server photo backup.
+
+## Party session awards
+
+The optional Show session awards checkbox displays session-best scores, unique
+round wins and winning streaks from native result events. A win needs at least
+two scored singers and a unique positive highest score. Ties, solo rounds and
+zero-score rounds do not count as competitive wins; a round without a win ends
+the streak. First-song and 5/10/25/50-song badges mark session participation.
+These are presentation awards, not changes to game scores or difficulty ratings.
+Reset Scores clears the awards as well as totals. Duplicate native results are
+ignored by the existing performance-ID tracking; nothing is saved across rooms.
