@@ -913,6 +913,7 @@ function mergeProfileIntoPlayer(player, profile = {}) {
 }
 
 function applyOwnProfileFromMessage(message = {}) {
+  if (message.profileSource === 'saved-singer') state.avatarDataUrl = '';
   if (message.name !== undefined) state.name = message.name || state.name || '';
   if (message.difficultyMode !== undefined) state.difficultyMode = sanitizeDifficultyMode(message.difficultyMode);
   if (message.difficulty !== undefined) state.difficulty = sanitizeDifficulty(message.difficulty, state.difficultyMode);
