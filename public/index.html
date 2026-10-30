@@ -191,6 +191,16 @@
             </div>
             <ul id="partyLeaderboardList" class="playlist-item-list"></ul>
           </section>
+          <details class="remote-list">
+            <summary>Song wishes</summary>
+            <p class="fine">Suggestions for songs outside the collection. These are not playable requests or downloads.</p>
+            <form id="wishForm" class="song-search-form">
+              <label>Artist / title <input id="wishInput" maxlength="120" required></label>
+              <button type="submit">Suggest</button>
+            </form>
+            <p id="wishStatus" class="fine" role="status"></p>
+            <ul id="wishList" class="playlist-item-list"></ul>
+          </details>
           <p id="partyNotice" class="fine"></p>
         </section>
 

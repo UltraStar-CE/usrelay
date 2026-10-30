@@ -1,3 +1,4 @@
+import {createSongWishes} from './song-wishes.js';
 import {audioTimingView} from './audio-timing.js';
 import {DigitalCalibration} from './digital-calibration.js';
 import {loadSongs} from './song-query.js';
@@ -5149,7 +5150,10 @@ function showPartyTurnNotification(message) {
   }
 }
 
+const songWishes = createSongWishes({send:sendRelay, identity:()=>state, document});
+
 async function handleMessage(message) {
+  if ((String(message.type).startsWith('wish.') || message.type === 'client.joined') && songWishes.handle(message)) return;
   if(digitalCalibration.handle(message)) {renderAudioTiming();return;}
   if (String(message.type || '').startsWith('p2p.')) {
     handleP2pSignal(message);

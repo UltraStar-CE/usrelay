@@ -119,3 +119,11 @@ verified two-song advancement, natural exhaustion, controller replacement and
 resumption after adding a qualifying song to an exhausted playlist-backed queue.
 These tests used synthetic controllers without microphone PCM; they are not
 phone latency or singing-quality measurements.
+
+## Song wishes
+
+Party has a separate text wishlist for songs outside the local collection. Guests
+can suggest up to five songs (120 characters each); the room holds at most 100.
+Requesters can withdraw their own wishes and controllers can remove any wish.
+Wishes never become playable requests, trigger downloads or enter the native queue.
+They survive reconnects while the room exists, but are not retained after room expiry.
