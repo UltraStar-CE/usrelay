@@ -18,11 +18,12 @@ export class HostedParty {
   }
   suspend() {
     if(this.closed||this.suspended)return;
-    this.suspended=true;this.generation++;this.resumeApi=null;this.resumePlayback=null;this.resumeResults=null;
+    this.suspended=true;this.generation++;this.pendingHandoff=null;this.resumeApi=null;this.resumePlayback=null;this.resumeResults=null;
     this.loaded=false;this.retryAfter=0;this.requests.disconnect();
     this.party.rosterChanged();this.party.tick();
   }
   resumeSnapshot(message) {
+    if(message.type==='continuous.handoff')this.pendingHandoff=message;
     if(message.type==='api.state')this.resumeApi=message;
     if(message.type==='continuous.state')this.resumePlayback=message;
     if(message.type==='song.results')this.resumeResults=message;
@@ -49,6 +50,7 @@ export class HostedParty {
       if(expectedSnapshot && result.snapshotId!==expectedSnapshot)throw Error('snapshot_changed');
       this.party.reindexLibrary(this.library,result.songs);
       this.library=result.songs;this.loaded=true;this.loadedSnapshotId=result.snapshotId;
+      if(this.pendingHandoff){this.party.observe(this.pendingHandoff);this.pendingHandoff=null;}
       if(this.pendingResults){this.party.recoverResults(this.pendingResults);this.pendingResults=null;}
       if(this.party.notice.startsWith('Song loading failed:'))this.party.notice='';
       for(const message of this.pendingVotes.splice(0))this.party.handle(message);

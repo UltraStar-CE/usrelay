@@ -1580,7 +1580,7 @@ function handleHostMessage(conn, msg) {
     return;
   }
 
-  if (['audio.stop', 'song.starting', 'song.started', 'song.paused', 'song.position', 'song.lyrics', 'song.resumed', 'song.ended', 'score.snapshot', 'screen.info'].includes(msg.type)) {
+  if (['continuous.handoff', 'audio.stop', 'song.starting', 'song.started', 'song.paused', 'song.position', 'song.lyrics', 'song.resumed', 'song.ended', 'score.snapshot', 'screen.info'].includes(msg.type)) {
     broadcastPlayers(room, { ...msg, protocol: protocolVersion });
     return;
   }

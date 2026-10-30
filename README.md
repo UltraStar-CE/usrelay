@@ -55,6 +55,14 @@ are origin-specific, so users may need to rejoin and grant microphone access whe
 switching domains. DNS, certificates, and proxy changes must be applied on the
 hosting infrastructure separately.
 
+## Confirm each Party song
+
+Set Player setup to Manual in Party playback settings. With a game supporting
+`continuous.confirm`, Party shows the native queued song, its requesting voters
+and the game's initial configured singer list, including local singers. Confirm
+next song accepts the ordinary game setup action. The game still decides when
+playback starts; there is no relay countdown or estimated-duration handoff.
+
 ## Checks
 
 ```sh
