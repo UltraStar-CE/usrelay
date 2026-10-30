@@ -329,6 +329,8 @@ for (const input of partyPlaybackInputs.filter(input => input.dataset.partyPlayb
 }
 const partySourceInput = $('partySourceInput');
 const partySaveButton = $('partySaveButton');
+const partyConfirmButton = $('partyConfirmButton');
+partyConfirmButton?.addEventListener('click',()=>sendControl('continuous.confirm',{handoffId:state.party?.handoff?.handoffId},partyConfirmButton));
 const partyResetLeaderboardButton = $('partyResetLeaderboardButton');
 const partyUpvoteCountLabel = $('partyUpvoteCountLabel');
 const partyUpvoteList = $('partyUpvoteList');
@@ -2330,9 +2332,16 @@ function renderPartyState() {
   if (partyPhaseLabel) partyPhaseLabel.textContent = partyPhaseText(party);
   if (partyNotice) partyNotice.textContent = party.notice || '';
 
+  if (partyConfirmButton) partyConfirmButton.disabled = !party.handoff;
   if (partyQueueList) {
     const queue = Array.isArray(party.queue) ? party.queue : [];
     partyQueueList.replaceChildren();
+    if (party.handoff) {
+      appendPartyQueueItem(partyQueueList, party.handoff.song, 'Up next');
+      const singers = document.createElement('li');
+      singers.textContent = 'Assigned singers: ' + (party.handoff.singers || []).map(p=>`${p.slot}: ${p.name}`).join(', ');
+      partyQueueList.append(singers);
+    }
     if (party.currentMatch) appendPartyQueueItem(partyQueueList, party.currentMatch, 'Now');
     queue.slice(0, 8).forEach((match, index) => appendPartyQueueItem(partyQueueList, match, `Next ${index + 1}`));
     if (!party.currentMatch && !queue.length) {

@@ -12,6 +12,20 @@ function fixture() {
   const start=(args={})=>party.handle({type:'control.command',playerId:'a',commandId:1,command:'party.startMatchmaking',args});
   return {party,players,sent,commands,like,start,advance:ms=>{clock+=ms;party.tick();},setState:s=>state=s};
 }
+
+test('native handoff identifies the actual song and singers and clears on song start',()=>{
+  const f=fixture();
+  f.like('a',[2]);f.like('b',[2]);f.start();
+  f.party.observe({type:'continuous.handoff',songId:2,singers:[{slot:1,name:'Local singer'}]});
+  f.advance(0);
+  let snapshot=f.sent.filter(m=>m.type==='party.state'&&!m.targetPlayerId).at(-1);
+  assert.equal(snapshot.handoff.song.songId,2);
+  assert.equal(snapshot.handoff.song.likedByCount,2);
+  assert.deepEqual(snapshot.handoff.singers,[{slot:1,name:'Local singer'}]);
+  f.party.observe({type:'song.started',songId:2,songSeq:1});f.advance(0);
+  snapshot=f.sent.filter(m=>m.type==='party.state'&&!m.targetPlayerId).at(-1);
+  assert.equal(snapshot.handoff,null);
+});
 test('party waits for matching votes and asks USCE to run a continuous queue',()=>{
   const f=fixture(); f.start(); f.like('a',[1,2,3]); f.advance(1100);
   assert.equal(f.commands.length,0);

@@ -19,6 +19,20 @@ function fixture(){
  };
  return {hosted,commands,sent,api,reply};
 }
+
+test('suspension drops live handoffs and newer events invalidate buffered ones during catalog reload',async()=>{
+ for(const transition of [{type:'song.started',songId:7,songSeq:99},{type:'continuous.state',active:false}]) {
+  const f=fixture();try {
+   f.hosted.party.handoffId=7;f.hosted.party.handoffToken=10;
+   f.hosted.suspend();assert.equal(f.hosted.party.handoffId,null);
+   f.hosted.observe({type:'continuous.handoff',songId:7,handoffId:11});
+   f.api();f.hosted.observe({type:'continuous.state',active:true});
+   f.hosted.observe(transition);await f.reply();
+   assert.equal(f.hosted.party.handoffId,null);
+   assert.equal(f.hosted.pendingHandoff,null);
+  }finally {f.hosted.close();}
+ }
+});
 test('Party survives a host outage and waits for both authoritative snapshots before reconciling an uncertain start',async()=>{
  const f=fixture();const {hosted,commands}=f;
  try{

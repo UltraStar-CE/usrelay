@@ -1579,7 +1579,7 @@ function handleHostMessage(conn, msg) {
     return;
   }
 
-  if (['audio.stop', 'song.starting', 'song.started', 'song.paused', 'song.position', 'song.lyrics', 'song.resumed', 'song.ended', 'score.snapshot', 'screen.info'].includes(msg.type)) {
+  if (['continuous.handoff', 'audio.stop', 'song.starting', 'song.started', 'song.paused', 'song.position', 'song.lyrics', 'song.resumed', 'song.ended', 'score.snapshot', 'screen.info'].includes(msg.type)) {
     broadcastPlayers(room, { ...msg, protocol: protocolVersion });
     return;
   }
@@ -2068,7 +2068,7 @@ async function handleClientMessage(conn, msg) {
     if (![
       'menu.up', 'menu.down', 'menu.left', 'menu.right', 'menu.select', 'menu.back',
       'game.pause', 'game.resume', 'song.skipIntro', 'song.restart',
-      'continuous.start', 'continuous.queue', 'continuous.stop', 'continuous.skip',
+      'continuous.start', 'continuous.queue', 'continuous.stop', 'continuous.skip', 'continuous.confirm',
       'song.menu', 'song.playlistMenu', 'song.jumpTo', 'song.random',
       'song.select', 'song.start', 'song.skip', 'song.list',
       'preview.start', 'preview.stop',

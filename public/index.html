@@ -127,6 +127,7 @@
             <div class="party-actions">
               <button type="button" id="partyStartButton">Start</button>
               <button type="button" id="partyFindMatchButton" class="secondary">Find Match</button>
+              <button type="button" id="partyConfirmButton" disabled>Confirm next song</button>
               <button type="button" id="partySkipButton" class="danger-soft">Skip</button>
               <button type="button" id="partyStopButton" class="secondary">Stop</button>
             </div>
@@ -141,6 +142,7 @@
             <details class="party-playback-options">
               <summary>Continuous playback</summary>
               <p class="fine">The game manages each screen and advances to the next song. Manual waits for you to continue; Skip hides the screen. Changes apply when the next session starts.</p>
+              <p class="fine">Choose Manual for player setup to confirm each song below. The game owns timing and transitions.</p>
               <label class="input-row select-row">Player setup <select id="partyPlayerSetupInput" data-party-playback="playerSetupSeconds"></select></label>
               <label class="input-row select-row">Song results <select id="partyResultsInput" data-party-playback="resultSeconds"></select></label>
               <label class="input-row select-row">High scores <select id="partyHighScoresInput" data-party-playback="highScoreSeconds"></select></label>

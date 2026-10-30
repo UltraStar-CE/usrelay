@@ -12,6 +12,7 @@ export class PartySession {
     this.enabled=false; this.gameActive=false; this.dirty=true;
     this.minPlayers=2; this.endless=false; this.playback={}; this.source='all';
     this.deadline=0; this.owner=null; this.sequence=1000000000; this.pending=new Map();
+    this.handoffId=null;
     this.queue=[]; this.matches=[]; this.notice=''; this.currentMatch=null;
   }
   reindexLibrary(previous, next) {
@@ -128,6 +129,8 @@ export class PartySession {
     this.dirty=true;
   }
   observe(message) {
+    if(message.type==='continuous.handoff'){this.handoffId=Number(message.songId);this.handoffToken=message.handoffId;this.handoffSingers=message.singers;this.dirty=true;}
+    if(message.type==='song.started'||(message.type==='continuous.state'&&!message.active)){this.handoffId=null;this.dirty=true;}
     if(message.type==='continuous.state'&&message.active&&Number.isInteger(message.sessionSeq))this.nativeSessionSeq=message.sessionSeq;
     if(message.type==='game.state') this.dirty=true;
     if(message.type==='ack'&&this.pending.has(message.commandId)) {
@@ -195,6 +198,7 @@ export class PartySession {
       endless:this.endless,playerSetupSeconds:null,resultSeconds:null,highScoreSeconds:null,songDisplay:null,singingDisplay:null,...this.playback,source:this.source,
       phase:!ready?'loading_songs':this.gameActive?({player_setup:'calling_players',results:'scoring',high_scores:'highscores',paused:'paused'}[this.gameState()]||'singing'):this.enabled?'collecting_votes':'off',
       notice:(!ready?'Loading songs…':this.notice)||(!this.gameActive&&this.enabled&&!['main_menu','song_select'].includes(this.gameState())?'Return to the main menu or song selection to start the party.':''),
+      handoff:ready&&Number.isInteger(this.handoffId)?{handoffId:this.handoffToken,song:compact(this.matches.find(s=>Number(s.songId)===this.handoffId)||songs.get(this.handoffId)||{songId:this.handoffId}),singers:Array.isArray(this.handoffSingers)?this.handoffSingers:this.eligible().map(p=>({playerId:p.playerId,name:p.name,slot:p.slot}))}:null,
       currentMatch:ready&&this.currentMatch?compact(this.currentMatch):null,
       queue:(ready?this.queue:[]).slice(0,30).map(compact),matches:(ready?this.matches:[]).slice(0,30).map(compact),matchesTotal:ready?this.matches.length:0,
       likedSongs:[...voted.values()].slice(0,30).map(compact),likedSongsTotal:voted.size,

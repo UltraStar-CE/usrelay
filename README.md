@@ -119,3 +119,11 @@ verified two-song advancement, natural exhaustion, controller replacement and
 resumption after adding a qualifying song to an exhausted playlist-backed queue.
 These tests used synthetic controllers without microphone PCM; they are not
 phone latency or singing-quality measurements.
+
+## Confirm each Party song
+
+Set Player setup to Manual in Party playback settings. With a game supporting
+`continuous.confirm`, Party shows the native queued song, its requesting voters
+and the game's initial configured singer list, including local singers. Confirm
+next song accepts the ordinary game setup action. The game still decides when
+playback starts; there is no relay countdown or estimated-duration handoff.
