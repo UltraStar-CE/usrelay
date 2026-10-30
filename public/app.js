@@ -1,4 +1,5 @@
 import {createSavedSingers} from './saved-singers.js';
+import {createMicGestures} from './mic-gestures.js';
 import {audioTimingView} from './audio-timing.js';
 import {DigitalCalibration} from './digital-calibration.js';
 import {loadSongs} from './song-query.js';
@@ -6177,7 +6178,11 @@ function flushStalePitchVoteBucket() {
   state.pitchVoteBucket = null;
 }
 
+const micGestures = createMicGestures({document,state:()=>state,control:sendControl,slot:sendSlotProfile,
+  SpeechRecognition:window.SpeechRecognition||window.webkitSpeechRecognition});
+
 function handlePitchFrame(frame) {
+  micGestures.sample(Number(frame.rmsDb));
   state.pitchFramesCaptured += 1;
   const nowMs = performance.now();
   if (nowMs - state.pitchLastUiMs >= pitchUiUpdateMs) {
