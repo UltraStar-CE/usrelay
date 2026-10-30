@@ -119,3 +119,12 @@ verified two-song advancement, natural exhaustion, controller replacement and
 resumption after adding a qualifying song to an exhausted playlist-backed queue.
 These tests used synthetic controllers without microphone PCM; they are not
 phone latency or singing-quality measurements.
+
+## Saved singers
+
+Controllers can save up to 24 named singer profiles from Settings / Saved singers,
+then explicitly apply one to a connected player. Names, existing uploaded photo
+references and difficulty are saved on that browser; mic slots and roles are not.
+Upload or change a photo through the existing singer profile controls. Changing
+a photo alone keeps the entered name. Photo references require the original
+relay avatar storage; this is not a cross-server photo backup.

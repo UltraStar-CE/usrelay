@@ -367,6 +367,17 @@
                 <button type="button" id="avatarResetButton" class="secondary">Default Avatar</button>
               </div>
             </div>
+          <details id="savedSingers" hidden>
+            <summary>Saved singers</summary>
+            <p class="fine">Saved on this browser. Upload a photo in the singer's profile first.
+              Applying a saved singer changes their name, photo and difficulty; their mic slot stays the same.</p>
+            <label>Connected player <select id="rosterTarget"></select></label>
+            <button type="button" id="rosterSave" class="secondary">Save selected singer</button>
+            <label>Saved singer <select id="rosterSaved"></select></label>
+            <button type="button" id="rosterApply">Apply saved singer</button>
+            <button type="button" id="rosterDelete" class="secondary">Remove saved singer</button>
+            <p id="rosterStatus" class="fine" role="status"></p>
+          </details>
             <div class="room-settings-row">
               <span id="roomSettingsLabel" class="muted">Room ----</span>
               <button type="button" id="changeRoomButton" class="secondary">Change Room</button>
