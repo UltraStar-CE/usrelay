@@ -18,7 +18,7 @@ export class HostedParty {
   }
   suspend() {
     if(this.closed||this.suspended)return;
-    this.suspended=true;this.generation++;this.pendingHandoff=null;this.resumeApi=null;this.resumePlayback=null;this.resumeResults=null;
+    this.suspended=true;this.generation++;this.pendingHandoff=null;this.party.handoffId=null;this.party.handoffToken=null;this.party.handoffSingers=null;this.resumeApi=null;this.resumePlayback=null;this.resumeResults=null;
     this.loaded=false;this.retryAfter=0;this.requests.disconnect();
     this.party.rosterChanged();this.party.tick();
   }
@@ -61,6 +61,8 @@ export class HostedParty {
   }
   observe(message) {
     if(this.closed)return;
+    if(message.type==='continuous.handoff')this.pendingHandoff=message;
+    if(message.type==='song.started'||(message.type==='continuous.state'&&!message.active))this.pendingHandoff=null;
     if(this.suspended){this.resumeSnapshot(message);return;}
     if(message.type==='song.results') {
       if(this.loaded)this.party.recoverResults(message);else this.pendingResults=message;
