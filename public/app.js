@@ -5257,7 +5257,7 @@ async function handleMessage(message) {
     updateIdentity();
     updateGameStateView();
     saveSession();
-    if (String(message.webApp || '').toLowerCase() === 'catalog') {
+    if (!radioView && String(message.webApp || '').toLowerCase() === 'catalog') {
       window.location.replace(`/${encodeURIComponent(message.displayCode || state.displayCode || '')}`);
       return;
     }
