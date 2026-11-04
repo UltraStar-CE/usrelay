@@ -5297,6 +5297,7 @@ async function handleMessage(message) {
     if (Number(state.slot) <= 0) void stopMic();
     if (state.rawPcmV1) startP2p();
     state.role = message.role;
+    songWishes.refresh();
     state.pendingSlot = null;
     state.pendingPreviousSlot = null;
     state.pendingSlotUntilMs = 0;

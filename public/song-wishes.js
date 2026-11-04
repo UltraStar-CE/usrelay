@@ -7,20 +7,10 @@ export function createSongWishes({send, identity, document}) {
     event.preventDefault();
     if (!send({type:'wish.add', text:input.value})) status.textContent = 'Not connected.';
   });
-  return {handle(message) {
-    if (message.type === 'client.joined') {
-      list?.replaceChildren();
-      send({type:'wish.list'});
-    }
-    if (message.type === 'wish.ack') {
-      status.textContent = message.accepted ? '' : ({wish_duplicate:'Already suggested.', wish_limit:'Limit reached (five per guest).',
-        wish_text_invalid:'Enter up to 120 characters.', not_controller:'Only the requester or a controller can remove this wish.'}[message.reason] || 'Could not update wishes.');
-      if (message.accepted && message.action === 'wish.add') input.value = '';
-      return true;
-    }
-    if (message.type !== 'wish.state') return false;
+  let wishes = [];
+  function render() {
     list?.replaceChildren();
-    for (const wish of message.wishes || []) {
+    for (const wish of wishes) {
       const row = document.createElement('li');
       const text = document.createElement('span');
       text.textContent = `${wish.text} — ${wish.name}`;
@@ -34,6 +24,22 @@ export function createSongWishes({send, identity, document}) {
       }
       list?.append(row);
     }
+  }
+  return {refresh:render, handle(message) {
+    if (message.type === 'client.joined') {
+      wishes = [];
+      render();
+      send({type:'wish.list'});
+    }
+    if (message.type === 'wish.ack') {
+      status.textContent = message.accepted ? '' : ({wish_duplicate:'Already suggested.', wish_limit:'Limit reached (five per guest).',
+        wish_text_invalid:'Enter up to 120 characters.', not_controller:'Only the requester or a controller can remove this wish.'}[message.reason] || 'Could not update wishes.');
+      if (message.accepted && message.action === 'wish.add') input.value = '';
+      return true;
+    }
+    if (message.type !== 'wish.state') return false;
+    wishes = message.wishes || [];
+    render();
     return true;
   }};
 }

@@ -19,3 +19,27 @@ test('wishes remain non-playable, bounded and owned by authenticated players', (
   assert.equal(wishes.handle({type:'wish.add', text:'Sixth'}, alice).reason, 'wish_limit');
   assert.equal(wishes.handle({type:'wish.remove', id:wishes.items[0].id}, alice).accepted, true);
 });
+
+
+test('wishlist moderation follows promotion and demotion without a new wish event', async () => {
+  const {createSongWishes} = await import('../public/song-wishes.js');
+  class Element {
+    children=[];
+    append(child) { this.children.push(child); }
+    replaceChildren() { this.children=[]; }
+    addEventListener() {}
+  }
+  const list=new Element();
+  const document={getElementById:id=>id==='wishList'?list:new Element(),createElement:()=>new Element()};
+  const self={playerId:'a',role:'singer'};
+  const ui=createSongWishes({document,identity:()=>self,send:()=>true});
+  ui.handle({type:'wish.state',wishes:[{id:'w',text:'Song',name:'Bob',playerId:'b'}]});
+  assert.equal(list.children[0].children.length,1);
+  self.role='controller';ui.refresh();
+  assert.equal(list.children[0].children.length,2);
+  self.role='singer';ui.refresh();
+  assert.equal(list.children[0].children.length,1);
+  ui.handle({type:'client.joined'});
+  self.role='controller';ui.refresh();
+  assert.equal(list.children.length,0);
+});
