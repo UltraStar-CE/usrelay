@@ -1227,7 +1227,7 @@ function startClientHeartbeat() {
 
 function renderHostRecoveryNotice() {
   const notice = $('hostRecoveryNotice');
-  if (notice) notice.textContent = state.relayRecovering ? 'Connection lost. Reconnectingâ€¦' : 'Game disconnected. Reconnectingâ€¦';
+  if (notice) notice.textContent = state.relayRecovering ? 'Connection lost. Reconnecting…' : 'Game disconnected. Reconnecting…';
   if (notice) notice.classList.toggle('hidden', !state.hostRecovering);
 }
 
@@ -2061,7 +2061,7 @@ function renderLockGameInfo() {
     panel.replaceChildren();
     if (info) {
       const title = document.createElement('strong');
-      title.textContent = [info.artist, info.title].filter(Boolean).join(' â€” ');
+      title.textContent = [info.artist, info.title].filter(Boolean).join(' — ');
       panel.append(title);
       if (info.difficulty) {
         const difficulty = document.createElement('p');
@@ -2071,7 +2071,7 @@ function renderLockGameInfo() {
       const list = document.createElement('ol');
       for (const entry of (info.entries || []).slice(0, 20)) {
         const row = document.createElement('li');
-        row.textContent = `${entry.name || `Mic ${entry.slot}`} Â· ${Math.round(Number(entry.score) || 0)}`;
+        row.textContent = `${entry.name || `Mic ${entry.slot}`} · ${Math.round(Number(entry.score) || 0)}`;
         list.append(row);
       }
       panel.append(list);
@@ -2644,7 +2644,7 @@ function renderMicRooms() {
   lobbyButton.append(lobbyTitle, lobbyMeta);
   lobbyButton.classList.toggle('empty-lobby', !lobbyOccupants.length);
   if (!lobbyOccupants.length) {
-    lobbyTitle.textContent = shownSlot > 0 ? 'Leave mic Â· Lobby' : 'Lobby';
+    lobbyTitle.textContent = shownSlot > 0 ? 'Leave mic · Lobby' : 'Lobby';
     lobbyMeta.hidden = true;
   }
 
@@ -5146,7 +5146,7 @@ function handleClockPong(msg, route = 'server') {
   state.clock.jitterUs = previousRtt == null ? 0 : Math.round(Math.abs(rttUs - previousRtt));
   state.clock.confidence = Math.max(0, Math.min(1, 1 - state.clock.rttUs / 500_000));
   state.clock.synced = true;
-  rttValue.textContent = `${Math.round(state.clock.rttUs / 1000)} ms Â· ${route === 'direct' ? 'direct' : 'via server'}`;
+  rttValue.textContent = `${Math.round(state.clock.rttUs / 1000)} ms · ${route === 'direct' ? 'direct' : 'via server'}`;
   offsetValue.textContent = `${Math.round(state.clock.offsetUs / 1000)} ms`;
   if (state.hostSongStartUs && state.settings.playMusicOnDevice && !state.deviceMusicAudio) {
     maybeStartDeviceMusic();
@@ -5970,7 +5970,7 @@ async function startMic() {
     // Calling resume in this gesture still unlocks browsers which require it here.
     resumeMicAudio(audioContext);
 
-    micStatus.textContent = 'Requesting microphone accessâ€¦';
+    micStatus.textContent = 'Requesting microphone access…';
     const input = await createAudioInput(audioContext, {
       frequency: Number($('testAudioInput').value),
       mediaDevices: navigator.mediaDevices,
@@ -6018,7 +6018,7 @@ async function startMic() {
       source.connect(worklet).connect(silentSink);
     }
     if (state.rawPcmV1 || audioContext.sampleRate === 48000) {
-      micStatus.textContent = 'Preparing microphone audioâ€¦';
+      micStatus.textContent = 'Preparing microphone audio…';
       state.pcmSender = new NativePcmSender({ active: nativeAudioActive,
         channel: () => state.p2p.dc,
         relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message) });
