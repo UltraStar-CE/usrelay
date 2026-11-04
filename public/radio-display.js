@@ -15,6 +15,7 @@ export function createRadioDisplay({document,state,position,progress,renderLyric
     try {if(document.fullscreenElement)await document.exitFullscreen();else await root.requestFullscreen();}
     catch {status.textContent='Fullscreen is unavailable in this browser.';}
   });
+  let recovering=false;
   return {render() {
     const current=state(),tracks=radioTracks(current.currentLyricsMessage,current.songSeq);
     title.textContent=[current.currentSongMessage?.artist,current.currentSongMessage?.title].filter(Boolean).join(' - ')||'Waiting for a song';
@@ -25,6 +26,8 @@ export function createRadioDisplay({document,state,position,progress,renderLyric
     const showScores=document.getElementById('radioShowScores').checked;
     scores.textContent=showScores?(current.scoreSnapshot?.players||[]).map(p=>`${p.name||`Player ${p.slot}`}: ${p.scoreTotal||0}`).join(' / '):'';
     document.getElementById('radioPause').textContent=current.gameState==='paused'?'Resume':'Pause';
-    if(current.hostRecovering)status.textContent='Game disconnected. Reconnecting…';
+    if(current.hostRecovering)status.textContent='Game disconnected. Reconnecting...';
+    else if(recovering)status.textContent='';
+    recovering=Boolean(current.hostRecovering);
   }};
 }
