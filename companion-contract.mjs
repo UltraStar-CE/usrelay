@@ -104,7 +104,7 @@ export const companionContract = {
           "const": 1
         },
         "commandId": {
-          "type": "integer"
+          "type": ["integer", "string"]
         },
         "command": {
           "enum": [
@@ -174,7 +174,7 @@ export const companionContract = {
           "const": "ack"
         },
         "commandId": {
-          "type": "integer"
+          "type": ["integer", "string"]
         },
         "accepted": {
           "type": "boolean"

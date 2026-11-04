@@ -25,5 +25,9 @@ test('public feature contract is discoverable without joining a room', {timeout:
   assert.ok(contract.commands.includes('continuous.start'));
   assert.equal(contract.discovery.gameCommands, 'api.state.apiCapabilities');
   assert.equal(contract.schemas.command.properties.protocol.const, 1);
+  // The catalog sends IDs such as catalog_1; ACKs preserve the original ID.
+  for (const envelope of ['command', 'ack']) {
+    assert.deepEqual(contract.schemas[envelope].properties.commandId.type, ['integer', 'string']);
+  }
   assert.ok(!JSON.stringify(contract).includes('hostToken'));
 });
