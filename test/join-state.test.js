@@ -4,16 +4,16 @@ import vm from 'node:vm';
 import test from 'node:test';
 const app=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
 test('joining or resuming consumes the current game snapshot before rendering',async()=>{
-  const received=[];const state={p2p:{},roomId:'old-room',songSelect:{libraryHash:'old',library:[{songId:1,title:'Previous game'}]},party:{likedSongIdsByPlayer:{phone:[1]}},localLikedSongIds:new Set([1])};
+  const received=[], redirected=[], sent=[];const state={p2p:{},roomId:'old-room',songSelect:{libraryHash:'old',library:[{songId:1,title:'Previous game'}]},party:{likedSongIdsByPlayer:{phone:[1]}},localLikedSongIds:new Set([1])};
   const noop=()=>{};
-  const context=vm.createContext({state,nameInput:{value:'Singer'},
+  const context=vm.createContext({state,radioView:false,nameInput:{value:'Singer'},
     handleMessage:async message=>{received.push(message);state.gameState=message.state;},
     cancelRelayRecovery:noop,renderHostRecoveryNotice:noop,requestSongState:noop,
     applyOwnProfileFromMessage:noop,rememberLastMicSlot:noop,setRoomScreenVisible:noop,
     updateIdentity:noop,updateGameStateView:()=>assert.equal(state.gameState,'main_menu'),
-    saveSession:noop,startClientHeartbeat:noop,send:noop,ensureCachedAvatarOnServer:noop,
+    saveSession:noop,startClientHeartbeat:noop,send:message=>sent.push(message),ensureCachedAvatarOnServer:noop,
     sendClockPing:noop,persistSettings:noop,startP2p:noop,logLine:noop,
-    window:{setTimeout:noop}});
+    window:{setTimeout:noop,location:{replace:url=>redirected.push(url)}}});
   const start=app.indexOf("  if (message.type === 'client.joined') {");
   const end=app.indexOf("  if (message.type === 'host.disconnected')",start);
   vm.runInContext('async function join(message){'+app.slice(start,end)+'}',context);
@@ -28,6 +28,15 @@ test('joining or resuming consumes the current game snapshot before rendering',a
     assert.equal(received.at(-1).seq,17);
     assert.equal(received.at(-1).players[0].playerId,'phone');
   }
+  context.radioView=true;
+  const readyBefore=sent.length;
+  await context.join({type:'client.joined',roomId:'room',webApp:'catalog',displayCode:'ABCDE'});
+  assert.equal(redirected.length,0);
+  assert.equal(sent.length,readyBefore+1);
+  assert.equal(sent.at(-1).type,'client.ready');
+  context.radioView=false;
+  await context.join({type:'client.joined',roomId:'room',webApp:'catalog',displayCode:'ABCDE'});
+  assert.deepEqual(redirected,['/ABCDE']);
 });
 
 test('join cannot synchronize last-room cached numeric song IDs before native validation',()=>{

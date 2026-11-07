@@ -49,6 +49,20 @@ relay uses `USDX_ICE_SERVERS`; the native game uses `USCE_RAW_AUDIO_ICE`.
 A connected signaling WebSocket does not establish whether audio is direct.
 The web app's persistent route badge reports Direct or Via server.
 
+## Radio and lyrics display
+
+Open `/?view=radio`, join the native game's room, then press Enable music.
+This reuses the existing device-audio decoder, clock synchronization and media
+routes. It shows every native lyric voice, optional native scores, progress,
+pause/resume, previous/next, fullscreen and the existing screen wake-lock option.
+It has a separate reconnect session and never claims a mic slot or captures audio.
+Previous needs UltraStar-CE/USCE#320, stacked on #319 and #168.
+
+This is a browser presentation of a running native game, not standalone browser
+karaoke or a second parser/scoring engine. Native continuous mode supplies the
+queue, timing and results. Running without a native window/display, note-guide
+projection and server-side/headless hosting remain separate work for issue #14.
+
 ## ultrastar.at and usdx.at
 
 Both domains can serve the same application and room codes when their reverse
