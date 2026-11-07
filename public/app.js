@@ -1,6 +1,7 @@
 import {createSavedSingers} from './saved-singers.js';
 import {createMicGestures} from './mic-gestures.js';
 import {createSongWishes} from './song-wishes.js';
+import {createPerformanceRequests} from './performance-requests.js';
 import {audioTimingView} from './audio-timing.js';
 import {DigitalCalibration} from './digital-calibration.js';
 import {loadSongs} from './song-query.js';
@@ -4910,7 +4911,10 @@ function renderSongSelectState() {
         artist: song.artist || ''
       }, like));
 
-      actions.append(previewBox, playlistAction, like);
+      const request = document.createElement('button');
+      request.type = 'button'; request.textContent = 'Request'; request.disabled = !song.catalogKey || state.hostRecovering;
+      request.addEventListener('click',()=>sendRelay({type:'request.add',catalogKey:song.catalogKey}));
+      actions.append(previewBox, playlistAction, like, request);
       item.append(label, actions);
       songResultList.append(item);
     }
@@ -5173,9 +5177,12 @@ const savedSingers = createSavedSingers({document, storage:localStorage, state:(
 
 const songWishes = createSongWishes({send:sendRelay, identity:()=>state, document});
 
+const performanceRequests = createPerformanceRequests({document,storage:localStorage,state:()=>state,send:sendRelay,control:sendControl,confirm:window.confirm.bind(window)});
+
 async function handleMessage(message) {
   if (message.type === 'roster.ack' && savedSingers.handle(message)) return;
   if ((String(message.type).startsWith('wish.') || message.type === 'client.joined') && songWishes.handle(message)) return;
+  if ((String(message.type).startsWith('request.')||message.type==='client.joined') && performanceRequests.handle(message)) return;
   if(digitalCalibration.handle(message)) {renderAudioTiming();return;}
   if (String(message.type || '').startsWith('p2p.')) {
     handleP2pSignal(message);
@@ -5298,6 +5305,7 @@ async function handleMessage(message) {
     if (state.rawPcmV1) startP2p();
     state.role = message.role;
     songWishes.refresh();
+    performanceRequests.refresh();
     state.pendingSlot = null;
     state.pendingPreviousSlot = null;
     state.pendingSlotUntilMs = 0;
@@ -5428,7 +5436,11 @@ async function handleMessage(message) {
           }
         }
         state.slot = self.slot;
-        state.role = self.role;
+        if (state.role !== self.role) {
+          state.role = self.role;
+          songWishes.refresh();
+          performanceRequests.refresh();
+        }
         applyOwnProfileFromMessage(self);
         updateIdentity();
       }
