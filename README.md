@@ -52,6 +52,10 @@ The web app's persistent route badge reports Direct or Via server.
 ## Radio and lyrics display
 
 Open `/?view=radio`, join the native game's room, then press Enable music.
+The USCE host can enable Full client, Catalog and Radio in Options > Network.
+The room link opens the host's default view. Links such as `/ABCD?view=radio`
+open a specific view when the host has enabled it. Older game versions keep
+their existing default and offer all three views.
 This reuses the existing device-audio decoder, clock synchronization and media
 routes. It shows every native lyric voice, optional native scores, progress,
 pause/resume, previous/next, fullscreen and the existing screen wake-lock option.

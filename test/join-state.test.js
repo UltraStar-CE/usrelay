@@ -9,7 +9,7 @@ test('joining or resuming consumes the current game snapshot before rendering',a
   const context=vm.createContext({state,radioView:false,nameInput:{value:'Singer'},
     handleMessage:async message=>{received.push(message);state.gameState=message.state;},
     cancelRelayRecovery:noop,renderHostRecoveryNotice:noop,requestSongState:noop,
-    applyOwnProfileFromMessage:noop,rememberLastMicSlot:noop,setRoomScreenVisible:noop,
+    applyOwnProfileFromMessage:noop,rememberLastMicSlot:noop,setRoomScreenVisible:noop,renderCompanionViews:noop,
     updateIdentity:noop,updateGameStateView:()=>assert.equal(state.gameState,'main_menu'),
     saveSession:noop,startClientHeartbeat:noop,send:message=>sent.push(message),ensureCachedAvatarOnServer:noop,
     sendClockPing:noop,persistSettings:noop,startP2p:noop,logLine:noop,

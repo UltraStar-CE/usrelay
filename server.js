@@ -59,6 +59,28 @@ function resolveWebApp(value) {
   };
 }
 
+const companionViewNames = ['full', 'catalog', 'radio'];
+
+function parseCompanionViews(value) {
+  if (!Array.isArray(value?.enabled) || !value.enabled.length ||
+      value.enabled.length > companionViewNames.length ||
+      !value.enabled.every(view => companionViewNames.includes(view)) ||
+      !value.enabled.includes(value.default)) return null;
+  return {enabled: [...new Set(value.enabled)], default: value.default};
+}
+
+function roomViews(room) {
+  return room.companionViews || {enabled: companionViewNames, default: room.webApp === 'catalog' ? 'catalog' : 'full'};
+}
+
+function updateCompanionViews(room, policy) {
+  room.companionViews = policy;
+  for (const player of room.players.values()) {
+    if (!policy.enabled.includes(player.companionView)) removePlayerFromRoom(room, player, 'companion_view_disabled');
+  }
+  broadcastPlayers(room, {type:'companion.views', protocol:protocolVersion, companionViews:policy});
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -427,7 +449,7 @@ function playlistAutomationPayload(room) {
   };
 }
 
-function createRoom(hostConn, hello, webApp) {
+function createRoom(hostConn, hello, webApp, companionViews) {
   const roomId = randomId('room');
   const displayCode = allocateCode();
   const hostToken = randomId('host');
@@ -444,6 +466,7 @@ function createRoom(hostConn, hello, webApp) {
     bridgeVersion: String(hello.bridgeVersion || ''),
     webApp: webApp?.name || 'default',
     webAppRequested: webApp?.requested || '',
+    companionViews,
     players: new Map(),
     controllerPlayerId: null,
     gameState: {
@@ -484,6 +507,7 @@ function createRoom(hostConn, hello, webApp) {
   hostConn.hostToken = hostToken;
   hostConn.sendJson({
     type: 'room.created',
+    companionViews: roomViews(room),
     protocol: protocolVersion,
     roomId,
     displayCode,
@@ -544,7 +568,7 @@ function playerHeartbeatExpired(player, now = Date.now()) {
   return lastSeen > 0 && now - lastSeen >= playerHeartbeatTimeoutMs;
 }
 
-function resumeRoom(hostConn, hello, webApp) {
+function resumeRoom(hostConn, hello, webApp, companionViews) {
   const roomId = String(hello.roomId || '');
   const hostToken = String(hello.hostToken || '');
   if (!roomId || !hostToken) return null;
@@ -564,8 +588,10 @@ function resumeRoom(hostConn, hello, webApp) {
     room.webApp = webApp?.name || 'default';
     room.webAppRequested = webApp?.requested || '';
   }
+  if (companionViews) updateCompanionViews(room, companionViews);
   hostConn.sendJson({
     type: 'room.resumed',
+    companionViews: roomViews(room),
     protocol: protocolVersion,
     roomId: room.roomId,
     displayCode: room.displayCode,
@@ -855,8 +881,9 @@ function removePlayerFromRoom(room, target, reason) {
     target.conn.sendJson({
       type: 'error',
       protocol: protocolVersion,
-      code: reason === 'kick' ? 'player.kicked' : 'player.removed',
-      reason: reason === 'kick' ? 'Kicked by controller' : reason
+      code: reason === 'companion_view_disabled' ? 'join.view_disabled' : reason === 'kick' ? 'player.kicked' : 'player.removed',
+      reason: reason === 'companion_view_disabled' ? 'The game host has disabled this companion view.' :
+        reason === 'kick' ? 'Kicked by controller' : reason
     });
     target.conn.player = null;
     target.conn.room = null;
@@ -1397,7 +1424,12 @@ function handleHostMessage(conn, msg) {
       log('host.hello.rejected', { reason: 'web_app.invalid', requested: webApp.requested });
       return;
     }
-    if (resumeRoom(conn, msg, webApp)) {
+    const companionViews = parseCompanionViews(msg.companionViews);
+    if (Object.hasOwn(msg, 'companionViews') && !companionViews) {
+      conn.sendJson({type:'error', protocol:protocolVersion, code:'companion_views.invalid'});
+      return;
+    }
+    if (resumeRoom(conn, msg, webApp, companionViews)) {
       return;
     }
     if (msg.roomId || msg.hostToken) {
@@ -1407,7 +1439,7 @@ function handleHostMessage(conn, msg) {
         webApp: webApp.name || 'default'
       });
     }
-    createRoom(conn, msg, webApp);
+    createRoom(conn, msg, webApp, companionViews);
     return;
   }
 
@@ -1417,6 +1449,13 @@ function handleHostMessage(conn, msg) {
     return;
   }
   room.lastSeenMs = Date.now();
+  if (msg.type === 'host.views') {
+    if (conn !== room.host) return;
+    const policy = parseCompanionViews(msg.companionViews);
+    if (!policy) conn.sendJson({type:'error', protocol:protocolVersion, code:'companion_views.invalid'});
+    else updateCompanionViews(room, policy);
+    return;
+  }
   if (msg.type === 'continuous.state') room.lastContinuousState = {...msg};
   if (['api.state','song.select.state'].includes(msg.type) && msg.apiCapabilities?.includes('continuous.start') && !room.hostedParty) {
     room.hostedParty = new HostedParty({room,
@@ -1645,6 +1684,18 @@ function handleClientJoin(conn, msg) {
     return;
   }
 
+  const views = roomViews(room);
+  const view = msg.companionView ?? 'full';
+  if (msg.useDefaultView === true && view === 'full' && views.default !== view) {
+    conn.sendJson({type:'join.use_default', protocol:protocolVersion, displayCode:room.displayCode});
+    return;
+  }
+  if (!views.enabled.includes(view)) {
+    conn.sendJson({type:'error', protocol:protocolVersion, code:'join.view_disabled',
+      reason:'The game host has disabled this companion view.'});
+    return;
+  }
+
   const resumed = findResumePlayer(room, msg);
   if (!resumed && (msg.playerId || msg.playerToken)) {
     conn.sendJson({type:'error',protocol:protocolVersion,code:'client.session_expired'});
@@ -1659,6 +1710,7 @@ function handleClientJoin(conn, msg) {
     }
     enforceControllerRole(resumed);
     resumed.conn = conn;
+    resumed.companionView = view;
     applyPlayerProfile(resumed, profileFromMessage(msg, resumed));
     resumed.micDelayMs = micDelayFromSettings(msg.settings, resumed.micDelayMs);
     resumed.songLibraryHash = String(msg.songLibraryHash || resumed.songLibraryHash || '');
@@ -1688,6 +1740,7 @@ function handleClientJoin(conn, msg) {
       controllerPlayerId: room.controllerPlayerId,
       gameState: room.gameState,
       webApp: room.webApp || 'default',
+      companionViews: views,
       rawPcmV1: room.capabilities.includes('rawPcmV1'),
       audioCalibrationV1: room.capabilities.includes('audioCalibrationV1'),
       p2p: publicP2pConfig(room),
@@ -1726,6 +1779,7 @@ function handleClientJoin(conn, msg) {
     songLibraryHash: String(msg.songLibraryHash || ''),
     slot,
     role,
+    companionView: view,
     micDelayMs: micDelayFromSettings(msg.settings),
     conn,
     joinedAt: nowIso(),
@@ -1761,6 +1815,7 @@ function handleClientJoin(conn, msg) {
     controllerPlayerId: room.controllerPlayerId,
     gameState: room.gameState,
     webApp: room.webApp || 'default',
+    companionViews: views,
     rawPcmV1: room.capabilities.includes('rawPcmV1'),
       audioCalibrationV1: room.capabilities.includes('audioCalibrationV1'),
     p2p: publicP2pConfig(room)
@@ -2843,16 +2898,34 @@ const server = http.createServer((req, res) => {
 
   const shortcutCode = sanitizeCode(url.pathname.slice(1));
   const isRoomShortcut = url.pathname.length === 5 && shortcutCode.length === 4;
-  const shortcutRoom = isRoomShortcut ? roomsByCode.get(shortcutCode) : null;
-  const requestedApp = resolveWebApp(url.searchParams.get('app') || '');
-  const selectedWebApp = shortcutRoom?.webApp || (requestedApp.ok && requestedApp.specified ? requestedApp.name : 'default');
+  const catalogEntry = ['/catalog/', '/catalog/index.html'].includes(url.pathname);
+  const entry = isRoomShortcut || catalogEntry || ['/', '/index.html'].includes(url.pathname);
+  const roomCode = isRoomShortcut ? shortcutCode : entry ? sanitizeCode(url.searchParams.get('room')) : '';
+  const shortcutRoom = roomCode ? roomsByCode.get(roomCode) : null;
+  const requestedApp = resolveWebApp(url.searchParams.get('app'));
+  const requestedView = url.searchParams.get('view') ??
+    (catalogEntry ? 'catalog' : requestedApp.specified && requestedApp.ok ? (requestedApp.name === 'catalog' ? 'catalog' : 'full') : null);
+  const selectedView = requestedView ?? (shortcutRoom ? roomViews(shortcutRoom).default : 'full');
+  if (entry && (!companionViewNames.includes(selectedView) ||
+                (shortcutRoom && !roomViews(shortcutRoom).enabled.includes(selectedView)))) {
+    res.writeHead(companionViewNames.includes(selectedView) ? 403 : 400,
+      {'content-type':'text/plain; charset=utf-8', 'cache-control':'no-store'});
+    res.end('This companion view is unavailable. Open the room link shown in the game.');
+    return;
+  }
+  if (roomCode && (!isRoomShortcut || (selectedView === 'radio' && url.searchParams.get('view') !== 'radio'))) {
+    res.writeHead(302, {Location:'/' + roomCode + (requestedView || selectedView === 'radio' ? '?view=' + selectedView : ''),
+      'cache-control':'no-store'});
+    res.end();
+    return;
+  }
   const servesCatalogAsset = url.pathname.startsWith('/catalog/');
   const staticRoot = servesCatalogAsset ? catalogPublicDir : publicDir;
   const staticPath = servesCatalogAsset ? url.pathname.slice('/catalog/'.length) : url.pathname;
-  let filePath = (url.pathname === '/' || isRoomShortcut)
-    ? path.join(selectedWebApp === 'catalog' ? catalogPublicDir : publicDir, 'index.html')
+  const filePath = entry
+    ? path.join(selectedView === 'catalog' ? catalogPublicDir : publicDir, 'index.html')
     : path.join(staticRoot, path.normalize(staticPath));
-  if (!filePath.startsWith(staticRoot)) {
+  if (!filePath.startsWith((entry ? publicDir : staticRoot) + path.sep)) {
     res.writeHead(403);
     res.end('forbidden');
     return;
