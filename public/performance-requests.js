@@ -5,7 +5,7 @@ export function createPerformanceRequests({document,storage,state,send,control,c
   let snapshot=null,backup=null,timer;
   try {backup=JSON.parse(storage.getItem(backupKey)||'null');} catch {}
   function persist() {
-    if(!snapshot)return;
+    if(!snapshot||state().role!=='controller')return;
     try {storage.setItem(backupKey,JSON.stringify(snapshot));backup=snapshot;status.textContent='Queue saved on this browser.';}
     catch {status.textContent='Could not save queue on this browser.';}
   }
@@ -24,21 +24,13 @@ export function createPerformanceRequests({document,storage,state,send,control,c
       send(message);
     });row.append(element);
   }
-  return {handle(message) {
-    if(message.type==='client.joined')send({type:'request.list'});
-    if(message.type==='request.ack') {
-      status.textContent=message.accepted?'':`Request not accepted: ${message.reason}`;
-      return true;
-    }
-    if(message.type!=='request.state')return false;
-    snapshot=message;
+  function refresh() {
     const host=state().role==='controller';
-    save.disabled=!host;restore.disabled=!host||!backup||message.items.length>0;
-    clearTimeout(timer);
-    // An empty new room must not overwrite the previous room's recovery copy.
-    if(host&&backup?.sessionId===snapshot.sessionId)timer=setTimeout(persist,500);
+    const items=snapshot?.items??[];
+    save.disabled=!host||!snapshot;
+    restore.disabled=!host||!snapshot||!backup||items.length>0;
     list.replaceChildren();
-    for(const item of message.items) {
+    for(const item of items) {
       const row=document.createElement('li'),label=document.createElement('span');
       label.textContent=`${item.artist||''} - ${item.title||'(untitled)'} / ${item.requesterName} / ${item.status} / ${item.votes.length} votes`;
       row.append(label);
@@ -62,6 +54,25 @@ export function createPerformanceRequests({document,storage,state,send,control,c
         button(row,'Remove',{type:'request.withdraw',id:item.id});
       list.append(row);
     }
+  }
+  refresh();
+  return {refresh,handle(message) {
+    if(message.type==='client.joined') {
+      clearTimeout(timer);
+      snapshot=null;
+      refresh();
+      send({type:'request.list'});
+    }
+    if(message.type==='request.ack') {
+      status.textContent=message.accepted?'':`Request not accepted: ${message.reason}`;
+      return true;
+    }
+    if(message.type!=='request.state')return false;
+    snapshot=message;
+    refresh();
+    clearTimeout(timer);
+    // An empty new room must not overwrite the previous room's recovery copy.
+    if(state().role==='controller'&&backup?.sessionId===snapshot.sessionId)timer=setTimeout(persist,500);
     return true;
   }};
 }

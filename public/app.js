@@ -5305,6 +5305,7 @@ async function handleMessage(message) {
     if (state.rawPcmV1) startP2p();
     state.role = message.role;
     songWishes.refresh();
+    performanceRequests.refresh();
     state.pendingSlot = null;
     state.pendingPreviousSlot = null;
     state.pendingSlotUntilMs = 0;
@@ -5435,7 +5436,11 @@ async function handleMessage(message) {
           }
         }
         state.slot = self.slot;
-        state.role = self.role;
+        if (state.role !== self.role) {
+          state.role = self.role;
+          songWishes.refresh();
+          performanceRequests.refresh();
+        }
         applyOwnProfileFromMessage(self);
         updateIdentity();
       }

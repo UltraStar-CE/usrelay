@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PerformanceRequests} from '../performance-requests.mjs';
 import {providerRequest} from '../public/request-adapter.js';
+import {createPerformanceRequests} from '../public/performance-requests.js';
 function fixture() {
   const library=[{songId:4,catalogKey:'one',title:'Same title'},{songId:7,catalogKey:'two',title:'Same title'}];
   const commands=[];
@@ -64,4 +65,47 @@ test('provider event retries retain performance identity even after removal',asy
   assert.equal(retry.id,first.id);
   assert.equal(book.items.length,0,'duplicate provider events must not recreate a withdrawn performance');
   assert.throws(()=>providerRequest('example',{id:'42',title:'Same title'}),/identity/);
+});
+
+
+test('request controls follow role changes without another queue snapshot', () => {
+  class Element {
+    children = [];
+    append(child) { this.children.push(child); }
+    replaceChildren() { this.children = []; }
+    addEventListener() {}
+  }
+  const elements = new Map();
+  const document = {
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, new Element());
+      return elements.get(id);
+    },
+    createElement() { return new Element(); },
+  };
+  const self = {playerId:'guest',role:'singer'};
+  const send = [];
+  const ui = createPerformanceRequests({
+    document, storage:{getItem:()=>null}, state:()=>self, send:message=>send.push(message),
+    control:()=>{}, confirm:()=>true,
+  });
+  const list = elements.get('requestList');
+  const save = elements.get('requestSave');
+  const actions = () => list.children[0].children.slice(1).map(button=>button.textContent);
+  ui.handle({type:'request.state',sessionId:'room',items:[
+    {id:'one',title:'A song',requesterName:'Someone',requesterId:'other',status:'queued',votes:[]},
+  ]});
+  assert.deepEqual(actions(), ['Vote']);
+  assert.equal(save.disabled, true);
+  self.role = 'controller';
+  ui.refresh();
+  assert.deepEqual(actions(), ['Vote','Start','Up','Down','Remove']);
+  assert.equal(save.disabled, false);
+  self.role = 'singer';
+  ui.refresh();
+  assert.deepEqual(actions(), ['Vote']);
+  assert.equal(save.disabled, true);
+  ui.handle({type:'client.joined'});
+  assert.deepEqual(list.children, []);
+  assert.deepEqual(send, [{type:'request.list'}]);
 });
