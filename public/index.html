@@ -15,7 +15,7 @@
     <main class="shell">
       <section id="joinScreen" class="screen">
         <div class="brand">UltraStar Relay</div>
-        <p class="fine"><a href="/?view=radio">Open radio / lyrics display</a></p>
+        <p class="fine" id="radioEntry"><a href="/?view=radio">Open radio / lyrics display</a></p>
         <form id="joinForm" class="join-form">
           <label>
             Room code
@@ -45,6 +45,7 @@
       </section>
 
       <section id="appScreen" class="screen hidden">
+        <nav id="companionViews" aria-label="Companion views" hidden></nav>
         <div id="hostRecoveryNotice" class="host-recovery hidden" role="status">Game disconnected. Reconnecting…</div>
         <section id="radioPanel" hidden>
           <h1 id="radioTitle">Waiting for a song</h1>

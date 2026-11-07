@@ -1,6 +1,7 @@
 import {songLanguages, songInitial} from '/song-metadata.js';
 import {createApiRequests} from '/api-requests.js';
 import {loadSongs} from '/song-query.js';
+import {renderCompanionViews} from '/companion-views.js';
 const protocol = 1;
 const sessionKey = 'usdx.remote.session.v1';
 const nameKey = 'usdx.remote.name.v1';
@@ -1626,7 +1627,12 @@ async function finishCatalogTransfer(message) {
 }
 
 async function handleMessage(message) {
+  if (message.type === 'companion.views') {
+    renderCompanionViews(state.displayCode, message.companionViews, 'catalog');
+    return;
+  }
   if (message.type === 'client.joined') {
+    renderCompanionViews(message.displayCode, message.companionViews, 'catalog');
     Object.assign(state, {
       roomId: message.roomId,
       displayCode: message.displayCode,
@@ -1679,7 +1685,7 @@ async function handleMessage(message) {
   if (message.type === 'error') {
     const text = message.reason || message.code || 'Error';
     if (
-      ['join.bad_code', 'room.closed'].includes(message.code) ||
+      ['join.bad_code', 'room.closed', 'join.view_disabled'].includes(message.code) ||
       ['host_disconnected', 'expired', 'heartbeat_timeout'].includes(message.reason)
     ) {
       leaveClosedRoom(
@@ -1776,6 +1782,7 @@ function connectAndJoin(displayCode, name, resume = null) {
       type: 'client.join',
       protocol,
       displayCode: code,
+      companionView: 'catalog',
       name: state.name,
       difficultyMode: 'free',
       difficulty: 1,

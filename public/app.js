@@ -3,6 +3,7 @@ import {createMicGestures} from './mic-gestures.js';
 import {createSongWishes} from './song-wishes.js';
 import {createPerformanceRequests} from './performance-requests.js';
 import {createRadioDisplay} from './radio-display.js';
+import {renderCompanionViews} from './companion-views.js';
 import {audioTimingView} from './audio-timing.js';
 import {DigitalCalibration} from './digital-calibration.js';
 import {loadSongs} from './song-query.js';
@@ -12,7 +13,9 @@ import { createAudioInput, startSyntheticPcm } from './audio-input.js?v=4';
 const protocol = 1;
 const digitalCalibration = new DigitalCalibration({send:message=>sendRelay(message),
   startWave:startCalibrationWave,stopWave:stopCalibrationWave});
-const radioView = new URLSearchParams(window.location.search).get('view') === 'radio';
+const viewQuery = new URLSearchParams(window.location.search);
+const radioView = viewQuery.get('view') === 'radio';
+document.getElementById('radioEntry').hidden = location.pathname !== '/' || radioView;
 const sessionKey = radioView ? 'usdx.remote.session.v1.radio' : 'usdx.remote.session.v1';
 const nameKey = 'usdx.remote.name.v1';
 const difficultyModeKey = 'usdx.remote.difficultyMode.v1';
@@ -5207,6 +5210,17 @@ async function handleMessage(message) {
     return;
   }
 
+  if (message.type === 'companion.views') {
+    renderCompanionViews(state.displayCode, message.companionViews, radioView ? 'radio' : 'full');
+    return;
+  }
+
+  if (message.type === 'join.use_default') {
+    const code = String(message.displayCode || '');
+    if (/^[A-Z2-9]{4}$/.test(code)) window.location.replace('/' + code);
+    return;
+  }
+
   if (message.type === 'client.joined') {
     const recoveredTransport = Boolean(state.relayRecovering);
     cancelRelayRecovery();
@@ -5254,10 +5268,11 @@ async function handleMessage(message) {
     state.p2p.iceServers = Array.isArray(message.p2p?.iceServers) ? message.p2p.iceServers : [];
     rememberLastMicSlot(state.slot);
     setRoomScreenVisible(true);
+    renderCompanionViews(state.displayCode, message.companionViews, radioView ? 'radio' : 'full');
     updateIdentity();
     updateGameStateView();
     saveSession();
-    if (!radioView && String(message.webApp || '').toLowerCase() === 'catalog') {
+    if (!radioView && !message.companionViews && String(message.webApp || '').toLowerCase() === 'catalog') {
       window.location.replace(`/${encodeURIComponent(message.displayCode || state.displayCode || '')}`);
       return;
     }
@@ -5767,6 +5782,10 @@ async function handleMessage(message) {
       reconnectRelay();
       return;
     }
+    if (message.code === 'join.view_disabled') {
+      leaveClosedRoom(text);
+      return;
+    }
     if (message.code === 'client.session_expired') {
       leaveClosedRoom('Your previous connection expired. Rejoin the room to select a mic.');
       return;
@@ -5825,6 +5844,8 @@ function connectAndJoin(displayCode, name, resume = null) {
       type: 'client.join',
       protocol,
       displayCode,
+      companionView: radioView ? 'radio' : 'full',
+      useDefaultView: location.pathname === '/' && !viewQuery.has('view') && !viewQuery.has('app'),
       ...currentProfile(name),
       playerId: resume?.playerId,
       playerToken: resume?.playerToken,
