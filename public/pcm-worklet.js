@@ -1,12 +1,15 @@
 class PcmSender extends AudioWorkletProcessor {
-  constructor() {
+  constructor({processorOptions} = {}) {
     super();
+    this.reportCaptureTime = Boolean(processorOptions?.reportCaptureTime);
+    this.captureEpoch = 1;
+    this.nextFrame = null;
     this.samples = new Int16Array(480);
     this.calibrationSamples = new Int16Array(480);
     this.haveCalibration = false;
     this.used = 0;
-    this.sequence = 0;
-    this.sampleOffset = 0;
+    this.sequence = processorOptions?.sequence >>> 0;
+    this.sampleOffset = processorOptions?.sampleOffset >>> 0;
     this.inputFrames = 0;
     this.outputFrames = 0;
     this.previous = 0;
@@ -27,6 +30,17 @@ class PcmSender extends AudioWorkletProcessor {
   process(inputs) {
     const input = inputs[0]?.[0];
     if (!input) return true;
+    if (this.reportCaptureTime) {
+      if (this.nextFrame !== null && this.nextFrame !== currentFrame) {
+        ++this.captureEpoch;
+        this.used = 0;
+        this.haveCalibration = false;
+        this.inputFrames = 0;
+        this.outputFrames = 0;
+        this.previous = 0;
+      }
+      this.nextFrame = currentFrame + input.length;
+    }
     let inputIndex = 0;
     for (const value of input) {
       const sample = Number.isFinite(value) ? Math.max(-1, Math.min(1, value)) : 0;
@@ -47,7 +61,7 @@ class PcmSender extends AudioWorkletProcessor {
             this.calibration.phase = (this.calibration.phase + 2 * Math.PI * hz / 48000) % (2 * Math.PI);
           }
         }
-        this.emitSample(value, calibrationSample);
+        this.emitSample(value, calibrationSample, inputIndex - 1 + fraction);
         ++this.outputFrames;
       }
       this.previous = sample;
@@ -56,7 +70,7 @@ class PcmSender extends AudioWorkletProcessor {
     }
     return true;
   }
-  emitSample(sample, calibrationSample = null) {
+  emitSample(sample, calibrationSample, inputPosition) {
     this.calibrationSamples[this.used] = calibrationSample === null ? 0 : Math.round(calibrationSample * 32767);
     this.haveCalibration ||= calibrationSample !== null;
     this.samples[this.used++] = Math.round(sample * (sample < 0 ? 32768 : 32767));
@@ -76,7 +90,11 @@ class PcmSender extends AudioWorkletProcessor {
         calibrationView.setUint32(0, 0x31434155, true); // UAC1: never singing audio
         for (let i = 0; i < 480; ++i) calibrationView.setInt16(20 + i * 2, this.calibrationSamples[i], true);
       }
-      this.port.postMessage(packet, [packet]);
+      const message = this.reportCaptureTime
+        ? { packet, captureEndSeconds: currentTime + inputPosition / sampleRate + 1 / 48000,
+            captureEpoch: this.captureEpoch }
+        : packet;
+      this.port.postMessage(message, [packet]);
       if (calibrationPacket) this.port.postMessage(calibrationPacket, [calibrationPacket]);
       this.haveCalibration = false;
       this.sampleOffset += 480;

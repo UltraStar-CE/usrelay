@@ -1,4 +1,9 @@
 // The existing room/socket and microphone button own this transport.
+export const CAPTURE_PACKET_LIFETIME_MS = 300;
+const LEGACY_BUFFER_LIMIT = 9600;
+// A stamped receiver can place retransmissions in the original capture window.
+// Cap queued audio even when a short network stall is recoverable.
+const STAMPED_BUFFER_LIMIT = 48000;
 export class NativePcmSender {
   constructor({ active, channel, relay, now = () => performance.now() }) {
     Object.assign(this, { active, channel, relay, now });
@@ -58,14 +63,23 @@ export class NativePcmSender {
       }
     }
   }
-  submit(packet) {
+  submit(packet, stamp) {
     if (!this.active() || !(packet instanceof ArrayBuffer) || packet.byteLength !== 980) return;
     const calibration = new DataView(packet).getUint32(0, true) === 0x31434155;
+    if (calibration) stamp = undefined;
     const dc = this.channel();
     let direct = false;
-    if (dc?.readyState === 'open' && dc.bufferedAmount < 9600) {
+    const bufferLimit = stamp ? STAMPED_BUFFER_LIMIT : LEGACY_BUFFER_LIMIT;
+    if (dc?.readyState === 'open' && dc.bufferedAmount < bufferLimit) {
       try {
-        dc.send(packet);
+        if (stamp) {
+          const data = new Uint8Array(packet.byteLength + 12);
+          data.set(new Uint8Array(packet));
+          const trailer = new DataView(data.buffer, packet.byteLength);
+          trailer.setBigUint64(0, BigInt(stamp.captureEndHostUs), true);
+          trailer.setUint32(8, stamp.captureEpoch, true);
+          dc.send(data.buffer);
+        } else dc.send(packet);
         if (!calibration) this.pending.set(new DataView(packet).getUint32(4, true), this.now());
         if (this.pending.size > 256) this.pending.delete(this.pending.keys().next().value);
         ++this.sent;
@@ -78,7 +92,12 @@ export class NativePcmSender {
     if (!direct || !this.confirmed()) {
       if (!calibration) this.lastFallback = this.now();
       const pcm = btoa(String.fromCharCode(...new Uint8Array(packet)));
-      if (this.relay({ type: calibration ? 'audio.calibration.pcm' : 'audio.pcm', pcm })) ++this.relayed;
+      const message = { type: calibration ? 'audio.calibration.pcm' : 'audio.pcm', pcm };
+      if (stamp) {
+        message.captureEndHostUs = stamp.captureEndHostUs;
+        message.captureEpoch = stamp.captureEpoch;
+      }
+      if (this.relay(message)) ++this.relayed;
       else ++this.dropped;
     }
   }

@@ -16,8 +16,8 @@ continues to use `protocol: 1`; it is distinct from the contract version.
    room code/name, and receives `client.joined`. Keep reconnect tokens private;
    they are not usernames or public room identifiers.
 3. Use the game's `api.state.apiCapabilities` to decide which semantic commands
-   are available. Transport features such as `rawPcmV1`, `audioCalibrationV1`
-   and `p2pDataChannel` are separate from semantic game commands.
+   are available. Transport features such as `rawPcmV1`, `audioCalibrationV1`,
+   `captureTimestampsV1` and `p2pDataChannel` are separate from semantic game commands.
 4. Render actual game state/events. A connection or positive command ACK is not
    proof that a song is already playing or a direct microphone route is working.
 
@@ -26,6 +26,15 @@ assigned by the relay; never trust a client-supplied `role`, `slot` or `playerId
 The room code grants entry, so it should only be shared with intended guests.
 An HTTP adapter must authenticate as a room participant/controller; the public
 contract endpoint grants no command authority.
+
+When the host advertises `captureTimestampsV1`, `client.joined` also advertises
+it. The relay preserves the optional `captureEndHostUs` (positive safe integer in
+the host clock) and `captureEpoch` (positive unsigned 32-bit integer) as a pair on
+singing PCM. Hosts advertising only `rawPcmV1` still receive the legacy frame. The relay
+continues to derive the sender identity and slot from the joined connection.
+A browser can supply a random `microphoneCalibrationId` on join. The relay
+includes it only in the host's player snapshot for calibration lookup. It does
+not replace the room's player identity or tokens.
 
 ## Commands, acknowledgements and reconnection
 

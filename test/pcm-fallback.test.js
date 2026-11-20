@@ -32,21 +32,34 @@ test('PCM fallback authenticates slot identity, validates frames, and requires t
     child.stdout.on('data', chunk => { if (String(chunk).includes('server.listen')) resolve(); });
     child.once('exit', code => reject(Error(`relay exited ${code}`)));
   });
-  for (const capable of [true, false]) {
+  for (const capabilities of [
+    ['rawPcmV1', 'audioCalibrationV1', 'captureTimestampsV1'],
+    ['rawPcmV1', 'audioCalibrationV1'],
+    [],
+  ]) {
+    const capable = capabilities.includes('rawPcmV1');
+    const timestamped = capabilities.includes('captureTimestampsV1');
     const host = new WebSocket(`ws://127.0.0.1:${port}/ws/host`);
     t.after(() => host.close());
     const hostRead = inbox(host);
     await once(host, 'open');
-    host.send(JSON.stringify({ type: 'host.hello', protocol: 1, maxPlayers: 2, capabilities: capable ? ['rawPcmV1','audioCalibrationV1'] : [] }));
+    host.send(JSON.stringify({ type: 'host.hello', protocol: 1, maxPlayers: 2, capabilities }));
     const room = await hostRead('room.created');
     const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/client`);
     t.after(() => phone.close());
     const phoneRead = inbox(phone);
     await once(phone, 'open');
-    phone.send(JSON.stringify({ type: 'client.join', protocol: 1, displayCode: room.displayCode, name: 'PCM test', preferredSlot: 2 }));
+    const microphoneCalibrationId = '1a'.repeat(16);
+    phone.send(JSON.stringify({ type: 'client.join', protocol: 1, displayCode: room.displayCode,
+      name: 'PCM test', preferredSlot: 2, microphoneCalibrationId }));
     const joined = await phoneRead('client.joined');
     assert.equal(joined.rawPcmV1, capable);
-    assert.equal(joined.audioCalibrationV1,capable);
+    assert.equal(joined.audioCalibrationV1, capable);
+    assert.equal(joined.captureTimestampsV1, timestamped);
+    assert.equal(joined.microphoneCalibrationId, undefined, 'the ID belongs in the host snapshot');
+    const snapshot = await hostRead('remote.players.snapshot');
+    assert.equal(snapshot.players[0].microphoneCalibrationId, microphoneCalibrationId);
+    assert.equal((await phoneRead('player.assigned')).microphoneCalibrationId, undefined);
     phone.send(JSON.stringify({type:'audio.calibration.request',protocol:1,requestId:'trial',
       clockUncertaintyMs:3,playerId:'forged',slot:12,startHostUs:1}));
     if(capable) {
@@ -78,6 +91,24 @@ test('PCM fallback authenticates slot identity, validates frames, and requires t
       assert.equal(frame.playerId, joined.playerId);
       assert.equal(frame.slot, 2);
       assert.equal(frame.pcm, pcm);
+      assert.equal(frame.captureEndHostUs, undefined);
+      phone.send(JSON.stringify({type: 'audio.pcm', protocol: 1, pcm,
+        captureEndHostUs: 123456789, captureEpoch: 4, slot: 12, playerId: 'forged'}));
+      const stamped = await hostRead('audio.pcm');
+      assert.equal(stamped.playerId, joined.playerId);
+      assert.equal(stamped.slot, 2);
+      assert.equal(stamped.captureEndHostUs, timestamped ? 123456789 : undefined);
+      assert.equal(stamped.captureEpoch, timestamped ? 4 : undefined);
+      if (timestamped) {
+        for (const stamp of [
+          {captureEpoch: 4}, {captureEndHostUs: 123456789},
+          {captureEndHostUs: 123456789, captureEpoch: 0x100000000},
+          {captureEndHostUs: -1, captureEpoch: 4},
+        ]) {
+          phone.send(JSON.stringify({type: 'audio.pcm', protocol: 1, pcm, ...stamp}));
+          assert.equal((await phoneRead('error')).code, 'audio.invalid');
+        }
+      }
       const calibrationPacket=Buffer.from(packet);calibrationPacket[2]=67;
       phone.send(JSON.stringify({type:'audio.calibration.pcm',protocol:1,pcm:calibrationPacket.toString('base64'),slot:12,playerId:'forged'}));
       const calibrationFrame=await hostRead('audio.calibration.pcm');
