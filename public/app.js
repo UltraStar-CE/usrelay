@@ -8,7 +8,8 @@ import {audioTimingView} from './audio-timing.js';
 import {DigitalCalibration} from './digital-calibration.js';
 import {loadSongs} from './song-query.js';
 import {createApiRequests} from './api-requests.js';
-import { NativePcmSender } from './native-pcm.js?v=2';
+import { CAPTURE_PACKET_LIFETIME_MS, NativePcmSender } from './native-pcm.js?v=4';
+import { CaptureClock } from './capture-clock.js';
 import { createAudioInput, startSyntheticPcm } from './audio-input.js?v=4';
 const protocol = 1;
 const digitalCalibration = new DigitalCalibration({send:message=>sendRelay(message),
@@ -32,6 +33,7 @@ const codeKey = 'usdx.remote.code.v1';
 const roomsKey = 'usdx.remote.rooms.v1';
 const lastMicSlotKey = 'usdx.remote.lastMicSlot.v1';
 const settingsKey = 'usdx.remote.settings.v1';
+const microphoneCalibrationKey = 'usdx.remote.microphoneCalibration.v1';
 const settingsVersion = 3;
 const tabKey = 'usdx.remote.tab.v1';
 const appVersion = 'v20261027-phone-recovery';
@@ -486,6 +488,19 @@ function loadSession() {
     return JSON.parse(localStorage.getItem(sessionKey) || 'null');
   } catch {
     return null;
+  }
+}
+
+function microphoneCalibrationId() {
+  try {
+    const saved = localStorage.getItem(microphoneCalibrationKey);
+    if (/^[0-9a-f]{32}$/.test(saved || '')) return saved;
+    const random = crypto.getRandomValues(new Uint8Array(16));
+    const id = Array.from(random, value => value.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem(microphoneCalibrationKey, id);
+    return id;
+  } catch {
+    return undefined;
   }
 }
 
@@ -1709,7 +1724,9 @@ async function startP2p() {
       if (['failed', 'closed', 'disconnected'].includes(pc.iceConnectionState)) scheduleP2pReconnect();
     });
     attachP2pDataChannel(state.rawPcmV1
-      ? pc.createDataChannel('usce-pcm-v1', { ordered: false, maxRetransmits: 0 })
+      ? pc.createDataChannel('usce-pcm-v1', state.captureTimestampsV1
+        ? { ordered: false, maxPacketLifeTime: CAPTURE_PACKET_LIFETIME_MS }
+        : { ordered: false, maxRetransmits: 0 })
       : pc.createDataChannel('usdx-remote', { ordered: true }), attempt);
     const offer = await pc.createOffer();
     if (state.p2p.pc !== pc) return;
@@ -5248,6 +5265,7 @@ async function handleMessage(message) {
       requestSongState();
     }
     state.rawPcmV1 = Boolean(message.rawPcmV1);
+    state.captureTimestampsV1 = Boolean(message.captureTimestampsV1);
     state.audioCalibrationV1 = Boolean(message.audioCalibrationV1);
     Object.assign(state, {
       roomId: message.roomId,
@@ -5849,6 +5867,7 @@ function connectAndJoin(displayCode, name, resume = null) {
       ...currentProfile(name),
       playerId: resume?.playerId,
       playerToken: resume?.playerToken,
+      microphoneCalibrationId: microphoneCalibrationId(),
       songLibraryHash: cachedSongLibraryHash(),
       preferredSlot: Number.isInteger(preferredSlot) && preferredSlot > 0 ? preferredSlot : undefined,
       settings: {
@@ -5889,6 +5908,11 @@ function connectAndJoin(displayCode, name, resume = null) {
     connectionState.textContent = 'error';
   });
 }
+
+let captureEpoch = 0;
+// A replacement worklet may start before the receiver's old packets are
+// drained. Keep transport counters increasing across input changes.
+const pcmPosition = { sequence: 0, sampleOffset: 0 };
 
 function nativeAudioActive() { return Boolean(!state.hostRecovering && state.rawPcmV1 && Number(state.slot) >= 1 && Number(state.slot) <= 12 && state.roomId); }
 
@@ -6067,15 +6091,47 @@ async function startMic() {
       state.pcmSender = new NativePcmSender({ active: nativeAudioActive,
         channel: () => state.p2p.dc,
         relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message) });
-      await audioContext.audioWorklet.addModule('/pcm-worklet.js?v=3');
+      await audioContext.audioWorklet.addModule('/pcm-worklet.js?v=5');
       if (state.audioContext !== audioContext) return;
-      state.pcmWorklet = new AudioWorkletNode(audioContext, 'usce-pcm');
+      const captureClock = new CaptureClock();
+      let workletEpoch, streamEpoch;
+      state.pcmWorklet = new AudioWorkletNode(audioContext, 'usce-pcm',
+        { processorOptions: { reportCaptureTime: true, ...pcmPosition } });
       state.pcmWorklet.port.onmessage = event => {
-        state.pcmSender.submit(event.data);
-        if (state.rawPcmV1) micGestures.packet(event.data);
-        if (new DataView(event.data).getUint32(0, true) === 0x31504155 &&
+        if (state.audioContext !== audioContext) return;
+        const frame = event.data;
+        const packet = frame.packet ?? frame;
+        const header = new DataView(packet);
+        const singing = header.getUint32(0, true) === 0x31504155;
+        if (singing) {
+          pcmPosition.sequence = (header.getUint32(4, true) + 1) >>> 0;
+          pcmPosition.sampleOffset = (header.getUint32(16, true) + header.getUint32(12, true)) >>> 0;
+        }
+        let stamp;
+        if (state.captureTimestampsV1 && state.clock.synced &&
+            Number.isFinite(frame.captureEndSeconds)) {
+          if (workletEpoch !== frame.captureEpoch) {
+            workletEpoch = frame.captureEpoch;
+            captureEpoch = (captureEpoch % 0xffffffff) + 1;
+            streamEpoch = captureEpoch;
+            captureClock.reset();
+          }
+          const before = performance.now();
+          const audioMs = audioContext.currentTime * 1000;
+          const after = performance.now();
+          captureClock.observe(audioMs, before, after);
+          const mapped = captureClock.renderTimeNearRead(frame.captureEndSeconds * 1000, audioMs, before, after);
+          if (mapped !== null) {
+            const captureEndHostUs = hostClockEstimateUs(mapped * 1000);
+            if (Number.isSafeInteger(captureEndHostUs) && captureEndHostUs > 0)
+              stamp = { captureEndHostUs, captureEpoch: streamEpoch };
+          }
+        }
+        if (!singing || !state.captureTimestampsV1 || stamp) state.pcmSender.submit(packet, stamp);
+        if (state.rawPcmV1) micGestures.packet(packet);
+        if (singing &&
             state.rawPcmV1 && performance.now() - state.pitchLastUiMs >= pitchUiUpdateMs) {
-          const samples = new Int16Array(event.data, 20);
+          const samples = new Int16Array(packet, 20);
           let sum = 0;
           for (const sample of samples) sum += (sample / 32768) ** 2;
           handlePitchFrame({ rmsDb: 10 * Math.log10(Math.max(1e-12, sum / samples.length)) });

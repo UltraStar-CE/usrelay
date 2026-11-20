@@ -602,6 +602,7 @@ function resumeRoom(hostConn, hello, webApp, companionViews) {
   for (const player of room.players.values()) {
     hostConn.sendJson(playerAssignedMessage(room, player, { type: 'player.joined', resumed: true }));
   }
+  sendRemotePlayersSnapshotToHost(room);
   broadcastPlayers(room, {type:'host.resumed',protocol:protocolVersion,
     roomId:room.roomId,displayCode:room.displayCode});
   updateRoomGameState(room);
@@ -983,6 +984,10 @@ function playerProfileMessage(room, player, extra = {}) {
   };
 }
 
+function validMicrophoneCalibrationId(value) {
+  return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value) ? value : undefined;
+}
+
 function remotePlayersSnapshotMessage(room) {
   enforceRoomControllerRoles(room);
   return {
@@ -1002,7 +1007,8 @@ function remotePlayersSnapshotMessage(room) {
       avatarId: player.avatarId || '',
       avatarFile: player.avatarFile || '',
       avatarUrl: avatarUrlForFile(player.avatarFile),
-      micDelayMs: player.micDelayMs || 0
+      micDelayMs: player.micDelayMs || 0,
+      microphoneCalibrationId: player.microphoneCalibrationId
     }))
   };
 }
@@ -1713,6 +1719,8 @@ function handleClientJoin(conn, msg) {
     resumed.companionView = view;
     applyPlayerProfile(resumed, profileFromMessage(msg, resumed));
     resumed.micDelayMs = micDelayFromSettings(msg.settings, resumed.micDelayMs);
+    resumed.microphoneCalibrationId = validMicrophoneCalibrationId(msg.microphoneCalibrationId) ??
+      resumed.microphoneCalibrationId;
     resumed.songLibraryHash = String(msg.songLibraryHash || resumed.songLibraryHash || '');
     resumed.lastSeenMs = Date.now();
     conn.kind = 'client';
@@ -1743,6 +1751,7 @@ function handleClientJoin(conn, msg) {
       companionViews: views,
       rawPcmV1: room.capabilities.includes('rawPcmV1'),
       audioCalibrationV1: room.capabilities.includes('audioCalibrationV1'),
+      captureTimestampsV1: room.capabilities.includes('captureTimestampsV1'),
       p2p: publicP2pConfig(room),
       resumed: true
     });
@@ -1750,6 +1759,7 @@ function handleClientJoin(conn, msg) {
     sendSongSelectSnapshot(conn, room, resumed);
     conn.sendJson(playlistAutomationPayload(room));
     updateRoomGameState(room);
+    sendRemotePlayersSnapshotToHost(room);
     log('player.resumed', { roomId: room.roomId, displayCode: room.displayCode, playerId: resumed.playerId, slot: resumed.slot, role: resumed.role });
     return;
   }
@@ -1781,6 +1791,7 @@ function handleClientJoin(conn, msg) {
     role,
     companionView: view,
     micDelayMs: micDelayFromSettings(msg.settings),
+    microphoneCalibrationId: validMicrophoneCalibrationId(msg.microphoneCalibrationId),
     conn,
     joinedAt: nowIso(),
     lastSeenMs: Date.now(),
@@ -1817,13 +1828,15 @@ function handleClientJoin(conn, msg) {
     webApp: room.webApp || 'default',
     companionViews: views,
     rawPcmV1: room.capabilities.includes('rawPcmV1'),
-      audioCalibrationV1: room.capabilities.includes('audioCalibrationV1'),
+    audioCalibrationV1: room.capabilities.includes('audioCalibrationV1'),
+    captureTimestampsV1: room.capabilities.includes('captureTimestampsV1'),
     p2p: publicP2pConfig(room)
   });
   sendSongRuntimeSnapshot(conn, room);
   sendSongSelectSnapshot(conn, room, player);
   conn.sendJson(playlistAutomationPayload(room));
   broadcastRoom(room, playerAssignedMessage(room, player));
+  sendRemotePlayersSnapshotToHost(room);
   updateRoomGameState(room);
   log('player.joined', { roomId: room.roomId, displayCode: room.displayCode, playerId, slot, role });
 }
@@ -1908,8 +1921,19 @@ async function handleClientMessage(conn, msg) {
       conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'audio.invalid' });
       return;
     }
-    room.host?.sendJson({ type: msg.type, protocol: protocolVersion,
-      roomId: room.roomId, playerId: player.playerId, slot: player.slot, pcm });
+    const frame = { type: msg.type, protocol: protocolVersion,
+      roomId: room.roomId, playerId: player.playerId, slot: player.slot, pcm };
+    if (!calibration && room.capabilities.includes('captureTimestampsV1') &&
+        (msg.captureEndHostUs !== undefined || msg.captureEpoch !== undefined)) {
+      if (!Number.isSafeInteger(msg.captureEndHostUs) || msg.captureEndHostUs <= 0 ||
+          !Number.isInteger(msg.captureEpoch) || msg.captureEpoch <= 0 || msg.captureEpoch > 0xffffffff) {
+        conn.sendJson({ type: 'error', protocol: protocolVersion, code: 'audio.invalid' });
+        return;
+      }
+      frame.captureEndHostUs = msg.captureEndHostUs;
+      frame.captureEpoch = msg.captureEpoch;
+    }
+    room.host?.sendJson(frame);
     return;
   }
 

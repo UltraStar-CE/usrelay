@@ -113,3 +113,28 @@ test('slow game drain remains in timing statistics without confirming a stale di
  assert.equal(pcm.confirmed(),true);
  assert.equal(pcm.timings().audioToGameRoundTripMs.p95,600);
 });
+
+test('singing capture stamps survive direct and fallback delivery without changing calibration frames', () => {
+  const direct = [];
+  const relay = [];
+  const sender = new NativePcmSender({
+    active: () => true,
+    channel: () => ({readyState: 'open', bufferedAmount: 0, send: data => direct.push(data)}),
+    relay: message => { relay.push(message); return true; },
+  });
+  const packet = new ArrayBuffer(980);
+  const header = new DataView(packet);
+  header.setUint32(0, 0x31504155, true);
+  const stamp = {captureEndHostUs: 123456789, captureEpoch: 4};
+  sender.submit(packet, stamp);
+  assert.deepEqual(new Uint8Array(direct[0], 0, 980), new Uint8Array(packet));
+  const trailer = new DataView(direct[0], 980);
+  assert.equal(trailer.getBigUint64(0, true), 123456789n);
+  assert.equal(trailer.getUint32(8, true), 4);
+  assert.deepEqual(relay[0], {type: 'audio.pcm', pcm: Buffer.from(packet).toString('base64'), ...stamp});
+
+  header.setUint32(0, 0x31434155, true);
+  sender.submit(packet, stamp);
+  assert.equal(direct[1].byteLength, 980);
+  assert.deepEqual(relay[1], {type: 'audio.calibration.pcm', pcm: Buffer.from(packet).toString('base64')});
+});
