@@ -220,7 +220,7 @@ const state = {
     controlOnly: false,
     showAdminControls: false,
     preferTextLabels: false,
-    playMusicOnDevice: true,
+    playMusicOnDevice: false,
     targetDriftMs: 0,
     micDelayMs: 0,
     settingsVersion
@@ -508,7 +508,6 @@ function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(settingsKey) || 'null');
     if (saved && typeof saved === 'object') {
-      const savedSettingsVersion = Number(saved.settingsVersion || 1);
       Object.assign(state.settings, {
         noiseSuppression: Boolean(saved.noiseSuppression),
         echoCancellation: Boolean(saved.echoCancellation),
@@ -518,11 +517,7 @@ function loadSettings() {
         controlOnly: Boolean(saved.controlOnly),
         showAdminControls: Boolean(saved.showAdminControls),
         preferTextLabels: Boolean(saved.preferTextLabels),
-        playMusicOnDevice: savedSettingsVersion < 2
-          ? true
-          : (Object.prototype.hasOwnProperty.call(saved, 'playMusicOnDevice')
-            ? Boolean(saved.playMusicOnDevice)
-            : true),
+        playMusicOnDevice: saved.playMusicOnDevice === true,
         targetDriftMs: clampDelayMs(saved.targetDriftMs),
         micDelayMs: clampDelayMs(saved.micDelayMs ?? saved.playerDelayMs),
         settingsVersion
