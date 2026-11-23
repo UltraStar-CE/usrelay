@@ -342,7 +342,7 @@
               <input id="autoGainInput" type="checkbox">
               Auto gain control
             </label>
-            <label>Test audio source
+            <label hidden>Test audio source
               <select id="testAudioInput">
                 <option value="0">Real microphone</option>
                 <option value="65">Test tone: 65 Hz (deep voice)</option>
@@ -351,8 +351,8 @@
                 <option value="-1">Alignment test: C2 ↔ F2 with song</option>
               </select>
             </label>
-            <p class="fine">Test tones use the normal audio path without microphone access, so screen sharing can stay on. This choice resets when the page reloads. Test scores are synthetic.</p>
-            <button type="button" id="testAudioStartButton" disabled>Start test audio</button>
+            <p class="fine" hidden>Test tones use the normal audio path without microphone access, so screen sharing can stay on. This choice resets when the page reloads. Test scores are synthetic.</p>
+            <button type="button" id="testAudioStartButton" hidden disabled>Start test audio</button>
             <button type="button" id="stopAudioButton" class="secondary">Stop audio</button>
           </section>
           <section class="remote-list">
@@ -432,7 +432,7 @@
             <button type="button" id="rosterDelete" class="secondary">Remove saved singer</button>
             <p id="rosterStatus" class="fine" role="status"></p>
           </details>
-            <details>
+            <details hidden>
               <summary>Experimental microphone controls</summary>
               <label class="check-row"><input id="tapControls" type="checkbox">Detect double taps in menus</label>
               <p class="fine">Off by default. Two short loud taps propose menu Select, only outside singing.
@@ -513,7 +513,7 @@
               <div><dt>Channels</dt><dd id="channelValue">--</dd></div>
               <div><dt>Processing</dt><dd id="processingValue">--</dd></div>
             </dl>
-            <button type="button" id="toggleDebugButton" class="secondary">Toggle Debug Output</button>
+            <button type="button" id="toggleDebugButton" class="secondary" hidden>Toggle Debug Output</button>
             <pre id="eventLog" class="hidden"></pre>
           </section>
         </section>
