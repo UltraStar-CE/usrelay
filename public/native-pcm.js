@@ -73,11 +73,12 @@ export class NativePcmSender {
     if (dc?.readyState === 'open' && dc.bufferedAmount < bufferLimit) {
       try {
         if (stamp) {
-          const data = new Uint8Array(packet.byteLength + 12);
+          const data = new Uint8Array(packet.byteLength + 12 + Number(stamp.micGate !== undefined));
           data.set(new Uint8Array(packet));
           const trailer = new DataView(data.buffer, packet.byteLength);
           trailer.setBigUint64(0, BigInt(stamp.captureEndHostUs), true);
           trailer.setUint32(8, stamp.captureEpoch, true);
+          if (stamp.micGate !== undefined) trailer.setUint8(12, stamp.micGate);
           dc.send(data.buffer);
         } else dc.send(packet);
         if (!calibration) this.pending.set(new DataView(packet).getUint32(4, true), this.now());
@@ -96,6 +97,7 @@ export class NativePcmSender {
       if (stamp) {
         message.captureEndHostUs = stamp.captureEndHostUs;
         message.captureEpoch = stamp.captureEpoch;
+        if (stamp.micGate !== undefined) message.micGate = stamp.micGate;
       }
       if (this.relay(message)) ++this.relayed;
       else ++this.dropped;

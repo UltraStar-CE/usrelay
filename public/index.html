@@ -82,6 +82,15 @@
             <input id="autoGainInput" type="checkbox">
             Mic boost
           </label>
+          <label class="check-row">
+            <input id="autoMicThresholdInput" type="checkbox">
+            Auto-adjust mic threshold
+            <span id="micThresholdValue" class="muted"></span>
+          </label>
+          <label id="manualMicThreshold" hidden>
+            Mic threshold
+            <input id="micThresholdInput" type="range" min="0" max="25" step="1" value="10">
+          </label>
           <div id="micBoostAdvice" class="remote-list" hidden>
             <p id="micBoostAdviceText" role="status"></p>
             <div class="actions">
@@ -570,6 +579,6 @@
       </div>
     </div>
     <div id="appVersion" class="app-version">v20261026-native-inputs-party</div>
-    <script src="/app.js?v=20261123-mic-boost" type="module"></script>
+    <script src="/app.js?v=20261123-mic-threshold" type="module"></script>
   </body>
 </html>

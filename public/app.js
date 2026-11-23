@@ -8,10 +8,11 @@ import {audioTimingView} from './audio-timing.js';
 import {DigitalCalibration} from './digital-calibration.js';
 import {loadSongs} from './song-query.js';
 import {createApiRequests} from './api-requests.js';
-import { CAPTURE_PACKET_LIFETIME_MS, NativePcmSender } from './native-pcm.js?v=4';
+import { CAPTURE_PACKET_LIFETIME_MS, NativePcmSender } from './native-pcm.js?v=5';
 import { CaptureClock } from './capture-clock.js';
 import { createAudioInput, startSyntheticPcm } from './audio-input.js?v=4';
 import { createMicBoostAdvice, loadMicBoost } from './mic-boost.js';
+import { createMicThreshold, defaultMicThreshold, lyricFrameKind, micGate, micThresholdPercent } from './mic-threshold.js';
 const protocol = 1;
 const digitalCalibration = new DigitalCalibration({send:message=>sendRelay(message),
   startWave:startCalibrationWave,stopWave:stopCalibrationWave});
@@ -37,9 +38,11 @@ const settingsKey = 'usdx.remote.settings.v1';
 const microphoneCalibrationKey = 'usdx.remote.microphoneCalibration.v1';
 const settingsVersion = 3;
 const tabKey = 'usdx.remote.tab.v1';
-const appVersion = 'v20261123-mic-boost';
+const appVersion = 'v20261123-mic-threshold';
 const micBoostAdvice = createMicBoostAdvice();
 let micBoostScoreBaseline;
+const phoneThreshold = createMicThreshold();
+let thresholdSong;
 const songPageSize = 80;
 const searchDebounceMinMs = 40;
 const searchDebounceMaxMs = 350;
@@ -219,6 +222,8 @@ const state = {
     noiseSuppression: false,
     echoCancellation: false,
     autoGain: true,
+    autoMicThreshold: true,
+    micThreshold: defaultMicThreshold,
     wakeLock: true,
     lockMicBar: true,
     controlOnly: false,
@@ -516,6 +521,8 @@ function loadSettings() {
         noiseSuppression: Boolean(saved.noiseSuppression),
         echoCancellation: Boolean(saved.echoCancellation),
         autoGain: loadMicBoost(saved),
+        autoMicThreshold: saved.autoMicThreshold !== false,
+        micThreshold: micThresholdPercent(saved.micThreshold),
         wakeLock: saved.wakeLock !== false,
         lockMicBar: saved.lockMicBar !== false,
         controlOnly: Boolean(saved.controlOnly),
@@ -1078,6 +1085,7 @@ function renderSettings() {
   noiseSuppressionInput.checked = state.settings.noiseSuppression;
   echoCancellationInput.checked = state.settings.echoCancellation;
   autoGainInput.checked = state.settings.autoGain;
+  renderMicThreshold();
   wakeLockInput.checked = state.settings.wakeLock;
   lockMicBarInput.checked = state.settings.lockMicBar;
   controlOnlyInput.checked = state.settings.controlOnly;
@@ -1145,8 +1153,48 @@ function setMicBoost(enabled) {
   state.micBoostNode?.port.postMessage(enabled);
   micBoostAdvice.reset();
   micBoostScoreBaseline = state.scoreSnapshot;
+  phoneThreshold.reset();
   renderMicBoostAdvice();
   persistSettings();
+}
+
+function currentMicThreshold() {
+  return state.settings.autoMicThreshold ? phoneThreshold.value : state.settings.micThreshold;
+}
+
+function renderMicThreshold() {
+  const threshold = currentMicThreshold();
+  $('autoMicThresholdInput').checked = state.settings.autoMicThreshold;
+  $('manualMicThreshold').hidden = state.settings.autoMicThreshold;
+  $('micThresholdInput').value = threshold;
+  setTextIfChanged($('micThresholdValue'), `${threshold}%`);
+}
+
+function classifyMicPacket(peak, captureEndHostUs) {
+  const lyrics = state.currentLyricsMessage;
+  if (!lyrics?.phoneThresholdV1 || Number(lyrics.songSeq) !== state.songSeq || !Number.isFinite(peak)) return;
+  const voice = assignedLyricsVoice(lyrics);
+  if (state.gameState === 'singing' && state.settings.autoMicThreshold &&
+      Number.isFinite(voice?.thresholdShiftUs) && state.hostScoringStartUs) {
+    const key = `${state.songSeq}:${state.slot}:${voice.track}`;
+    if (thresholdSong !== key) {
+      phoneThreshold.reset(true);
+      thresholdSong = key;
+    }
+    const end = captureEndHostUs - state.hostScoringStartUs - voice.thresholdShiftUs;
+    const track = lyrics.tracks?.find(entry => entry.track === voice.track);
+    const previous = phoneThreshold.value;
+    phoneThreshold.observe(lyricFrameKind(track, end - 10000, end), peak);
+    if (phoneThreshold.value !== previous) {
+      if (!state.settings.autoGain && phoneThreshold.value < previous) {
+        // Earlier misses were measured with a higher gate than the phone now uses.
+        micBoostScoreBaseline = state.scoreSnapshot;
+        micBoostAdvice.reset();
+      }
+      renderMicThreshold();
+    }
+  }
+  return micGate(peak, currentMicThreshold(), state.settings.autoGain);
 }
 
 function renderMicLevel(level) {
@@ -1161,6 +1209,8 @@ function resetMicBoostCapture() {
   state.micBoostNode = null;
   micBoostAdvice.reset();
   micBoostScoreBaseline = null;
+  phoneThreshold.reset();
+  renderMicThreshold();
   renderMicBoostAdvice();
   renderMicLevel(0);
 }
@@ -1949,11 +1999,12 @@ function currentLyricsEntry() {
     return text ? { text, notes: [] } : null;
   }
 
+  return selectedLyricsTrack(message);
+}
+
+function assignedLyricsVoice(message) {
   const slot = Number(state.slot);
-  const preferredTrack = tracks.length > 1 && Number.isFinite(slot) && slot > 0
-    ? (slot - 1) % tracks.length
-    : 0;
-  return tracks.find((track) => Number(track.track) === preferredTrack) || tracks[0] || null;
+  return message.playerTracks?.find(entry => entry.slot === slot);
 }
 
 function selectedLyricsTrack(message = state.currentLyricsMessage) {
@@ -1961,9 +2012,8 @@ function selectedLyricsTrack(message = state.currentLyricsMessage) {
   const tracks = Array.isArray(message.tracks) ? message.tracks : [];
   if (!tracks.length) return null;
   const slot = Number(state.slot);
-  const preferredTrack = tracks.length > 1 && Number.isFinite(slot) && slot > 0
-    ? (slot - 1) % tracks.length
-    : 0;
+  const preferredTrack = assignedLyricsVoice(message)?.track ??
+    (tracks.length > 1 && Number.isFinite(slot) && slot > 0 ? (slot - 1) % tracks.length : 0);
   return tracks.find((track) => Number(track.track) === preferredTrack) || tracks[0] || null;
 }
 
@@ -6154,7 +6204,7 @@ async function startMic() {
       state.pcmSender = new NativePcmSender({ active: nativeAudioActive,
         channel: () => state.p2p.dc,
         relay: message => state.ws?.bufferedAmount < 16000 && sendRelay(message) });
-      await audioContext.audioWorklet.addModule('/pcm-worklet.js?v=5');
+      await audioContext.audioWorklet.addModule('/pcm-worklet.js?v=6');
       if (state.audioContext !== audioContext) return;
       const captureClock = new CaptureClock();
       let workletEpoch, streamEpoch;
@@ -6187,7 +6237,8 @@ async function startMic() {
           if (mapped !== null) {
             const captureEndHostUs = hostClockEstimateUs(mapped * 1000);
             if (Number.isSafeInteger(captureEndHostUs) && captureEndHostUs > 0)
-              stamp = { captureEndHostUs, captureEpoch: streamEpoch };
+              stamp = { captureEndHostUs, captureEpoch: streamEpoch,
+                micGate: classifyMicPacket(frame.peak, captureEndHostUs) };
           }
         }
         if (!singing || !state.captureTimestampsV1 || stamp) state.pcmSender.submit(packet, stamp);
@@ -6658,6 +6709,16 @@ $('testAudioInput').addEventListener('change', async () => {
 $('testAudioStartButton').addEventListener('click', startMic);
 $('stopAudioButton').addEventListener('click', stopMic);
 autoGainInput.addEventListener('change', () => setMicBoost(autoGainInput.checked));
+$('autoMicThresholdInput').addEventListener('change', event => {
+  if (!event.target.checked) state.settings.micThreshold = currentMicThreshold();
+  state.settings.autoMicThreshold = event.target.checked;
+  persistSettings();
+});
+$('micThresholdInput').addEventListener('input', event => {
+  state.settings.micThreshold = micThresholdPercent(Number(event.target.value));
+  renderMicThreshold();
+});
+$('micThresholdInput').addEventListener('change', persistSettings);
 $('micBoostApply').addEventListener('click', () => {
   const action = micBoostAdvice.visible(['singing', 'paused'].includes(state.gameState));
   if (action) setMicBoost(action === 'enable');
