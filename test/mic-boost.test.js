@@ -4,10 +4,7 @@ import test from 'node:test';
 import {runInNewContext} from 'node:vm';
 import {createMicBoostAdvice, loadMicBoost, micMeterLevel} from '../public/mic-boost.js';
 
-const quiet = {boost: false, rawDb: -45, rawClipped: 0, boostedClipped: 0};
-const loud = {...quiet, rawDb: -30};
-const silence = {...quiet, rawDb: -90};
-const boostClipping = {...quiet, boost: true, rawDb: -8, boostedClipped: 0.2};
+const boostClipping = {boost: true, rawClipped: 0, boostedClipped: 0.2};
 const beforeClipping = {...boostClipping, rawClipped: 0.12};
 const observe = (advice, frame, blocks) => {
   for (let i = 0; i < blocks; i++) advice.observe(frame);
@@ -37,27 +34,28 @@ test('only repeated clipping introduced by boost prompts, and it waits until aft
   assert.equal(advice.visible(false), null);
 });
 
-test('quiet advice requires audible input that almost never exceeds half the meter', () => {
+test('quiet advice needs sustained quiet pitched frames and recoverable missed scoring beats', () => {
   const advice = createMicBoostAdvice();
-  observe(advice, silence, 120);
+  const score = {phonePitchedMs: 8000, phoneAboveHalfMs: 100, phoneBoostMisses: 4};
+  observe(advice, {boost: false, rawClipped: 0, boostedClipped: 0}, 120);
+  advice.observeScore({});
   assert.equal(advice.visible(false), null);
-  observe(advice, quiet, 39);
+  advice.observeScore({...score, phoneBoostMisses: 0});
   assert.equal(advice.visible(false), null);
-  advice.reset();
-  observe(advice, loud, 12);
-  observe(advice, quiet, 50);
-  observe(advice, silence, 38);
+  advice.observeScore({...score, phoneAboveHalfMs: 800});
   assert.equal(advice.visible(false), null);
-  advice.reset();
-  observe(advice, quiet, 40);
-  observe(advice, loud, 2);
-  observe(advice, silence, 57);
+  advice.observeScore(score, {phonePitchedMs: 5000});
   assert.equal(advice.visible(false), null);
-  advice.observe(silence);
+  advice.observeScore(score, {phoneBoostMisses: 1});
+  assert.equal(advice.visible(false), null);
+  advice.observeScore(score);
   assert.equal(advice.visible(true), null);
   assert.equal(advice.visible(false), 'enable');
+  advice.observeScore({...score, phoneAboveHalfMs: 800});
+  assert.equal(advice.visible(false), null);
+  advice.observeScore(score);
   advice.dismiss();
-  observe(advice, quiet, 120);
+  advice.observeScore(score);
   assert.equal(advice.visible(false), null);
   observe(advice, boostClipping, 8);
   assert.equal(advice.visible(false), 'disable');
@@ -85,7 +83,7 @@ for (const sampleRate of [44100, 48000]) {
       }
     }
     feed(0.125, 0.25);
-    assert.ok(Math.abs(frames[0].outputDb - frames[0].rawDb - 20 * Math.log10(2)) < 1e-6);
+    assert.ok(Math.abs(frames[0].outputDb - 20 * Math.log10(0.25)) < 1e-6);
     feed(-0.75, -1);
     assert.equal(frames[1].rawClipped, 0);
     assert.equal(frames[1].boostedClipped, 1);
@@ -96,7 +94,7 @@ for (const sampleRate of [44100, 48000]) {
     feed(0.75, 0.75);
     assert.equal(frames[3].boost, false);
     assert.equal(frames[3].boostedClipped, 0);
-    assert.equal(frames[3].outputDb, frames[3].rawDb);
+    assert.ok(Math.abs(frames[3].outputDb - 20 * Math.log10(0.75)) < 1e-6);
     assert.equal(frames.length, 4);
   });
 }

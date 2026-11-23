@@ -39,6 +39,7 @@ const settingsVersion = 3;
 const tabKey = 'usdx.remote.tab.v1';
 const appVersion = 'v20261123-mic-boost';
 const micBoostAdvice = createMicBoostAdvice();
+let micBoostScoreBaseline;
 const songPageSize = 80;
 const searchDebounceMinMs = 40;
 const searchDebounceMaxMs = 350;
@@ -1134,7 +1135,7 @@ function renderMicBoostAdvice() {
   if (!action) return;
   $('micBoostAdviceText').textContent = action === 'disable'
     ? 'Your mic is clipping often with boost on. Turn off Mic boost?'
-    : 'Your mic level rarely reaches halfway. Turn on Mic boost?';
+    : 'Your mic was too quiet for the game to score some of your notes. Turn on Mic boost?';
   $('micBoostApply').textContent = action === 'disable' ? 'Turn off' : 'Turn on';
   $('micBoostDismiss').textContent = action === 'disable' ? 'Keep on' : 'Keep off';
 }
@@ -1143,6 +1144,7 @@ function setMicBoost(enabled) {
   state.settings.autoGain = enabled;
   state.micBoostNode?.port.postMessage(enabled);
   micBoostAdvice.reset();
+  micBoostScoreBaseline = state.scoreSnapshot;
   renderMicBoostAdvice();
   persistSettings();
 }
@@ -1159,6 +1161,7 @@ function resetMicBoostCapture() {
   if (state.micBoostNode) state.micBoostNode.port.onmessage = null;
   state.micBoostNode = null;
   micBoostAdvice.reset();
+  micBoostScoreBaseline = null;
   renderMicBoostAdvice();
   renderMicLevel(-Infinity);
 }
@@ -5709,12 +5712,20 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'score.snapshot') {
+    const activeSongSeq = state.songSeq;
     state.scoreSnapshot = message;
     updateSongClockFromMessage(message, 'score.snapshot');
     const scores = Array.isArray(message.players) ? message.players : [];
     const own = scores.find((item) => item.playerId === state.playerId) ||
       scores.find((item) => Number(item.slot) === Number(state.slot));
     state.playerScore = own ? Number(own.scoreTotal ?? own.score ?? 0) : null;
+    if (own && state.micBoostNode && !state.settings.autoGain &&
+        ['singing', 'paused'].includes(state.gameState) && Number(message.songSeq) === activeSongSeq) {
+      const baseline = micBoostScoreBaseline?.songSeq === message.songSeq
+        ? micBoostScoreBaseline.players?.find(item => Number(item.slot) === Number(state.slot))
+        : undefined;
+      micBoostAdvice.observeScore(own, baseline);
+    }
     updateSongProgressView();
     return;
   }
@@ -6112,13 +6123,14 @@ async function startMic() {
     // sync uses performance.now(). Keep an explicit local monotonic mapping.
     state.audioContextPerfBaseUs = clientNowUs() - Math.round(audioContext.currentTime * 1_000_000);
     // Apply our own gain so the same input is available on both sides of it.
-    await audioContext.audioWorklet.addModule('/mic-boost-worklet.js?v=1');
+    await audioContext.audioWorklet.addModule('/mic-boost-worklet.js?v=2');
     if (state.audioContext !== audioContext) return;
     const source = new AudioWorkletNode(audioContext, 'usce-mic-boost', {
       channelCount: 1, channelCountMode: 'explicit', outputChannelCount: [1],
       processorOptions: { boost: state.settings.autoGain }
     });
     state.micBoostNode = source;
+    micBoostScoreBaseline = state.scoreSnapshot;
     source.port.onmessage = ({data}) => {
       if (state.micBoostNode !== source || data.boost !== state.settings.autoGain) return;
       renderMicLevel(data.outputDb);
