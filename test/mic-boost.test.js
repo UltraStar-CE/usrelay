@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {runInNewContext} from 'node:vm';
-import {createMicBoostAdvice, loadMicBoost, micMeterLevel} from '../public/mic-boost.js';
+import {createMicBoostAdvice, loadMicBoost} from '../public/mic-boost.js';
 
 const boostClipping = {boost: true, rawClipped: 0, boostedClipped: 0.2};
 const beforeClipping = {...boostClipping, rawClipped: 0.12};
@@ -15,7 +15,6 @@ test('new setups default to boost and existing choices are preserved', () => {
   assert.equal(loadMicBoost({noiseSuppression: false}), true);
   assert.equal(loadMicBoost({autoGain: false}), false);
   assert.equal(loadMicBoost({autoGain: true}), true);
-  assert.equal(micMeterLevel(-36), 0.5);
 });
 
 test('only repeated clipping introduced by boost prompts, and it waits until after the song', () => {
@@ -83,7 +82,7 @@ for (const sampleRate of [44100, 48000]) {
       }
     }
     feed(0.125, 0.25);
-    assert.ok(Math.abs(frames[0].outputDb - 20 * Math.log10(0.25)) < 1e-6);
+    assert.equal(frames[0].outputPeak, 0.25);
     feed(-0.75, -1);
     assert.equal(frames[1].rawClipped, 0);
     assert.equal(frames[1].boostedClipped, 1);
@@ -94,7 +93,7 @@ for (const sampleRate of [44100, 48000]) {
     feed(0.75, 0.75);
     assert.equal(frames[3].boost, false);
     assert.equal(frames[3].boostedClipped, 0);
-    assert.ok(Math.abs(frames[3].outputDb - 20 * Math.log10(0.75)) < 1e-6);
+    assert.equal(frames[3].outputPeak, 0.75);
     assert.equal(frames.length, 4);
   });
 }

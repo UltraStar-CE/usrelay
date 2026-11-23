@@ -1,10 +1,3 @@
-const meterFloorDb = -66;
-const meterCeilingDb = -6;
-
-export function micMeterLevel(rmsDb) {
-  return Math.max(0, Math.min(1, (rmsDb - meterFloorDb) / (meterCeilingDb - meterFloorDb)));
-}
-
 export function loadMicBoost(saved) {
   return typeof saved?.autoGain === 'boolean' ? saved.autoGain : true;
 }
