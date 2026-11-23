@@ -11,6 +11,7 @@ import {createApiRequests} from './api-requests.js';
 import { CAPTURE_PACKET_LIFETIME_MS, NativePcmSender } from './native-pcm.js?v=4';
 import { CaptureClock } from './capture-clock.js';
 import { createAudioInput, startSyntheticPcm } from './audio-input.js?v=4';
+import { createMicBoostAdvice, loadMicBoost, micMeterLevel } from './mic-boost.js';
 const protocol = 1;
 const digitalCalibration = new DigitalCalibration({send:message=>sendRelay(message),
   startWave:startCalibrationWave,stopWave:stopCalibrationWave});
@@ -36,7 +37,8 @@ const settingsKey = 'usdx.remote.settings.v1';
 const microphoneCalibrationKey = 'usdx.remote.microphoneCalibration.v1';
 const settingsVersion = 3;
 const tabKey = 'usdx.remote.tab.v1';
-const appVersion = 'v20261027-phone-recovery';
+const appVersion = 'v20261123-mic-boost';
+const micBoostAdvice = createMicBoostAdvice();
 const songPageSize = 80;
 const searchDebounceMinMs = 40;
 const searchDebounceMaxMs = 350;
@@ -188,6 +190,7 @@ const state = {
   lastClientHeartbeatSentMs: 0,
   lastClientHeartbeatAckMs: 0,
   audioContext: null,
+  micBoostNode: null,
   audioContextPerfBaseUs: null,
   micInputLatencyUs: 0,
   micStream: null,
@@ -214,7 +217,7 @@ const state = {
   settings: {
     noiseSuppression: false,
     echoCancellation: false,
-    autoGain: false,
+    autoGain: true,
     wakeLock: true,
     lockMicBar: true,
     controlOnly: false,
@@ -511,7 +514,7 @@ function loadSettings() {
       Object.assign(state.settings, {
         noiseSuppression: Boolean(saved.noiseSuppression),
         echoCancellation: Boolean(saved.echoCancellation),
-        autoGain: Boolean(saved.autoGain),
+        autoGain: loadMicBoost(saved),
         wakeLock: saved.wakeLock !== false,
         lockMicBar: saved.lockMicBar !== false,
         controlOnly: Boolean(saved.controlOnly),
@@ -1120,6 +1123,44 @@ function persistSettings() {
       }
     }
   });
+}
+
+function renderMicBoostAdvice() {
+  const panel = $('micBoostAdvice');
+  const action = micBoostAdvice.visible(['singing', 'paused'].includes(state.gameState));
+  if (panel.dataset.action === (action ?? '')) return;
+  panel.dataset.action = action ?? '';
+  panel.hidden = !action;
+  if (!action) return;
+  $('micBoostAdviceText').textContent = action === 'disable'
+    ? 'Your mic is clipping often with boost on. Turn off Mic boost?'
+    : 'Your mic level rarely reaches halfway. Turn on Mic boost?';
+  $('micBoostApply').textContent = action === 'disable' ? 'Turn off' : 'Turn on';
+  $('micBoostDismiss').textContent = action === 'disable' ? 'Keep on' : 'Keep off';
+}
+
+function setMicBoost(enabled) {
+  state.settings.autoGain = enabled;
+  state.micBoostNode?.port.postMessage(enabled);
+  micBoostAdvice.reset();
+  renderMicBoostAdvice();
+  persistSettings();
+}
+
+function renderMicLevel(rmsDb) {
+  const level = micMeterLevel(rmsDb);
+  const percentage = Math.round(level * 100);
+  volumeFill.style.width = `${percentage}%`;
+  volumeFill.parentElement.setAttribute('aria-valuenow', String(percentage));
+  if (!lockOverlay.classList.contains('hidden')) renderLockLevel(level, 'Microphone level');
+}
+
+function resetMicBoostCapture() {
+  if (state.micBoostNode) state.micBoostNode.port.onmessage = null;
+  state.micBoostNode = null;
+  micBoostAdvice.reset();
+  renderMicBoostAdvice();
+  renderMicLevel(-Infinity);
 }
 
 async function applyWakeLock() {
@@ -2462,6 +2503,7 @@ function renderPartyState() {
 }
 
 function updateGameStateView() {
+  renderMicBoostAdvice();
   savedSingers.render();
   setTextIfChanged(gameStateLabel, state.gameState || 'waiting');
   setTextIfChanged(songSeqLabel, state.songSeq || 0);
@@ -5918,6 +5960,7 @@ async function stopMic() {
   state.audioInput?.stop();
   state.audioInput = null;
   state.micStream = null;
+  resetMicBoostCapture();
   if (state.pcmWorklet) state.pcmWorklet.port.onmessage = null;
   if (state.worklet) state.worklet.port.onmessage = null;
   state.pcmWorklet = state.worklet = state.pcmSender = state.audioSink = null;
@@ -6043,7 +6086,7 @@ async function startMic() {
         channelCount: 1,
         echoCancellation: state.settings.echoCancellation,
         noiseSuppression: state.settings.noiseSuppression,
-        autoGainControl: state.settings.autoGain
+        autoGainControl: false
       },
       video: false }
     });
@@ -6068,7 +6111,21 @@ async function startMic() {
     // AudioWorklet `currentTime` is relative to the AudioContext, while clock
     // sync uses performance.now(). Keep an explicit local monotonic mapping.
     state.audioContextPerfBaseUs = clientNowUs() - Math.round(audioContext.currentTime * 1_000_000);
-    const source = input.source;
+    // Apply our own gain so the same input is available on both sides of it.
+    await audioContext.audioWorklet.addModule('/mic-boost-worklet.js?v=1');
+    if (state.audioContext !== audioContext) return;
+    const source = new AudioWorkletNode(audioContext, 'usce-mic-boost', {
+      channelCount: 1, channelCountMode: 'explicit', outputChannelCount: [1],
+      processorOptions: { boost: state.settings.autoGain }
+    });
+    state.micBoostNode = source;
+    source.port.onmessage = ({data}) => {
+      if (state.micBoostNode !== source || data.boost !== state.settings.autoGain) return;
+      renderMicLevel(data.outputDb);
+      micBoostAdvice.observe(data);
+      renderMicBoostAdvice();
+    };
+    input.source.connect(source);
     const silentSink = audioContext.createGain();
     silentSink.gain.value = 0;
     state.audioSink = silentSink;
@@ -6166,6 +6223,7 @@ async function startMic() {
     state.micInputLatencyUs = 0;
     state.pitchTimestampLagUs = null;
     state.micStream = null;
+    resetMicBoostCapture();
     state.worklet = null;
     state.audioSink = null;
     micStatus.textContent = error.message || 'Microphone failed';
@@ -6289,13 +6347,7 @@ function handlePitchFrame(frame) {
   const nowMs = performance.now();
   if (nowMs - state.pitchLastUiMs >= pitchUiUpdateMs) {
     state.pitchLastUiMs = nowMs;
-    const meterFloorDb = -66;
-    const meterCeilingDb = -6;
-    const level = Math.max(0, Math.min(1, (frame.rmsDb - meterFloorDb) / (meterCeilingDb - meterFloorDb)));
-    volumeFill.style.width = `${Math.round(level * 100)}%`;
-    if (!lockOverlay.classList.contains('hidden')) {
-      renderLockLevel(level, 'Microphone level');
-    }
+    if (!state.micBoostNode) renderMicLevel(frame.rmsDb);
   }
 
   if (state.rawPcmV1 || !hasActiveSongClock()) {
@@ -6594,6 +6646,15 @@ $('testAudioInput').addEventListener('change', async () => {
 });
 $('testAudioStartButton').addEventListener('click', startMic);
 $('stopAudioButton').addEventListener('click', stopMic);
+autoGainInput.addEventListener('change', () => setMicBoost(autoGainInput.checked));
+$('micBoostApply').addEventListener('click', () => {
+  const action = micBoostAdvice.visible(['singing', 'paused'].includes(state.gameState));
+  if (action) setMicBoost(action === 'enable');
+});
+$('micBoostDismiss').addEventListener('click', () => {
+  micBoostAdvice.dismiss();
+  renderMicBoostAdvice();
+});
 micRoomList?.addEventListener('click', (event) => {
   const button = event.target.closest?.('.mic-room[data-slot]');
   if (!button || !micRoomList.contains(button) || button.disabled) return;
@@ -6604,7 +6665,6 @@ micRoomList?.addEventListener('click', (event) => {
 for (const [input, key] of [
   [noiseSuppressionInput, 'noiseSuppression'],
   [echoCancellationInput, 'echoCancellation'],
-  [autoGainInput, 'autoGain'],
   [wakeLockInput, 'wakeLock'],
   [lockMicBarInput, 'lockMicBar'],
   [controlOnlyInput, 'controlOnly'],
