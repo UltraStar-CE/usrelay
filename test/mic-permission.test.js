@@ -14,7 +14,8 @@ test('a suspended browser audio context cannot block the microphone permission r
   }
   const context=vm.createContext({state,window:{AudioContext},createAudioInput,$:()=>({value:'0'}),
     navigator:{mediaDevices:{async getUserMedia(){requests++;throw Error('Permission denied');}}},
-    micButton:{disabled:false},micStatus:{textContent:''},sampleRateValue:{textContent:''},renderMicEntryFlow(){}});
+    micButton:{disabled:false},micStatus:{textContent:''},sampleRateValue:{textContent:''},
+    resetMicBoostCapture(){},renderMicEntryFlow(){}});
   vm.runInContext(app.slice(app.indexOf('function resumeMicAudio('),app.indexOf('const pitchVoteWindowUs')),context);
   await context.startMic();
   assert.equal(requests,1);
@@ -45,7 +46,7 @@ test('leaving during worklet loading cannot revive capture after Stop audio', as
     sampleRateValue:{},channelValue:{},processingValue:{},
     digitalCalibration:{cancel(){}},clientNowUs:()=>0,
     NativePcmSender:class {},AudioWorkletNode:class {constructor(){worklets++;}},
-    renderMicEntryFlow(){},updateGameStateView(){},setActionLabel(){},clientLog(){},
+    resetMicBoostCapture(){},renderMicEntryFlow(){},updateGameStateView(){},setActionLabel(){},clientLog(){},
     pitchReportedInputLatencyMaxUs:100000});
   vm.runInContext(app.slice(app.indexOf('async function stopMic()'),app.indexOf('function startCalibrationWave')),context);
   vm.runInContext(app.slice(app.indexOf('function nativeAudioActive()'),app.indexOf('async function stopMic()')),context);
