@@ -11,7 +11,7 @@ import {createApiRequests} from './api-requests.js';
 import { CAPTURE_PACKET_LIFETIME_MS, NativePcmSender } from './native-pcm.js?v=4';
 import { CaptureClock } from './capture-clock.js';
 import { createAudioInput, startSyntheticPcm } from './audio-input.js?v=4';
-import { createMicBoostAdvice, loadMicBoost, micMeterLevel } from './mic-boost.js';
+import { createMicBoostAdvice, loadMicBoost } from './mic-boost.js';
 const protocol = 1;
 const digitalCalibration = new DigitalCalibration({send:message=>sendRelay(message),
   startWave:startCalibrationWave,stopWave:stopCalibrationWave});
@@ -1149,8 +1149,7 @@ function setMicBoost(enabled) {
   persistSettings();
 }
 
-function renderMicLevel(rmsDb) {
-  const level = micMeterLevel(rmsDb);
+function renderMicLevel(level) {
   const percentage = Math.round(level * 100);
   volumeFill.style.width = `${percentage}%`;
   volumeFill.parentElement.setAttribute('aria-valuenow', String(percentage));
@@ -1163,7 +1162,7 @@ function resetMicBoostCapture() {
   micBoostAdvice.reset();
   micBoostScoreBaseline = null;
   renderMicBoostAdvice();
-  renderMicLevel(-Infinity);
+  renderMicLevel(0);
 }
 
 async function applyWakeLock() {
@@ -6123,7 +6122,7 @@ async function startMic() {
     // sync uses performance.now(). Keep an explicit local monotonic mapping.
     state.audioContextPerfBaseUs = clientNowUs() - Math.round(audioContext.currentTime * 1_000_000);
     // Apply our own gain so the same input is available on both sides of it.
-    await audioContext.audioWorklet.addModule('/mic-boost-worklet.js?v=2');
+    await audioContext.audioWorklet.addModule('/mic-boost-worklet.js?v=3');
     if (state.audioContext !== audioContext) return;
     const source = new AudioWorkletNode(audioContext, 'usce-mic-boost', {
       channelCount: 1, channelCountMode: 'explicit', outputChannelCount: [1],
@@ -6133,7 +6132,7 @@ async function startMic() {
     micBoostScoreBaseline = state.scoreSnapshot;
     source.port.onmessage = ({data}) => {
       if (state.micBoostNode !== source || data.boost !== state.settings.autoGain) return;
-      renderMicLevel(data.outputDb);
+      renderMicLevel(data.outputPeak);
       micBoostAdvice.observe(data);
       renderMicBoostAdvice();
     };
@@ -6359,7 +6358,7 @@ function handlePitchFrame(frame) {
   const nowMs = performance.now();
   if (nowMs - state.pitchLastUiMs >= pitchUiUpdateMs) {
     state.pitchLastUiMs = nowMs;
-    if (!state.micBoostNode) renderMicLevel(frame.rmsDb);
+    if (!state.micBoostNode) renderMicLevel(10 ** (frame.rmsDb / 20));
   }
 
   if (state.rawPcmV1 || !hasActiveSongClock()) {
