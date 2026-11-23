@@ -1752,6 +1752,7 @@ function handleClientJoin(conn, msg) {
       rawPcmV1: room.capabilities.includes('rawPcmV1'),
       audioCalibrationV1: room.capabilities.includes('audioCalibrationV1'),
       captureTimestampsV1: room.capabilities.includes('captureTimestampsV1'),
+      phoneThresholdV1: room.capabilities.includes('phoneThresholdV1'),
       p2p: publicP2pConfig(room),
       resumed: true
     });
@@ -1830,6 +1831,7 @@ function handleClientJoin(conn, msg) {
     rawPcmV1: room.capabilities.includes('rawPcmV1'),
     audioCalibrationV1: room.capabilities.includes('audioCalibrationV1'),
     captureTimestampsV1: room.capabilities.includes('captureTimestampsV1'),
+    phoneThresholdV1: room.capabilities.includes('phoneThresholdV1'),
     p2p: publicP2pConfig(room)
   });
   sendSongRuntimeSnapshot(conn, room);
@@ -1932,7 +1934,8 @@ async function handleClientMessage(conn, msg) {
       }
       frame.captureEndHostUs = msg.captureEndHostUs;
       frame.captureEpoch = msg.captureEpoch;
-      if (Number.isInteger(msg.micGate) && msg.micGate >= 1 && msg.micGate <= 3) frame.micGate = msg.micGate;
+      if (room.capabilities.includes('phoneThresholdV1') &&
+          Number.isInteger(msg.micGate) && msg.micGate >= 1 && msg.micGate <= 3) frame.micGate = msg.micGate;
     }
     room.host?.sendJson(frame);
     return;

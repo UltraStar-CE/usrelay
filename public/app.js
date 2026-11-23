@@ -1164,6 +1164,7 @@ function currentMicThreshold() {
 
 function renderMicThreshold() {
   const threshold = currentMicThreshold();
+  $('micThresholdControls').hidden = !state.phoneThresholdV1;
   $('autoMicThresholdInput').checked = state.settings.autoMicThreshold;
   $('manualMicThreshold').hidden = state.settings.autoMicThreshold;
   $('micThresholdInput').value = threshold;
@@ -1172,8 +1173,8 @@ function renderMicThreshold() {
 
 function classifyMicPacket(peak, captureEndHostUs) {
   const lyrics = state.currentLyricsMessage;
-  if (!lyrics?.phoneThresholdV1 || Number(lyrics.songSeq) !== state.songSeq || !Number.isFinite(peak)) return;
-  const voice = assignedLyricsVoice(lyrics);
+  if (!state.phoneThresholdV1 || !Number.isFinite(peak)) return;
+  const voice = lyrics && Number(lyrics.songSeq) === state.songSeq ? assignedLyricsVoice(lyrics) : null;
   if (state.gameState === 'singing' && state.settings.autoMicThreshold &&
       Number.isFinite(voice?.thresholdShiftUs) && state.hostScoringStartUs) {
     const key = `${state.songSeq}:${state.slot}:${voice.track}`;
@@ -2004,7 +2005,7 @@ function currentLyricsEntry() {
 
 function assignedLyricsVoice(message) {
   const slot = Number(state.slot);
-  return message.playerTracks?.find(entry => entry.slot === slot);
+  return Array.isArray(message.playerTracks) ? message.playerTracks.find(entry => entry.slot === slot) : null;
 }
 
 function selectedLyricsTrack(message = state.currentLyricsMessage) {
@@ -5355,6 +5356,7 @@ async function handleMessage(message) {
     }
     state.rawPcmV1 = Boolean(message.rawPcmV1);
     state.captureTimestampsV1 = Boolean(message.captureTimestampsV1);
+    state.phoneThresholdV1 = Boolean(message.phoneThresholdV1);
     state.audioCalibrationV1 = Boolean(message.audioCalibrationV1);
     Object.assign(state, {
       roomId: message.roomId,

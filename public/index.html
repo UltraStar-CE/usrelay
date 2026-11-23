@@ -82,15 +82,17 @@
             <input id="autoGainInput" type="checkbox">
             Mic boost
           </label>
-          <label class="check-row">
-            <input id="autoMicThresholdInput" type="checkbox">
-            Auto-adjust mic threshold
-            <span id="micThresholdValue" class="muted"></span>
-          </label>
-          <label id="manualMicThreshold" hidden>
-            Mic threshold
-            <input id="micThresholdInput" type="range" min="0" max="25" step="1" value="10">
-          </label>
+          <div id="micThresholdControls" hidden>
+            <label class="check-row">
+              <input id="autoMicThresholdInput" type="checkbox">
+              Auto-adjust mic threshold
+              <span id="micThresholdValue" class="muted"></span>
+            </label>
+            <label id="manualMicThreshold" hidden>
+              Mic threshold
+              <input id="micThresholdInput" type="range" min="0" max="25" step="1" value="10">
+            </label>
+          </div>
           <div id="micBoostAdvice" class="remote-list" hidden>
             <p id="micBoostAdviceText" role="status"></p>
             <div class="actions">
