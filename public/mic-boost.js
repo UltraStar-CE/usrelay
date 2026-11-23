@@ -26,23 +26,21 @@ export function createMicBoostAdvice() {
     visible(inSong) {
       return inSong ? null : pending;
     },
-    observe({boost, rawDb, rawClipped, boostedClipped}) {
-      if (pending) return;
-      const action = boost ? 'disable' : 'enable';
-      if (dismissed.has(action)) return;
+    observe({boost, rawClipped, boostedClipped}) {
+      if (!boost || pending || dismissed.has('disable')) return;
       // Each observation covers 100 ms. Ignore isolated peaks and clipping that
       // was already present in the input before our gain stage.
-      if (boost) {
-        history.push(boostedClipped >= 0.05 && rawClipped < 0.01);
-        if (history.length > 30) history.shift();
-        if (history.filter(Boolean).length >= 8) pending = action;
-      } else {
-        history.push(rawDb >= -58 ? micMeterLevel(rawDb) > 0.5 : null);
-        if (history.length > 100) history.shift();
-        if (history.length !== 100) return;
-        const active = history.filter(level => level !== null);
-        if (active.length >= 40 && active.filter(Boolean).length <= active.length * 0.05) pending = action;
-      }
+      history.push(boostedClipped >= 0.05 && rawClipped < 0.01);
+      if (history.length > 30) history.shift();
+      if (history.filter(Boolean).length >= 8) pending = 'disable';
+    },
+    observeScore({phonePitchedMs, phoneAboveHalfMs, phoneBoostMisses}, baseline = {}) {
+      if (dismissed.has('enable') || pending === 'disable') return;
+      const pitchedMs = phonePitchedMs - (baseline.phonePitchedMs ?? 0);
+      const aboveHalfMs = phoneAboveHalfMs - (baseline.phoneAboveHalfMs ?? 0);
+      const misses = phoneBoostMisses - (baseline.phoneBoostMisses ?? 0);
+      pending = pitchedMs >= 4000 && aboveHalfMs >= 0 && aboveHalfMs <= pitchedMs * 0.05 && misses >= 4
+        ? 'enable' : null;
     }
   };
 }

@@ -11,7 +11,7 @@ class MicBoost extends AudioWorkletProcessor {
   }
 
   reset() {
-    this.count = this.rawPower = this.outputPower = this.rawClips = this.outputClips = 0;
+    this.count = this.outputPower = this.rawClips = this.outputClips = 0;
   }
 
   process(inputs, outputs) {
@@ -27,14 +27,12 @@ class MicBoost extends AudioWorkletProcessor {
       const amplified = raw * gain;
       const sample = Math.max(-1, Math.min(1, amplified));
       output[i] = sample;
-      this.rawPower += raw * raw;
       this.outputPower += sample * sample;
       if (Math.abs(raw) >= 0.99) ++this.rawClips;
       if (Math.abs(amplified) >= 1) ++this.outputClips;
       if (++this.count === this.window) {
         this.port.postMessage({
           boost: this.boost,
-          rawDb: 10 * Math.log10(Math.max(1e-12, this.rawPower / this.count)),
           outputDb: 10 * Math.log10(Math.max(1e-12, this.outputPower / this.count)),
           rawClipped: this.rawClips / this.count,
           boostedClipped: this.outputClips / this.count
