@@ -1932,6 +1932,7 @@ async function handleClientMessage(conn, msg) {
       }
       frame.captureEndHostUs = msg.captureEndHostUs;
       frame.captureEpoch = msg.captureEpoch;
+      if (Number.isInteger(msg.micGate) && msg.micGate >= 1 && msg.micGate <= 3) frame.micGate = msg.micGate;
     }
     room.host?.sendJson(frame);
     return;

@@ -8,6 +8,7 @@ class PcmSender extends AudioWorkletProcessor {
     this.calibrationSamples = new Int16Array(480);
     this.haveCalibration = false;
     this.used = 0;
+    this.peak = 0;
     this.sequence = processorOptions?.sequence >>> 0;
     this.sampleOffset = processorOptions?.sampleOffset >>> 0;
     this.inputFrames = 0;
@@ -34,6 +35,7 @@ class PcmSender extends AudioWorkletProcessor {
       if (this.nextFrame !== null && this.nextFrame !== currentFrame) {
         ++this.captureEpoch;
         this.used = 0;
+        this.peak = 0;
         this.haveCalibration = false;
         this.inputFrames = 0;
         this.outputFrames = 0;
@@ -71,6 +73,7 @@ class PcmSender extends AudioWorkletProcessor {
     return true;
   }
   emitSample(sample, calibrationSample, inputPosition) {
+    this.peak = Math.max(this.peak, Math.abs(sample));
     this.calibrationSamples[this.used] = calibrationSample === null ? 0 : Math.round(calibrationSample * 32767);
     this.haveCalibration ||= calibrationSample !== null;
     this.samples[this.used++] = Math.round(sample * (sample < 0 ? 32768 : 32767));
@@ -92,13 +95,14 @@ class PcmSender extends AudioWorkletProcessor {
       }
       const message = this.reportCaptureTime
         ? { packet, captureEndSeconds: currentTime + inputPosition / sampleRate + 1 / 48000,
-            captureEpoch: this.captureEpoch }
+            captureEpoch: this.captureEpoch, peak: this.peak }
         : packet;
       this.port.postMessage(message, [packet]);
       if (calibrationPacket) this.port.postMessage(calibrationPacket, [calibrationPacket]);
       this.haveCalibration = false;
       this.sampleOffset += 480;
       this.used = 0;
+      this.peak = 0;
     }
   }
 }
